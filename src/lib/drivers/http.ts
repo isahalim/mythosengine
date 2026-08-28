@@ -42,7 +42,9 @@ export async function fetchWithRetry(
     try {
       const res = await fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
 
-      if (res.ok) return ok(res);
+      // 304 is a valid, meaningful outcome for a conditional GET (ETag/
+      // If-Modified-Since) — not an error, and Response.ok is false for it.
+      if (res.ok || res.status === 304) return ok(res);
 
       const retryable = res.status === 429 || res.status >= 500;
       if (!retryable || isLastAttempt) {

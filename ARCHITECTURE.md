@@ -19,7 +19,7 @@
 | **GitHub Actions** | 2,000 min/mo private, unlimited public | **Yes** | Weekly footage refresh, daily render pipeline, scheduler. FFmpeg and yt-dlp both run here — Workers cannot execute native binaries or sustain multi-minute CPU jobs |
 | **GitHub repo (orphan branch)** | Yes, subject to repo size sanity | **Yes** | The footage clip library. Not R2 — R2's free tier requires a card to activate at all; a rotating library of short trimmed clips fits comfortably in a git branch |
 | **YouTube Data API v3** | Yes — 10,000 units/day default quota | **Yes** (Google account, no billing needed for this quota tier) | Upload, and the weekly footage-source discovery search |
-| **Reddit `.json` endpoints, News RSS** | Yes | **Yes** | Zero-key trend sources |
+| **Reddit RSS/Atom syndication feeds, News RSS** | Yes | **Yes** | Zero-key trend sources — **not** Reddit's JSON/Data API, see §5.1 |
 | **X (Twitter) API** | **No** — the free tier has no meaningful search access as of 2026 | N/A | Not in the default profile. Driver exists, disabled unless the operator has a paid tier |
 | **YouTube Community tab** | No official API | **Yes**, but unofficial/fragile | Best-effort source, same fragility contract as `yt-captions` had in the old project |
 
@@ -293,7 +293,7 @@ Same rationale as before: natural-key `UNIQUE` gives idempotency for free, `CHEC
 - **Known risk, stated plainly, not hidden:** downloading third-party video via `yt-dlp` is itself a YouTube ToS matter, separate from whether the resulting heavily-cropped-and-narrated clip qualifies as transformative use. Isolating this to one weekly, low-volume, fully-audited job is the mitigation this project chose — not a claim that the risk is zero. Revisit if a channel strike or takedown ever traces back to this stage.
 
 ### 1. WATCH (hourly cron)
-- Reddit `.json` endpoints (real User-Agent, conditional GET), News RSS, best-effort YouTube Community scraping (typed, fails safe like `yt-captions` did). X disabled in the free profile — no viable free API.
+- Subreddit RSS/Atom feeds (`reddit.com/r/<sub>/hot.rss`) via the generic RSS driver, real User-Agent, conditional GET where the server supports it (many don't send an ETag — the natural-key idempotent insert covers that case regardless). **Deliberately not Reddit's JSON/Data API**: blocked outright from at least some cloud IP ranges (confirmed by testing, not assumed) and licensed for non-commercial use only, which a monetized channel isn't — see docs/DECISIONS.md. News RSS, best-effort YouTube Community scraping (typed, fails safe like `yt-captions` did). X disabled in the free profile — no viable free API.
 - Output: `signals` rows in `observed`.
 
 ### 2. SCORE

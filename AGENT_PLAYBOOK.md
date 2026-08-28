@@ -167,25 +167,50 @@ contract-testing philosophy.
 
 ---
 
-### Phase 3 — Trend ingestion (WATCH + SCORE)
+### Phase 3 — Trend ingestion (WATCH + SCORE) — done (2026-08-28)
 
-```
-Implement stages 1-2 from ARCHITECTURE.md §5. Sources seeded from
-data/sources.yml (operator provides the list — start with 3-5 subreddits'
-.json feeds and 2-3 news RSS feeds; X stays disabled per the free profile;
-YouTube Community is best-effort and typed to fail safely like the old
-yt-captions driver did).
+`data/sources.yml` seeded with what was reachable and legally reasonable
+after actually testing candidates live, not the originally-planned "3-5
+subreddits' .json feeds": Reddit's JSON/Data API turned out to be blocked
+from at least some cloud IP ranges *and* licensed non-commercial-only (this
+channel is monetized) — full finding in docs/DECISIONS.md. Sourced 3
+subreddits via their public RSS/Atom feed instead (a different product,
+different terms) plus BBC and NPR news RSS, every URL confirmed reachable
+before being committed. YouTube Community and X are correctly absent —
+already documented as no-viable-free-path in ARCHITECTURE.md §0.
 
-- Conditional GET with stored ETag/Last-Modified.
-- Real User-Agent with a contact URL, respect robots.txt.
-- Engagement-velocity scoring: upvote/comment growth rate normalized by
-  account age, freshness decay.
-- simhash + 3-gram Jaccard dedupe over a 7-day window.
-- Golden-file tests: fixture feeds including one malformed feed, one empty
-  feed, three near-duplicates of one story (assert exactly one survives).
-```
+Built:
+- `src/lib/ingest/feed-parser.ts` — real RSS 2.0 + Atom parsing via
+  `fast-xml-parser` (never regex over XML), tested against **real** trimmed
+  BBC and Reddit feed samples, not just synthetic fixtures.
+- `src/lib/ingest/watch.ts` — conditional GET (ETag/If-Modified-Since,
+  degrades cleanly when a server sends neither — BBC doesn't — because the
+  natural-key idempotent insert covers that case regardless), real User-
+  Agent. Found and fixed a real bug in shared infrastructure while wiring
+  this up: `fetchWithRetry` treated HTTP 304 as an error (`Response.ok` is
+  false for 304), so every conditional-GET caller would have silently
+  failed on a cache hit. Fixed in `http.ts`, regression-tested, reran the
+  full suite to confirm no other driver's behavior changed.
+- `src/lib/ingest/simhash.ts` — 64-bit simhash, single-word shingles (not
+  3-grams — verified empirically that 3-word shingles are too sensitive on
+  headline-length text, a "GTA 6" vs "GTA VI" pair landed a Hamming distance
+  of 27/64, indistinguishable from unrelated text). Near-duplicate threshold
+  (16) is similarly empirically calibrated, not guessed.
+- `src/lib/ingest/score.ts` — clusters by near-duplicate distance, rejects
+  future-dated signals outright (never eligible to win a cluster), promotes
+  each cluster's highest-scoring member with a corroboration bonus (within
+  this batch and against the trailing 7-day window).
+- `src/lib/ingest/seed-sources.ts` — idempotent YAML loader for
+  `data/sources.yml`, tested against the real committed file.
+- `db/migrations/0001_*.sql` — added `etag`/`last_modified` to `sources`.
 
-**Gate:** golden tests pass; a live run against real feeds produces sane `signals` rows.
+All golden-file cases covered (malformed feed, empty feed, missing-field
+item, near-duplicate cluster, future-dated item) plus a **real** end-to-end
+run against the live BBC feed: 38 items fetched, 2 correctly collapsed as
+near-duplicates, 36 scored.
+
+**Gate, met:** golden tests pass; a live run against real feeds (BBC, not
+just fixtures) produced sane `signals` rows, verified by hand.
 
 ---
 

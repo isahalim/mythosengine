@@ -18,6 +18,10 @@ export const sources = sqliteTable(
     url: text("url").notNull(),
     enabled: integer("enabled").notNull().default(1),
     lastSeenAt: text("last_seen_at"),
+    // Conditional-GET cache (ARCHITECTURE.md §5.1) so WATCH burns no
+    // bandwidth/quota re-fetching an unchanged feed every run.
+    etag: text("etag"),
+    lastModified: text("last_modified"),
   },
   (t) => [check("chk_sources_kind", sql`${t.kind} IN ('reddit','rss','x','youtube_community')`)],
 );

@@ -1,0 +1,39 @@
+# Seed WATCH sources (ARCHITECTURE.md §5.1). Every URL here was fetched
+# live and confirmed reachable before being added — see docs/DECISIONS.md
+# for the Reddit-specific finding that shaped this list: Reddit's JSON API
+# is (a) blocked from at least some cloud/datacenter IP ranges and (b)
+# licensed for non-commercial use only, which this monetized channel isn't.
+# Subreddits below are sourced via their public RSS/Atom syndication feed
+# instead — a different product with different, much more permissive terms
+# — not the JSON API. X/Twitter and YouTube Community are deliberately
+# absent: no viable free/reliable path for either (ARCHITECTURE.md §0).
+#
+# This is a starting list, not a fixed one. Revise freely — nothing else in
+# the pipeline depends on these specific sources, only on the `sources`
+# table having *some* enabled rows.
+
+sources:
+  - id: reddit-askreddit
+    kind: rss
+    url: https://www.reddit.com/r/AskReddit/hot.rss
+    enabled: true
+
+  - id: reddit-amitheasshole
+    kind: rss
+    url: https://www.reddit.com/r/AmItheAsshole/hot.rss
+    enabled: true
+
+  - id: reddit-trueoffmychest
+    kind: rss
+    url: https://www.reddit.com/r/TrueOffMyChest/hot.rss
+    enabled: true
+
+  - id: news-bbc
+    kind: rss
+    url: https://feeds.bbci.co.uk/news/rss.xml
+    enabled: true
+
+  - id: news-npr
+    kind: rss
+    url: https://feeds.npr.org/1001/rss.xml
+    enabled: true

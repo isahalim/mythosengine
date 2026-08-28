@@ -22,6 +22,16 @@ describe("fetchWithRetry", () => {
     server.close();
   });
 
+  it("treats a 304 as a successful result, not an error, for conditional GETs", async () => {
+    handler = (_req, res) => {
+      res.writeHead(304);
+      res.end();
+    };
+    const result = await fetchWithRetry(baseUrl, {}, { timeoutMs: 1000, maxAttempts: 2, baseDelayMs: 5 });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value.status).toBe(304);
+  });
+
   it("falls back to exponential backoff when a 429 has no Retry-After header", async () => {
     let calls = 0;
     handler = (_req, res) => {
