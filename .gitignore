@@ -1,3 +1,5 @@
 .env.local
 .dev.vars
 *.key
+.wrangler/
+node_modules/
