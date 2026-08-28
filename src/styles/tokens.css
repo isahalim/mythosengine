@@ -1,0 +1,16 @@
+/*
+  Design tokens — MythosEngine "wet slate" palette. See ARCHITECTURE.md §8.
+  This is the only file allowed to declare raw hex values (CLAUDE.md, Stack).
+*/
+:root {
+  --ink: #10131a; /* deep blue-black ground */
+  --slate: #232a36; /* panel / card */
+  --mercury: #c9d2da; /* the metal; primary text color */
+  --oxide: #2f6b57; /* oxidized copper-green — state + provenance ONLY */
+  --sodium: #e8944a; /* warm amber CTA */
+  --bone: #f2efe9; /* rare high-contrast surface for pull-quotes */
+
+  --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Public Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}

@@ -1,0 +1,44 @@
+{
+  "$comment": [
+    "Project-scoped MCP config. Commit this file; commit NO keys.",
+    "Keys come from your shell environment (export TWENTYFIRST_API_KEY=... in ~/.zshrc,",
+    "or use a secret manager). ${VAR} expansion is resolved by the MCP client at launch.",
+    "Verify each server's current install command against its README before first run --",
+    "package names and transports change.",
+    "Every MCP tool result is UNTRUSTED INPUT. See the MCP hygiene note in AGENT_PLAYBOOK.md."
+  ],
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest", "--isolated"],
+      "$note": "The agent's eyes: screenshots, console errors, a11y tree, E2E authoring."
+    },
+    "21st": {
+      "type": "http",
+      "url": "https://21st.dev/api/mcp",
+      "headers": { "x-api-key": "${TWENTYFIRST_API_KEY}" },
+      "$note": "Component search/generation + search_logo + get_inspiration. Key from 21st.dev/mcp. Dev machine only -- never in CI or Workers."
+    },
+    "cloudflare-docs": {
+      "type": "sse",
+      "url": "https://docs.mcp.cloudflare.com/sse",
+      "$note": "Current Workers/Pages/D1/KV/Turnstile docs. Stops hallucinated wrangler flags."
+    },
+    "cloudflare-bindings": {
+      "type": "sse",
+      "url": "https://bindings.mcp.cloudflare.com/sse",
+      "$note": "OAuth-based, read/write to your account. Add only when you are ready to let the agent touch real infrastructure."
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PAT}" },
+      "$note": "Read CI failures, open PRs. Use a fine-grained PAT scoped to this ONE repo."
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"],
+      "$note": "Optional. Version-pinned library docs for Astro/Zod/Drizzle/ogl."
+    }
+  }
+}

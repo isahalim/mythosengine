@@ -1,0 +1,58 @@
+---
+import Base from "../layouts/Base.astro";
+import ProvenanceChip from "../components/ProvenanceChip.astro";
+import HeroBead from "../components/HeroBead.astro";
+---
+
+<Base
+  title="MythosEngine"
+  description="An autonomous publishing system that verifies every claim against retrieved sources before it publishes anything."
+>
+  <header class="mx-auto flex max-w-5xl items-center justify-between px-6 py-8">
+    <span class="font-mono text-sm uppercase tracking-[0.2em] text-mercury">
+      MythosEngine
+    </span>
+    <span class="font-mono text-xs uppercase tracking-wider text-mercury/60">
+      Provisioning
+    </span>
+  </header>
+
+  <main class="mx-auto max-w-5xl px-6">
+    <section class="grid gap-10 py-12 md:grid-cols-2 md:items-center md:py-24">
+      <div>
+        <h1 class="font-display text-4xl font-semibold leading-tight text-bone md:text-5xl">
+          Ideation, becoming reality.
+        </h1>
+        <p class="mt-6 max-w-prose text-lg text-mercury/90">
+          MythosEngine ingests news about unreleased games, verifies every
+          factual claim against retrieved sources, and publishes only what
+          survives a deterministic gate. It never states an unconfirmed thing
+          as fact.
+        </p>
+        <p class="mt-6 font-mono text-sm text-sodium">
+          Pipeline: provisioning — ingestion and drafting are not live yet.
+        </p>
+      </div>
+      <HeroBead />
+    </section>
+
+    <section class="border-t border-slate py-16">
+      <h2 class="font-display text-2xl font-semibold text-bone">
+        Every post carries its provenance
+      </h2>
+      <p class="mt-4 max-w-prose text-mercury/90">
+        Not decoration — the site's whole editorial claim, generated from the
+        pipeline's own trust data. This is a preview of that strip; no posts
+        exist yet.
+      </p>
+      <div class="mt-6 flex flex-wrap gap-3">
+        <ProvenanceChip tier={1} label="OFFICIAL" />
+        <ProvenanceChip tier={3} label="UNVERIFIED" />
+      </div>
+    </section>
+  </main>
+
+  <footer class="mx-auto max-w-5xl px-6 py-12 font-mono text-xs text-mercury/50">
+    Single-operator system. No public sign-ups.
+  </footer>
+</Base>

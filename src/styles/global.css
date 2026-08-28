@@ -1,0 +1,21 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+@theme {
+  --color-ink: var(--ink);
+  --color-slate: var(--slate);
+  --color-mercury: var(--mercury);
+  --color-oxide: var(--oxide);
+  --color-sodium: var(--sodium);
+  --color-bone: var(--bone);
+
+  --font-display: var(--font-display);
+  --font-body: var(--font-body);
+  --font-mono: var(--font-mono);
+}
+
+body {
+  background: var(--ink);
+  color: var(--mercury);
+  font-family: var(--font-body);
+}

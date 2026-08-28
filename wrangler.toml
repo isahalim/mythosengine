@@ -2,3 +2,10 @@ name = "mythosengine"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"
 compatibility_flags = ["nodejs_compat"]
+
+[vars]
+TURNSTILE_SITE_KEY = "0x4AAAAAAEee0w7vUlvWpXFF"
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"

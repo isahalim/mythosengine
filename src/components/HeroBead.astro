@@ -1,0 +1,32 @@
+---
+// Tier-1 hero fallback: a static poster, always present in the HTML.
+// Full raymarched WebGL bead (ARCHITECTURE.md §8) is Phase 7 work — this is
+// the deterministic SVG poster it will fade in over, not a placeholder box.
+---
+
+<svg
+  viewBox="0 0 400 400"
+  role="img"
+  aria-label="A bead of liquid metal resting on a dark surface"
+  class="mx-auto w-full max-w-md"
+>
+  <defs>
+    <radialGradient id="bead" cx="35%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="var(--bone)" />
+      <stop offset="35%" stop-color="var(--mercury)" />
+      <stop offset="75%" stop-color="var(--slate)" />
+      <stop offset="100%" stop-color="var(--ink)" />
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="85%" r="60%">
+      <stop offset="0%" stop-color="var(--sodium)" stop-opacity="0.25" />
+      <stop offset="100%" stop-color="var(--sodium)" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+  <ellipse cx="200" cy="330" rx="150" ry="24" fill="url(#glow)" />
+  <circle cx="200" cy="190" r="130" fill="url(#bead)" />
+  <path
+    d="M 110 150 Q 200 120 290 160 Q 230 200 200 260 Q 160 200 110 150 Z"
+    fill="var(--ink)"
+    opacity="0.35"
+  />
+</svg>
