@@ -130,6 +130,31 @@ export interface RenderDriver {
   compose(req: RenderRequest): Promise<Result<RenderResponse, DriverError>>;
 }
 
+export interface UploadRequest {
+  filePath: string;
+  title: string;
+  description: string;
+  tags: string[];
+  /** youtube.com/t/terms video category id. "20" = Gaming. */
+  categoryId?: string;
+  privacyStatus?: "public" | "unlisted" | "private";
+  /**
+   * Always true here — this pipeline's videos always have AI narration.
+   * Maps to the YouTube Data API v3 `status.containsSyntheticMedia` field
+   * (confirmed against Google's docs 2026-08-27, not guessed).
+   */
+  containsSyntheticMedia: true;
+}
+
+export interface UploadResponse {
+  videoId: string;
+  url: string;
+}
+
+export interface UploadDriver {
+  publish(req: UploadRequest): Promise<Result<UploadResponse, DriverError>>;
+}
+
 export interface EmbedRequest {
   texts: string[];
 }

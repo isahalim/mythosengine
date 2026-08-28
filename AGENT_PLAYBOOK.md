@@ -118,23 +118,29 @@ test. Confirm whatever `ffmpeg` GitHub Actions' `ubuntu-latest` provides has
 it before Phase 6 wires this into CI — very likely does (Ubuntu's package
 includes it by default) but "very likely" isn't "confirmed."
 
-**Still needed:**
+**`upload-youtube.ts` — done** (2026-08-27). **Phase 1 is now fully
+complete** — all five drivers (LLM, cache, TTS, download, render, upload;
+six if you count both cache backends) implemented and contract-tested.
+Confirmed the synthetic-media disclosure field against Google's current docs
+rather than trusting `ARCHITECTURE.md`'s placeholder: `status.
+containsSyntheticMedia`, added October 2024, exactly as speculated but
+verified before being wired into `UploadRequest`. Resumable upload protocol:
+POST metadata to get a session `Location`, then a single streamed PUT of the
+file (Node's `fetch` with a `ReadableStream` body + `duplex: "half"` — no
+chunk-by-chunk resume logic yet, not worth the complexity at Shorts-length
+file sizes). OAuth access tokens come from a vault-managed refresh token,
+never a session the driver itself manages. 5 contract tests against a local
+mock server covering the full flow plus every failure point (bad refresh
+token, missing `Location` header, PUT failure, malformed final response).
 
-```
-Implement, matching the existing driver pattern exactly (Result<T,E>, typed
-DriverError, contract tests against fixture scripts/mock server):
+**No real end-to-end upload smoke test in this session** — that needs a real
+Google Cloud OAuth app and a one-time interactive consent-screen flow only
+the operator can complete (same category of blocker as Phase 9's passkey
+registration). That flow is Task 8.2 territory. See docs/DECISIONS.md.
 
-1. src/lib/drivers/upload-youtube.ts — YouTube Data API v3 via OAuth
-   (refresh-token flow, vault-managed). Sets whatever the CURRENT synthetic-
-   media disclosure field is — check https://developers.google.com/youtube
-   /v3 (or the cloudflare-docs/context7 MCP if it mirrors third-party docs)
-   at implementation time, don't trust ARCHITECTURE.md's placeholder name.
-
-Do not write pipeline logic yet — this task is drivers only, same
-constraint as before.
-```
-
-**Gate:** contract tests pass against a mock server; a real end-to-end upload smoke test needs a real OAuth app + consent flow, which is Task 8.2 territory (provisioning), not something to improvise mid-driver — see docs/DECISIONS.md for how this one is being sequenced. (TTS, download, and render smoke tests already passed against live services/real ffmpeg.)
+**Phase 1 gate, fully met:** every driver contract-tested; TTS, download, and
+render additionally proven against live services/real ffmpeg in this
+session, not just fixtures.
 
 ---
 
