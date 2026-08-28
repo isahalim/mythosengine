@@ -1,56 +1,85 @@
 ---
+// Public marketing page (docs/DECISIONS.md, 2026-08-28 — reverses Phase 7's
+// "no public hero" call for the *console*; this has always been a
+// separate surface, see CLAUDE.md's stack line: "the Worker's public
+// surface is a status/marketing page at most"). Own bundle, own
+// size-limit budget (package.json) — nothing here is served under
+// /console/*, and scripts/check-console-isolation.mjs still holds src/
+// console/** to zero imports from src/pages/**.
 import Base from "../layouts/Base.astro";
-import HeroBead from "../components/HeroBead.astro";
+import HeroOrb from "../components/HeroOrb.astro";
 
-const stages = [
-  ["WATCH", "trending discourse across Reddit, news RSS, YouTube"],
-  ["SCRIPT", "a 130–170 word narrative, hook → body → debate question"],
-  ["FOOTAGE", "a segment from a maintained, provenance-tracked clip library"],
-  ["RENDER", "TTS narration, word-synced captions, FFmpeg composite"],
-  ["GATE", "a deterministic pass–or–reject check — the model never uploads"],
-  ["UPLOAD", "three Shorts a day, or held for one-click approval"],
+const stages: [string, string][] = [
+  ["WATCH", "trending, polarizing discourse across Reddit, X, news RSS, and YouTube"],
+  ["SCRIPT", "a 130–170 word provocative narrative — hook, body, debate question"],
+  ["FOOTAGE SELECT", "a segment from a maintained, provenance-tracked gameplay library"],
+  ["RENDER", "word-level animated captions burned in over the narrated clip"],
+  ["AUDIT SUMMARY", "originality, rotation health, and caption sync checked and surfaced"],
+  ["EXPORT", "a downloadable package — video, script, rationale, full provenance"],
+];
+
+const principles: [string, string][] = [
+  [
+    "Nothing uploads without you",
+    "There is no upload credential anywhere in this system. Every export sits in a review queue until you download it and publish it yourself, in YouTube Studio, on your own judgment.",
+  ],
+  [
+    "Full audit context, every time",
+    "Script, critic output, footage provenance, and the exact TTS settings used travel with every export — the review that decides what goes out is never a blind guess.",
+  ],
+  [
+    "Footage only from a maintained library",
+    "Clips come from a tracked, provenance-recorded library refreshed on a fixed weekly schedule — never fetched ad hoc, never from outside it.",
+  ],
 ];
 ---
 
 <Base
   title="AutoShorts AI"
-  description="An autonomous system that turns trending discussion into narrated YouTube Shorts, gated by a deterministic policy check before anything uploads."
+  description="An autonomous system that watches trending discussion, writes a narrated script, and renders a fully-audited YouTube Shorts package for a human to review and publish."
 >
-  <header class="mx-auto flex max-w-5xl items-center justify-between px-6 py-8">
-    <span class="font-mono text-sm uppercase tracking-[0.2em] text-mercury">
-      AutoShorts AI
-    </span>
-    <span class="font-mono text-xs uppercase tracking-wider text-mercury/60">
-      Provisioning
-    </span>
+  <div class="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_50%_-10%,color-mix(in_srgb,var(--violet)_18%,transparent),transparent_60%)]">
+  </div>
+
+  <header class="glass-card sticky top-4 z-10 mx-auto mt-4 flex max-w-5xl items-center justify-between px-6 py-3">
+    <span class="font-mono text-sm uppercase tracking-[0.2em] text-mercury">AutoShorts AI</span>
+    <a
+      href="/console/login"
+      class="gradient-spin-border rounded-full px-4 py-1.5 font-mono text-xs uppercase tracking-wide text-bone transition-colors hover:text-sodium"
+    >
+      Sign in
+    </a>
   </header>
 
   <main class="mx-auto max-w-5xl px-6">
-    <section class="grid gap-10 py-12 md:grid-cols-2 md:items-center md:py-24">
+    <section class="grid gap-10 py-16 md:grid-cols-2 md:items-center md:py-28">
       <div>
         <h1 class="font-display text-4xl font-semibold leading-tight text-bone md:text-5xl">
-          Ideation, becoming reality.
+          One narrated <span class="gradient-text">Short</span>, fully audited, waiting for you.
         </h1>
         <p class="mt-6 max-w-prose text-lg text-mercury/90">
-          AutoShorts AI watches trending discussion, writes a narrated script,
-          pairs it with gameplay footage, and publishes to YouTube Shorts
-          three times a day &mdash; nothing uploads without passing a
-          deterministic policy gate first.
+          AutoShorts AI watches trending discussion, writes a narrated script, pairs it with
+          library gameplay footage, and burns in word-synced captions &mdash; three times a day.
+          It never uploads anything. It hands you a reviewable package instead.
         </p>
-        <p class="mt-6 font-mono text-sm text-sodium">
-          Pipeline: provisioning &mdash; ingestion and rendering are not live yet.
-        </p>
+        <div class="mt-8 flex flex-wrap items-center gap-4">
+          <a
+            href="/console/login"
+            class="gradient-spin-border rounded-full px-6 py-3 font-mono text-sm uppercase tracking-wide text-bone transition-colors hover:text-sodium"
+          >
+            Sign in to the console
+          </a>
+          <span class="font-mono text-xs text-mercury/50">Passkey only &mdash; no passwords, no public sign-ups.</span>
+        </div>
       </div>
-      <HeroBead />
+      <HeroOrb />
     </section>
 
     <section class="border-t border-slate py-16">
-      <h2 class="font-display text-2xl font-semibold text-bone">
-        Six stages, one gate
-      </h2>
+      <h2 class="font-display text-2xl font-semibold text-bone">Six stages, then it stops</h2>
       <p class="mt-4 max-w-prose text-mercury/90">
-        Every video passes through the same pipeline, in order. Nothing
-        skips the gate.
+        Every render passes through the same pipeline, in order, and ends in a review queue
+        &mdash; never a publish call.
       </p>
       <ol class="mt-6 space-y-3 font-mono text-sm">
         {
@@ -63,9 +92,23 @@ const stages = [
         }
       </ol>
     </section>
+
+    <section class="border-t border-slate py-16">
+      <h2 class="font-display text-2xl font-semibold text-bone">Built to be reviewed, not trusted blindly</h2>
+      <div class="mt-8 grid gap-4 sm:grid-cols-3">
+        {
+          principles.map(([title, desc]) => (
+            <div class="glass-card gradient-accent-border flex flex-col gap-2 p-5">
+              <h3 class="font-body text-sm font-medium text-bone">{title}</h3>
+              <p class="font-body text-sm text-mercury/70">{desc}</p>
+            </div>
+          ))
+        }
+      </div>
+    </section>
   </main>
 
   <footer class="mx-auto max-w-5xl px-6 py-12 font-mono text-xs text-mercury/50">
-    Single-operator system. No public sign-ups.
+    Single-operator system. No public sign-ups. <a href="/console/login" class="text-mercury/70 hover:text-sodium">Operator sign-in →</a>
   </footer>
 </Base>

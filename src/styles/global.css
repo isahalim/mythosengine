@@ -51,3 +51,50 @@ body {
   mask-composite: exclude;
   pointer-events: none;
 }
+
+/* Public-homepage-only: a slowly rotating conic version of the same
+   oxide/sodium/violet gradient, for the hero's primary CTA. Pure CSS
+   (@property + a custom-property animation) — no JS, no bundle cost.
+   Never used in the console (CONSOLE_SPEC.md's restrained-aesthetic call
+   still stands there); this is the public page's own, richer treatment. */
+@property --spin-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+.gradient-spin-border {
+  position: relative;
+}
+.gradient-spin-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1.5px;
+  background: conic-gradient(from var(--spin-angle), var(--oxide), var(--sodium), var(--violet), var(--oxide));
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: spin-border 6s linear infinite;
+}
+@keyframes spin-border {
+  to {
+    --spin-angle: 360deg;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gradient-spin-border::before {
+    animation: none;
+  }
+}
+
+/* Gradient text, used once — the hero headline's emphasized word. */
+.gradient-text {
+  background: var(--gradient-accent);
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
