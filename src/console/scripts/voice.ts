@@ -4,7 +4,7 @@
 // discipline as every other console script (src/console/scripts/chat.ts).
 import { sendVoiceTurn, transcribeVoice } from "../lib/api.ts";
 import { startSiriWave } from "./siri-wave.ts";
-import { initGradientInteractive } from "./gradient-interactive.ts";
+import { redirectIfUnauthorized } from "../lib/session-guard.ts";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
@@ -26,7 +26,7 @@ function errorBannerEl(): HTMLElement | null {
 function appendBubble(role: "user" | "assistant" | "tool", text: string): void {
   const thread = threadEl();
   if (!thread) return;
-  if (thread.children.length === 1 && thread.children[0].tagName === "LI" && thread.textContent?.includes("Hold the mic")) {
+  if (thread.children.length === 1 && thread.children[0].tagName === "LI" && thread.textContent?.includes("Hold the orb")) {
     thread.replaceChildren();
   }
 
@@ -73,6 +73,13 @@ function startWaveVisualizer(_stream: MediaStream): () => void {
   return startSiriWave(canvas);
 }
 
+/** Crossfades the idle Siri Orb button into the Siri Wave canvas and back — "the orb becomes the wave" the operator asked for, not two components with no visual relationship. */
+function setRecordingVisual(button: HTMLButtonElement, active: boolean): void {
+  const canvas = document.getElementById("voice-wave");
+  button.style.opacity = active ? "0" : "1";
+  if (canvas) canvas.style.opacity = active ? "1" : "0";
+}
+
 export function initVoice(): void {
   const buttonEl = document.getElementById("voice-record-button");
   if (!(buttonEl instanceof HTMLButtonElement)) return;
@@ -101,7 +108,7 @@ export function initVoice(): void {
 
     recording = true;
     chunks = [];
-    button.classList.add("scale-110", "bg-sodium");
+    setRecordingVisual(button, true);
     setStatus("Listening…");
     stopVisualizer = startWaveVisualizer(stream);
 
@@ -121,7 +128,7 @@ export function initVoice(): void {
   function stopRecording(): void {
     if (!recording || !recorder) return;
     recording = false;
-    button.classList.remove("scale-110", "bg-sodium");
+    setRecordingVisual(button, false);
     recorder.stop();
     recorder = null;
   }
@@ -132,8 +139,9 @@ export function initVoice(): void {
 
     const transcribed = await transcribeVoice(audio);
     if (!transcribed.ok) {
+      if (redirectIfUnauthorized(transcribed.error)) return;
       errorBannerEl()?.classList.remove("hidden");
-      setStatus("Couldn't transcribe that — hold the button and try again.");
+      setStatus("Couldn't transcribe that — hold the orb and try again.");
       button.disabled = false;
       return;
     }
@@ -141,7 +149,7 @@ export function initVoice(): void {
 
     const transcript = transcribed.value.transcript.trim();
     if (!transcript) {
-      setStatus("Didn't catch anything — hold the button and try again.");
+      setStatus("Didn't catch anything — hold the orb and try again.");
       button.disabled = false;
       return;
     }
@@ -152,8 +160,9 @@ export function initVoice(): void {
     const turn = await sendVoiceTurn(transcript, activeSessionId);
     button.disabled = false;
     if (!turn.ok) {
+      if (redirectIfUnauthorized(turn.error)) return;
       errorBannerEl()?.classList.remove("hidden");
-      setStatus("Couldn't reach the console — hold the button and try again.");
+      setStatus("Couldn't reach the console — hold the orb and try again.");
       return;
     }
     errorBannerEl()?.classList.add("hidden");
@@ -162,7 +171,7 @@ export function initVoice(): void {
     for (const toolName of turn.value.toolCallsMade) appendBubble("tool", toolName);
     appendBubble("assistant", turn.value.finalMessage);
     speak(turn.value.finalMessage);
-    setStatus("Hold the button and speak");
+    setStatus("Hold the orb and speak");
   }
 
   button.addEventListener("mousedown", () => void startRecording());
@@ -173,6 +182,4 @@ export function initVoice(): void {
   button.addEventListener("mouseup", stopRecording);
   button.addEventListener("mouseleave", stopRecording);
   button.addEventListener("touchend", stopRecording);
-
-  initGradientInteractive("voice-gradient", 0.4);
 }

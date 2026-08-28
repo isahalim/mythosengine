@@ -4,13 +4,18 @@
 // The source component is a full-screen, React/Radix-based timeline
 // visualization with expandable content cards per node — this project has
 // no React/Radix anywhere (CONSOLE_SPEC.md §5: presentation only, rewrite
-// everything else). What's actually reused here is the mechanic: N nodes
-// arranged around a center point at angle = (index/total)*360 + rotation,
-// auto-rotating, with opacity/scale falling off by angle — hand-ported to
-// vanilla Astro + src/console/scripts/radial-nav.ts, scaled way down (a
-// persistent per-page nav bar, not a full-screen hero) and simplified from
-// "click to expand a data card" to "these are real <a> links," since
-// that's what this instance of the pattern actually needs to do.
+// everything else). What's reused is the mechanic: N nodes arranged around
+// a center point at angle = (index/total)*360 + rotation, auto-rotating,
+// hand-ported to vanilla Astro + src/console/scripts/radial-nav.ts.
+//
+// Two states, per the operator's explicit spec (docs/DECISIONS.md):
+// - Expanded: full-viewport, shown by default on first landing at /console
+//   (the dashboard — "when first logged in"). Clicking a section node
+//   shrinks the ring back to the compact header position, then navigates.
+//   Clicking empty space collapses without navigating.
+// - Collapsed: the compact 92px header widget from the original build.
+//   Clicking the center (the Liquid Metal shader, src/shaders/liquid-metal.ts)
+//   expands back to full-viewport, in place, no navigation.
 //
 // Desktop-only (md: and up) — ConsoleShell.astro keeps the flat pill nav
 // for narrow viewports, where an orbital layout has no reasonable room.
@@ -19,6 +24,7 @@ interface Props {
 }
 
 const { active } = Astro.props;
+const startExpanded = active === "dashboard";
 
 const nodes: { href: string; label: string; key: Props["active"] }[] = [
   { href: "/console", label: "Dashboard", key: "dashboard" },
@@ -39,17 +45,27 @@ const ICON_PATHS: Record<Props["active"], string> = {
 };
 ---
 
+<div
+  id="radial-nav-backdrop"
+  class:list={["fixed inset-0 z-40 hidden bg-ink transition-opacity duration-300 md:block", startExpanded ? "opacity-100" : "pointer-events-none opacity-0"]}
+  aria-hidden="true"
+>
+</div>
+
 <nav
   id="radial-nav"
-  class="relative mx-auto hidden h-[92px] w-[92px] shrink-0 md:block"
+  class:list={["z-50 hidden shrink-0 items-center justify-center md:flex", startExpanded ? "radial-nav--expanded" : "radial-nav--collapsed"]}
   aria-label="Console sections"
   data-active={active}
+  data-expanded={startExpanded ? "true" : "false"}
 >
-  <div class="pointer-events-none absolute inset-0 rounded-full border border-mercury/15"></div>
-  <div
+  <div class="radial-nav-ring pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-mercury/15"></div>
+  <button
+    type="button"
     id="radial-nav-center"
-    class="pointer-events-none absolute left-1/2 top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full bg-gradient-to-br from-oxide via-sodium to-violet"
-  ></div>
+    aria-label="Show all sections"
+    class="radial-nav-center pointer-events-auto absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-full border-0 bg-gradient-to-br from-oxide via-sodium to-violet"
+  ></button>
 
   {
     nodes.map((node) => (
@@ -59,16 +75,16 @@ const ICON_PATHS: Record<Props["active"], string> = {
         data-radial-node={node.key}
         title={node.label}
         class:list={[
-          "radial-node absolute left-1/2 top-1/2 flex h-8 w-8 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border transition-colors",
+          "radial-node absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center justify-center gap-1.5 rounded-full border transition-colors",
           active === node.key
             ? "border-sodium bg-sodium/20 text-sodium"
             : "border-mercury/30 bg-ink text-mercury/70 hover:border-mercury/60 hover:text-bone",
         ]}
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
           <path d={ICON_PATHS[node.key]} stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
         </svg>
-        <span class="sr-only">{node.label}</span>
+        <span class="radial-node-label whitespace-nowrap font-body text-xs">{node.label}</span>
       </a>
     ))
   }

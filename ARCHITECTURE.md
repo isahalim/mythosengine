@@ -1,4 +1,4 @@
-# AutoShorts AI — System Architecture
+# Mythos Engine — System Architecture
 
 **Version:** 2.0 — pivot from MythosEngine (game-news publishing) to an autonomous YouTube Shorts pipeline. See `docs/DECISIONS.md` for the pivot rationale and the tradeoffs it accepted.
 **Owner:** single operator (you). One human account, passkey-authenticated. No public sign-ups.
@@ -403,7 +403,7 @@ Edge TTS needs no key at all — that's the entire appeal and the entire risk (�
 
 ## 8. Console frontend
 
-Astro island(s) mounted only on `/console/*`, same `tokens.css` token discipline as before (a wet-slate palette is still a reasonable default — revise if you want AutoShorts to have its own visual identity, that's a cheap change). There is no public marketing hero to build here; skip straight to the dashboard. Full spec in `CONSOLE_SPEC.md`.
+Astro island(s) mounted only on `/console/*`, same `tokens.css` token discipline as before — the wet-slate palette's ground tone moved to true black (`--ink: #000000`, `--slate: #0a0a0c`) on 2026-08-28 specifically so WebGL/canvas elements (the Liquid Metal shader, the Siri Wave) read as native to the page rather than sitting in a visibly separate box; see `docs/DECISIONS.md`. One `@astrojs/react` island (`PromptInputBox.tsx`, `/console/chat` only) is the sole framework exception — everything else, including the radial nav's full-screen/compact states, is plain Astro + vanilla TS. There is no public marketing hero to build here; skip straight to the dashboard. Full spec in `CONSOLE_SPEC.md`.
 
 ---
 

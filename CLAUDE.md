@@ -1,10 +1,10 @@
-# CLAUDE.md — AutoShorts AI
+# CLAUDE.md — Mythos Engine
 
 Read this file at the start of every session. Also read `docs/DECISIONS.md` before proposing anything structural, and `PROVISIONED.md` before touching infrastructure.
 
 Symlink `AGENTS.md` → this file so non-Claude agents pick it up too.
 
-> **Pivot notice (2026-08-27):** this repo previously built "MythosEngine," a game-news publishing site. It pivoted to AutoShorts AI on this date — same repo, same underlying Cloudflare Worker and driver patterns where they carry over, entirely different product. `docs/DECISIONS.md` has the full rationale. Do not resurrect MythosEngine-specific concepts (claim citation verification, franchise canon files, provenance strips) without checking whether the analogous AutoShorts concept (policy-safety gate, footage library provenance) already covers the same need.
+> **Pivot notice (2026-08-27):** this repo previously built "MythosEngine," a game-news publishing site. It pivoted to Mythos Engine on this date — same repo, same underlying Cloudflare Worker and driver patterns where they carry over, entirely different product. `docs/DECISIONS.md` has the full rationale. Do not resurrect MythosEngine-specific concepts (claim citation verification, franchise canon files, provenance strips) without checking whether the analogous Mythos Engine concept (policy-safety gate, footage library provenance) already covers the same need.
 
 ---
 

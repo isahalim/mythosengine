@@ -7,6 +7,7 @@ import { dispatchRun, getSummary, setKillswitch } from "../lib/api.ts";
 import { startPolling } from "./poll.ts";
 import { renderKeyList } from "./keys.ts";
 import { renderMcpTokenList } from "./mcp-tokens.ts";
+import { redirectIfUnauthorized } from "../lib/session-guard.ts";
 import { formatBytes, formatRelativeTime } from "../lib/format.ts";
 import { LIVE_STATUS_TEXT } from "../lib/status-style.ts";
 import type { AuditFlagCount, ConsoleSummary, ExportListItem, FootageHealthEntry, PipelinePulse, QuotaSnapshot, TtsStatus } from "../lib/types.ts";
@@ -183,6 +184,7 @@ function showUnavailableState(): void {
 async function refresh(): Promise<void> {
   const result = await getSummary();
   if (!result.ok) {
+    if (redirectIfUnauthorized(result.error)) return;
     showApiError(true);
     showUnavailableState();
     return;

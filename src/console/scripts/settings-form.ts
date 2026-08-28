@@ -5,6 +5,7 @@
 // operator can never activate a form state they haven't previewed.
 import { dryRunSettings, getSettings, putSettings, resetSettingsToDefaults } from "../lib/api.ts";
 import { DEFAULT_DIRECTIVE, DirectiveSchema, type DirectiveFormValues } from "../lib/schema.ts";
+import { redirectIfUnauthorized } from "../lib/session-guard.ts";
 import type { DryRunResult } from "../lib/types.ts";
 
 function form(): HTMLFormElement {
@@ -161,6 +162,7 @@ export function initSettingsForm(): void {
       if (dryRunButton instanceof HTMLButtonElement) dryRunButton.disabled = false;
 
       if (!result.ok) {
+        if (redirectIfUnauthorized(result.error)) return;
         errorBanner?.classList.remove("hidden");
         setStatus(`Dry run failed: ${result.error.message}`);
         return;
@@ -186,6 +188,7 @@ export function initSettingsForm(): void {
       if (activateButton instanceof HTMLButtonElement) activateButton.disabled = true;
       const result = await putSettings(parsed.data);
       if (!result.ok) {
+        if (redirectIfUnauthorized(result.error)) return;
         setStatus(`Activation failed: ${result.error.message}`);
         if (activateButton instanceof HTMLButtonElement) activateButton.disabled = false;
         return;
@@ -201,6 +204,7 @@ export function initSettingsForm(): void {
       const result = await resetSettingsToDefaults();
       if (resetButton instanceof HTMLButtonElement) resetButton.disabled = false;
       if (!result.ok) {
+        if (redirectIfUnauthorized(result.error)) return;
         setStatus(`Reset failed: ${result.error.message}`);
         return;
       }
@@ -213,6 +217,7 @@ export function initSettingsForm(): void {
   void (async () => {
     const result = await getSettings();
     if (!result.ok) {
+      if (redirectIfUnauthorized(result.error)) return;
       errorBanner?.classList.remove("hidden");
       populateForm(DEFAULT_DIRECTIVE);
       return;

@@ -14,7 +14,7 @@ import type { AppDb } from "../../../db/client.ts";
 import { credentials } from "../../../db/schema.ts";
 import { consumeChallenge, storeChallenge } from "./challenge-store.ts";
 
-const RP_NAME = "AutoShorts AI Console";
+const RP_NAME = "Mythos Engine Console";
 const OPERATOR_USER_ID = new TextEncoder().encode("operator");
 const MAX_REGISTERED_CREDENTIALS = 2;
 

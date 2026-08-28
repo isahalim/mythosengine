@@ -1,8 +1,8 @@
-# Operator Console — Specification (AutoShorts AI)
+# Operator Console — Specification (Mythos Engine)
 
 One human. One browser. Four jobs: **prove it's you**, **swap keys safely**, **steer the pipeline in plain English — including voice, speed, script source, and focus game**, **see what it did and download what's ready for your manual review**.
 
-Lives at `/console` on the same Worker that serves the AutoShorts AI status page. `noindex, nofollow` + `X-Robots-Tag`, excluded from any sitemap. Public routes ship zero console JS — separate entry chunk, loaded only on `/console/*`.
+Lives at `/console` on the same Worker that serves the Mythos Engine status page. `noindex, nofollow` + `X-Robots-Tag`, excluded from any sitemap. Public routes ship zero console JS — separate entry chunk, loaded only on `/console/*`.
 
 > Pivoted from MythosEngine's console spec, 2026-08-27; rescoped again 2026-08-27 (later the same day) for manual review — nothing uploads automatically anymore. §1 (auth) is structurally unchanged. §2 (key vault) loses the YouTube refresh token entry — there's no OAuth upload credential left to rotate. §3 is now a pipeline settings composer (voice/rate/sources/games/diversity), not just focus-game steering. §4 is rewritten for a review/export queue instead of an upload-approval queue.
 
@@ -32,6 +32,8 @@ Core risk, updated: **the console can rotate keys and rewrite the settings the p
 ## 1. Auth — passkey / WebAuthn
 
 Unchanged from MythosEngine. `@simplewebauthn/server` / `@simplewebauthn/browser`, `residentKey: 'required'`, `userVerification: 'required'`, exact origin match, 12h session JWT via `__Host-session`, step-up reauth nonce (5 min, single-use) for sensitive actions, signature-counter-regression detection, 8 Argon2id-hashed recovery codes shown once.
+
+**Missing/expired session, client-side (2026-08-28, `docs/DECISIONS.md`):** every console page used to show the identical "Console API not reachable" banner whether the session had lapsed or the API had a real fault — genuinely indistinguishable, and the operator's own reported experience of the console. `src/console/lib/session-guard.ts`'s `redirectIfUnauthorized()` is called first in every failed-API-call branch across every console script; a 401 sends the browser straight to `/console/login?next=<path>` (round-trips back to where the operator was after signing back in) instead of leaving the page sitting there looking broken. The generic banner is now reserved for what it should have always meant: a real network/server failure with a valid session.
 
 ---
 
@@ -146,6 +148,15 @@ Grid of cards, one `GET /console/summary` round-trip, poll every 30s.
 
 **Ready for review and TTS status are the cards that matter.** Everything else is nice to have; those two are what make the operator's daily review fast and complete, and what stop the pipeline from silently going dark because a free unofficial API vanished. Nothing on this dashboard can cause a video to reach YouTube — that action doesn't exist here.
 
+### Navigation — radial nav (desktop), pill nav (mobile)
+
+`src/console/components/RadialNav.astro` + `src/console/scripts/radial-nav.ts`, `md:` breakpoint and up only — an orbital layout has no reasonable room at 390px, where the original flat pill nav (`ConsoleShell.astro`) still renders. Two states, one markup:
+
+- **Expanded** — full-viewport (`position: fixed; inset: 0`, black backdrop over everything including the header), five large nodes with visible labels orbiting a center Liquid Metal shader (`src/shaders/liquid-metal.ts`). Shown by default only on `/console` — the operator's landing page right after signing in.
+- **Collapsed** — the original 92px header widget: small icon-only nodes, no labels, same center shader at a smaller scale. The state every other console page starts in.
+
+Interaction: click a node while expanded → the ring shrinks to the header position, then navigates (a real page load, `COLLAPSE_TRANSITION_MS` after the CSS transition starts) — landing on the destination page already collapsed is what makes this read as "the nav bar shrinks and goes to the top," across a real multi-page-load Astro app that has no client-side router to animate through. Click a node while already collapsed → an ordinary `<a href>` navigation, no JS involved. Click the center shader while collapsed → expands back to full-viewport in place, no navigation. Click empty backdrop space while expanded → collapses without navigating (the escape hatch out of a full-viewport menu).
+
 ---
 
 ## 5. Component sourcing (21st.dev)
@@ -162,7 +173,9 @@ Useful prompts for this domain specifically: *"search 21st for a review queue ro
 
 A separate section from the text chat (`/console/voice`, not a mode inside `/console/chat`), for steering the console by speaking instead of typing — same underlying `AGENT_TOOLS` allowlist, same audit guarantee, different input/output modality. `docs/DECISIONS.md`'s MCP-as-runtime-integration ADR has the full rationale for why MCP is involved here at all — it reverses an earlier, narrower decision that MCP was dev-tool-only.
 
-**Flow:** hold the mic button → `MediaRecorder` captures audio → `POST /console/voice/transcribe` (Groq Whisper, `src/lib/drivers/groq-whisper.ts`) → transcript shown → `POST /console/voice/turn` runs the same tool-calling loop the text chat uses (`src/server/agent/loop.ts`'s `runAgentTurn`), except every tool call is dispatched through the MCP tool contract (`src/server/mcp/server.ts`'s `callMcpTool`) instead of directly — audited as actor `mcp`, not `agent`, so the trail shows which path an action came through. The reply is spoken back via the browser's own `SpeechSynthesis` API, not the Edge TTS driver: Edge TTS shells out to a Python subprocess, which a Cloudflare Worker cannot run (`CLAUDE.md`'s stack list) — this is a deliberate, scoped substitution for this one surface, not a change to the render pipeline's narration TTS.
+**Flow:** hold the orb → `MediaRecorder` captures audio → `POST /console/voice/transcribe` (Groq Whisper, `src/lib/drivers/groq-whisper.ts`) → transcript shown → `POST /console/voice/turn` runs the same tool-calling loop the text chat uses (`src/server/agent/loop.ts`'s `runAgentTurn`), except every tool call is dispatched through the MCP tool contract (`src/server/mcp/server.ts`'s `callMcpTool`) instead of directly — audited as actor `mcp`, not `agent`, so the trail shows which path an action came through. The reply is spoken back via the browser's own `SpeechSynthesis` API, not the Edge TTS driver: Edge TTS shells out to a Python subprocess, which a Cloudflare Worker cannot run (`CLAUDE.md`'s stack list) — this is a deliberate, scoped substitution for this one surface, not a change to the render pipeline's narration TTS.
+
+**The button itself (2026-08-28, `docs/DECISIONS.md`):** a rainbow Siri Orb (21st.dev, educalvolpz — pure CSS conic-gradient, ported into `.siri-orb` in `src/styles/global.css`, no dependency) at idle. Holding it crossfades the orb into the Siri Wave canvas (`src/console/scripts/siri-wave.ts`) over the same footprint — both sit directly on the page's own true-black ground (`tokens.css`'s `--ink`/`--slate`), not inside a separately-colored box, which is what made the wave look "pasted on" before that palette change.
 
 **What it can't do:** identical limit to the text chat — no key rotation, no killswitch, no YouTube upload of any kind. A voice command asking for any of those gets the same "I can't do that, use the dashboard" answer the text agent already gives, because no tool exists for it to call, structurally, not because of a prompt instruction that could be argued around.
 

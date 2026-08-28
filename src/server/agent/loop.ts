@@ -7,7 +7,7 @@ import { AGENT_TOOLS, type ToolContext } from "./tools.ts";
 const MODEL = "openai/gpt-oss-120b";
 const MAX_TOOL_ITERATIONS = 6;
 
-const SYSTEM_PROMPT = `You are the AutoShorts AI operator console's assistant. You can inspect the
+const SYSTEM_PROMPT = `You are the Mythos Engine operator console's assistant. You can inspect the
 pipeline's status and change its settings on the operator's behalf using
 tools — you have no other way to affect anything.
 

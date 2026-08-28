@@ -3,8 +3,15 @@
   This is the only file allowed to declare raw hex values (CLAUDE.md, Stack).
 */
 :root {
-  --ink: #10131a; /* deep blue-black ground */
-  --slate: #232a36; /* panel / card */
+  /* True black ground (2026-08-28, docs/DECISIONS.md) — was a deep
+     blue-black (#10131a); the operator asked for black specifically so
+     WebGL/canvas elements (the Liquid Metal shader, the Siri Wave) read as
+     native to the page instead of sitting in a visibly lighter box. --slate
+     matches the Siri Wave component's own reference demo background
+     (#0a0a0c) for the same reason — one continuous black, not two
+     near-black tones fighting each other at a card edge. */
+  --ink: #000000;
+  --slate: #0a0a0c; /* panel / card, near-black */
   --mercury: #c9d2da; /* the metal; primary text color */
   --oxide: #2f6b57; /* oxidized copper-green — state + provenance ONLY */
   --sodium: #e8944a; /* warm amber CTA */

@@ -37,7 +37,7 @@ export async function watchSource(
   source: typeof sources.$inferSelect,
   options: WatchOptions = {},
 ): Promise<WatchSourceResult> {
-  const userAgent = options.userAgent ?? "AutoShortsAI/0.1 (+https://github.com/isahalim/mythosengine)";
+  const userAgent = options.userAgent ?? "MythosEngine/0.1 (+https://github.com/isahalim/mythosengine)";
   const headers: Record<string, string> = { "user-agent": userAgent };
   if (source.etag) headers["if-none-match"] = source.etag;
   if (source.lastModified) headers["if-modified-since"] = source.lastModified;

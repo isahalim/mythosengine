@@ -6,6 +6,7 @@
 import { discardExport, downloadExportUrl, listExports, markExportReviewed } from "../lib/api.ts";
 import { formatBytes, formatDuration, formatRelativeTime } from "../lib/format.ts";
 import { EXPORT_STATUS_PILL } from "../lib/status-style.ts";
+import { redirectIfUnauthorized } from "../lib/session-guard.ts";
 import type { ExportListItem, ExportStatus } from "../lib/types.ts";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -88,6 +89,7 @@ async function loadStatus(status: ExportStatus): Promise<void> {
 
   const result = await listExports(status);
   if (!result.ok) {
+    if (redirectIfUnauthorized(result.error)) return;
     errorBanner?.classList.remove("hidden");
     list.replaceChildren(el("li", "text-sm text-mercury/50", "Unavailable."));
     return;

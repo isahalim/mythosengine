@@ -4,14 +4,14 @@ Read before running any provisioning command. Everything here was created by the
 
 Last updated: `2026-08-28`
 
-> This infrastructure was originally provisioned for "MythosEngine" and carries over unchanged into the AutoShorts AI pivot (same Worker, same secrets, same Turnstile widget) — only the product built on top of it changed. See `docs/DECISIONS.md`.
+> This infrastructure was originally provisioned for "MythosEngine" and carries over unchanged into the Mythos Engine pivot (same Worker, same secrets, same Turnstile widget) — only the product built on top of it changed. See `docs/DECISIONS.md`.
 
 ## Deployment
 
 | Thing | Value | Notes |
 |---|---|---|
-| Worker name | `mythosengine` | pinned in `wrangler.toml`. Renaming orphans every secret below. Kept as the technical/internal name; the product is branded AutoShorts AI in the console UI only |
-| Live URL | `https://mythosengine.5ryfrrjgmg.workers.dev` | serving the AutoShorts AI status page |
+| Worker name | `mythosengine` | pinned in `wrangler.toml`. Renaming orphans every secret below. Kept as the technical/internal name; the product is branded Mythos Engine in the console UI only |
+| Live URL | `https://mythosengine.5ryfrrjgmg.workers.dev` | serving the Mythos Engine status page |
 | Hosting model | Worker with static assets (`[assets] directory = "./dist"`) | **not** Cloudflare Pages |
 | Custom domain | not registered | operator will handle |
 | Entry point | `src/index.ts` | `/healthz`, `/readyz` (probes the real D1 + KV bindings as of 2026-08-28), `/auth/*` and `/console/*` routed by `src/server/router.ts` (Phase 8), falls through to `env.ASSETS` for everything else |
@@ -34,7 +34,7 @@ Last updated: `2026-08-28`
 
 Verify with `npx wrangler secret list`. If one is missing, name it and stop.
 
-### Not yet provisioned, needed for AutoShorts AI
+### Not yet provisioned, needed for Mythos Engine
 
 These are new requirements from the pivot and do not exist yet. Do not invent placeholder values — ask the operator when the phase that needs them is reached. **There is no YouTube OAuth app in this project's plans** — the manual-review pivot (see `docs/DECISIONS.md`) removed the automated upload path entirely, so no `YOUTUBE_OAUTH_CLIENT_ID`/`_SECRET`/`_REFRESH_TOKEN` is ever needed:
 

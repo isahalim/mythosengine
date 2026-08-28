@@ -6,6 +6,7 @@
 // real "unavailable" state rather than fabricated data.
 import { createChatSession, deleteChatSession, getChatMessages, listChatSessions, sendChatMessage } from "../lib/api.ts";
 import { formatRelativeTime } from "../lib/format.ts";
+import { redirectIfUnauthorized } from "../lib/session-guard.ts";
 import type { ChatMessage, ChatSessionSummary } from "../lib/types.ts";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -52,6 +53,7 @@ async function refreshSessionList(): Promise<void> {
 
   const result = await listChatSessions();
   if (!result.ok) {
+    if (redirectIfUnauthorized(result.error)) return;
     errorBannerEl()?.classList.remove("hidden");
     list.replaceChildren(el("li", "text-sm text-mercury/50", "Unavailable."));
     return;
@@ -141,6 +143,7 @@ async function openSession(sessionId: string): Promise<void> {
   await refreshSessionList();
   const result = await getChatMessages(sessionId);
   if (!result.ok) {
+    if (redirectIfUnauthorized(result.error)) return;
     errorBannerEl()?.classList.remove("hidden");
     renderThread([]);
     return;
@@ -167,6 +170,7 @@ export async function sendComposerMessage(content: string, onBusyChange?: (busy:
   if (!sessionId) {
     const created = await createChatSession();
     if (!created.ok) {
+      if (redirectIfUnauthorized(created.error)) return;
       errorBannerEl()?.classList.remove("hidden");
       return;
     }
@@ -183,6 +187,7 @@ export async function sendComposerMessage(content: string, onBusyChange?: (busy:
   const result = await sendChatMessage(sessionId, trimmed);
   onBusyChange?.(false);
   if (!result.ok) {
+    if (redirectIfUnauthorized(result.error)) return;
     errorBannerEl()?.classList.remove("hidden");
     return;
   }

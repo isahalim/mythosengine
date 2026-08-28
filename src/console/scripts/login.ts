@@ -30,6 +30,12 @@ function statusEl(): HTMLElement | null {
   return document.getElementById("login-status");
 }
 
+/** Where to send the operator after a successful sign-in — honors ?next= (src/console/lib/session-guard.ts sets this when it bounces an expired/missing session here), restricted to same-app paths so this can't become an open redirect. */
+function postLoginDestination(): string {
+  const next = new URLSearchParams(window.location.search).get("next");
+  return next && next.startsWith("/console") && !next.startsWith("//") ? next : "/console";
+}
+
 function setStatus(message: string, isError: boolean): void {
   const el = statusEl();
   if (!el) return;
@@ -61,7 +67,7 @@ async function login(): Promise<void> {
   await postJson("/auth/passkey/authenticate/finish", { challengeId: begin.challengeId, response });
 
   setStatus("Signed in — redirecting…", false);
-  window.location.href = "/console";
+  window.location.href = postLoginDestination();
 }
 
 export function initLogin(): void {

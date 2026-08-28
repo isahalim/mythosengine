@@ -1,4 +1,4 @@
-# Agent Execution Playbook — AutoShorts AI
+# Agent Execution Playbook — Mythos Engine
 
 How to drive a coding agent (Claude Code, Codex CLI, Cursor) through building the system in `ARCHITECTURE.md` without producing the ten failure classes in your reference docs.
 
@@ -75,7 +75,7 @@ Each phase: one agent session, one branch (or, for this pivot, one commit per bo
 
 ### Phase 1 — Skeleton and drivers — partially done
 
-**Done:** `Result<T,E>`, all driver interfaces (now including `TtsDriver`/`DownloadDriver`/`RenderDriver`/`UploadDriver` per `ARCHITECTURE.md` §3), `config/providers.ts`, `TokenBucketLimiter`, `fetchWithRetry`, `GroqLlmDriver`, `MemoryCacheDriver`, `KvCacheDriver` — all contract-tested. `GroqWhisperDriver` and `YtCaptionsDriver` were built for the old project's ASR needs; AutoShorts has no ASR need (Edge TTS's word-boundary events replace forced alignment) — leave them in place unused rather than delete working, tested code on a hunch; `knip` will flag them as genuinely dead if nothing ever calls them, and that's the right time to remove them, not now.
+**Done:** `Result<T,E>`, all driver interfaces (now including `TtsDriver`/`DownloadDriver`/`RenderDriver`/`UploadDriver` per `ARCHITECTURE.md` §3), `config/providers.ts`, `TokenBucketLimiter`, `fetchWithRetry`, `GroqLlmDriver`, `MemoryCacheDriver`, `KvCacheDriver` — all contract-tested. `GroqWhisperDriver` and `YtCaptionsDriver` were built for the old project's ASR needs; Mythos Engine has no ASR need (Edge TTS's word-boundary events replace forced alignment) — leave them in place unused rather than delete working, tested code on a hunch; `knip` will flag them as genuinely dead if nothing ever calls them, and that's the right time to remove them, not now.
 
 **`tts-edge.ts` — done** (2026-08-27). Shells out to `scripts/edge_tts_synth.py`
 (a wrapper this repo owns, calling the `edge_tts` Python library — LGPL-3.0,
@@ -390,7 +390,7 @@ progression — every render reaches EXPORT.
 
 ### Phase 7 — Console frontend — done (2026-08-28)
 
-No public marketing site or hero this time — skip straight to the dashboard, `CONSOLE_SPEC.md` §4 (updated for the review/export queue, not upload approvals). The old "Pending approvals"/"Published" cards are now "Ready for review"/"Reviewed" — a Download button replaces an Approve button, since nothing here ever calls YouTube. Add a Pipeline Settings page: voice pool, rate range, focus games, source weighting, diversity toggle, and a prominent "Reset to defaults" button (`CONSOLE_SPEC.md` §3). Reuse `tokens.css`'s token discipline; revise the palette if you want AutoShorts to look distinct from MythosEngine, that's cheap.
+No public marketing site or hero this time — skip straight to the dashboard, `CONSOLE_SPEC.md` §4 (updated for the review/export queue, not upload approvals). The old "Pending approvals"/"Published" cards are now "Ready for review"/"Reviewed" — a Download button replaces an Approve button, since nothing here ever calls YouTube. Add a Pipeline Settings page: voice pool, rate range, focus games, source weighting, diversity toggle, and a prominent "Reset to defaults" button (`CONSOLE_SPEC.md` §3). Reuse `tokens.css`'s token discipline; revise the palette if you want Mythos Engine to look distinct from MythosEngine, that's cheap.
 
 **Gate:** Lighthouse ≥ 95 on the console's own routes is a nice-to-have, not the bar — this is an internal single-operator tool, not a public page competing on Core Web Vitals. Zero console errors and a clean a11y pass are the actual bar.
 

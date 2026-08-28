@@ -32,7 +32,7 @@ export interface PromptInputBoxProps {
 
 const MAX_TEXTAREA_HEIGHT_PX = 240;
 
-export function PromptInputBox({ placeholder = "Message AutoShorts AI…" }: PromptInputBoxProps) {
+export function PromptInputBox({ placeholder = "Message Mythos Engine…" }: PromptInputBoxProps) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
