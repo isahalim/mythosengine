@@ -8,6 +8,8 @@
   --color-oxide: var(--oxide);
   --color-sodium: var(--sodium);
   --color-bone: var(--bone);
+  --color-violet: var(--violet);
+  --color-rose: var(--rose);
 
   --font-display: var(--font-display);
   --font-body: var(--font-body);
@@ -18,4 +20,34 @@ body {
   background: var(--ink);
   color: var(--mercury);
   font-family: var(--font-body);
+}
+
+/* Console-only glass panel. Pure CSS — no JS, no bundle cost. */
+.glass-card {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 1rem;
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+/* A thin gradient hairline, used sparingly (card top edge, focus rings) —
+   not a fill, never body text. */
+.gradient-accent-border {
+  position: relative;
+}
+.gradient-accent-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--gradient-accent);
+  opacity: 0.55;
+  -webkit-mask:
+    linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
 }

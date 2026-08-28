@@ -10,6 +10,16 @@
   --sodium: #e8944a; /* warm amber CTA */
   --bone: #f2efe9; /* rare high-contrast surface for pull-quotes */
 
+  /* Console-only glass/gradient accents (CONSOLE_SPEC.md §4 bento dashboard).
+     Restrained, not a loud rainbow: a third and fourth hue alongside the
+     existing oxide/sodium, used only for live-status glow and thin
+     gradient borders — never body text or large fills. */
+  --violet: #7c6fdb; /* live/active state glow, third gradient stop */
+  --rose: #d9707a; /* flagged/attention accent, distinct from a hard error red */
+  --glass-bg: color-mix(in srgb, var(--slate) 55%, transparent);
+  --glass-border: color-mix(in srgb, var(--mercury) 14%, transparent);
+  --gradient-accent: linear-gradient(135deg, var(--oxide), var(--sodium) 55%, var(--violet));
+
   --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
   --font-body: "Public Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;

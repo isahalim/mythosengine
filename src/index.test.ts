@@ -39,4 +39,27 @@ describe("worker fetch", () => {
     );
     expect(await res.text()).toBe("<html>home</html>");
   });
+
+  it("adds X-Robots-Tag: noindex, nofollow on every /console/* response", async () => {
+    const assetsResponse = new Response("<html>console</html>", {
+      headers: { "content-type": "text/html" },
+    });
+    const res = await worker.fetch(
+      new Request("https://mythosengine.example/console/settings"),
+      makeEnv(assetsResponse),
+    );
+    expect(res.headers.get("X-Robots-Tag")).toBe("noindex, nofollow");
+    expect(await res.text()).toBe("<html>console</html>");
+  });
+
+  it("does not add X-Robots-Tag on the public homepage", async () => {
+    const assetsResponse = new Response("<html>home</html>", {
+      headers: { "content-type": "text/html" },
+    });
+    const res = await worker.fetch(
+      new Request("https://mythosengine.example/"),
+      makeEnv(assetsResponse),
+    );
+    expect(res.headers.get("X-Robots-Tag")).toBeNull();
+  });
 });

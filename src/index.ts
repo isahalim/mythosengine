@@ -19,6 +19,17 @@ export default {
       );
     }
 
-    return env.ASSETS.fetch(request);
+    const assetResponse = await env.ASSETS.fetch(request);
+
+    // The console is never public — noindex/nofollow at the header level
+    // too, not just the <meta> tag in ConsoleLayout.astro (CONSOLE_SPEC.md:
+    // "noindex, nofollow + X-Robots-Tag, excluded from any sitemap").
+    if (url.pathname === "/console" || url.pathname.startsWith("/console/")) {
+      const headers = new Headers(assetResponse.headers);
+      headers.set("X-Robots-Tag", "noindex, nofollow");
+      return new Response(assetResponse.body, { status: assetResponse.status, headers });
+    }
+
+    return assetResponse;
   },
 };

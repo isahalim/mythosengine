@@ -384,11 +384,15 @@ progression — every render reaches EXPORT.
 
 ---
 
-### Phase 7 — Console frontend
+### Phase 7 — Console frontend — done (2026-08-28)
 
 No public marketing site or hero this time — skip straight to the dashboard, `CONSOLE_SPEC.md` §4 (updated for the review/export queue, not upload approvals). The old "Pending approvals"/"Published" cards are now "Ready for review"/"Reviewed" — a Download button replaces an Approve button, since nothing here ever calls YouTube. Add a Pipeline Settings page: voice pool, rate range, focus games, source weighting, diversity toggle, and a prominent "Reset to defaults" button (`CONSOLE_SPEC.md` §3). Reuse `tokens.css`'s token discipline; revise the palette if you want AutoShorts to look distinct from MythosEngine, that's cheap.
 
 **Gate:** Lighthouse ≥ 95 on the console's own routes is a nice-to-have, not the bar — this is an internal single-operator tool, not a public page competing on Core Web Vitals. Zero console errors and a clean a11y pass are the actual bar.
+
+**Built:** the full bento dashboard (all 10 `CONSOLE_SPEC.md` §4 cards, including a "Run now" dispatch button not originally itemized in the card table), the review/export queue (`src/pages/console/review.astro`, status-filter tabs, Download/Mark reviewed/Discard), and the pipeline settings composer (`src/pages/console/settings.astro`, the full `CONSOLE_SPEC.md` §3 field set, Zod pre-submit validation, mandatory dry-run-before-activate, Reset to defaults). Vanilla Astro + TypeScript, no UI framework — console JS bundle came in at ~25KB gzipped against the 200KB budget. Built against the documented `/console/*` API contract (Phase 8 doesn't exist yet); every card shows an honest loading/unavailable state rather than fabricated data, confirmed via an interactive Playwright walkthrough at 390px/1440px against the real (backend-less) dev server, plus a `window.fetch`-stubbed pass (verification-only, never shipped) to prove the populated-state rendering, killswitch toggle, and key rotate/test flow. Full detail, including two real environment/architecture discoveries made mid-build (the `output: "static"` constraint on which UI pieces can be Astro components vs. must be client-rendered, and a global TypeScript `Element` interface collision from Cloudflare's generated Workers types), in `docs/DECISIONS.md`'s Phase 7 entry.
+
+**Design-direction note:** the operator's request referenced a 3D/interactive hero and rainbow gradients; resolved via `AskUserQuestion` before writing code, since a hero directly conflicts with this phase's own "no public marketing site or hero" line and the console's bundle budget. Applied instead as a restrained glass-panel aesthetic (`--glass-bg`/`--glass-border`/`--gradient-accent` in `tokens.css`) on the dashboard itself — no WebGL, no 3D, no new framework. See `docs/DECISIONS.md` for the full resolution.
 
 ---
 

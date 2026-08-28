@@ -15,16 +15,14 @@ const steps = [
   ["osv-scanner", "osv-scanner", ["-r", "."]],
   ["pnpm audit", "pnpm", ["audit", "--audit-level=high"]],
   ["knip", "npx", ["knip"]],
+  ["console/public bundle isolation", "node", ["scripts/check-console-isolation.mjs"]],
   ["build", "npx", ["astro", "build"]],
   ["test + coverage (80% on src/lib/**)", "npx", ["vitest", "run", "--coverage"]],
   ["size-limit", "npx", ["size-limit"]],
   ["scan dist/ for secrets", "node", ["scripts/scan-bundle-for-secrets.mjs"]],
 ];
 
-const PENDING = [
-  "size-limit JS budget for the hero island (≤60KB gzip) and per-route JS (≤120KB gzip) — " +
-    "no hero/islands exist yet (Phase 7). Currently only the CSS bundle is budgeted.",
-];
+const PENDING = [];
 
 let failed = false;
 
@@ -46,7 +44,9 @@ if (failed) {
 console.log("\n▶ verify-quotas (warns, never fails)");
 spawnSync("node", ["scripts/verify-quotas.mjs"], { stdio: "inherit" });
 
-console.log("\n--- pending, not yet enforceable (see reasons) ---");
-for (const line of PENDING) console.log(`  - ${line}`);
+if (PENDING.length > 0) {
+  console.log("\n--- pending, not yet enforceable (see reasons) ---");
+  for (const line of PENDING) console.log(`  - ${line}`);
+}
 
 console.log("\npnpm verify: all checks passed.");

@@ -1,0 +1,33 @@
+---
+// Console-only layout (CONSOLE_SPEC.md: "noindex, nofollow + X-Robots-Tag,
+// excluded from any sitemap. Public routes ship zero console JS — separate
+// entry chunk, loaded only on /console/*"). Deliberately does not reuse
+// src/layouts/Base.astro's public-page markup beyond the shared font/token
+// imports, so this layout — and everything under src/console/** it pulls
+// in — stays a self-contained chunk the public homepage never touches.
+import "@fontsource/bricolage-grotesque/400.css";
+import "@fontsource/bricolage-grotesque/600.css";
+import "@fontsource/public-sans/400.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "../styles/global.css";
+
+interface Props {
+  title: string;
+}
+
+const { title } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>{title} · AutoShorts AI Console</title>
+    <link rel="icon" href="data:," />
+  </head>
+  <body class="min-h-screen bg-ink text-mercury font-body antialiased">
+    <slot />
+  </body>
+</html>

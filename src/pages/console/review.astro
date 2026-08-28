@@ -1,0 +1,54 @@
+---
+// Full review/export queue (CONSOLE_SPEC.md §4's "Ready for review"/
+// "Reviewed" cards, drilled down). Static shell only — see index.astro's
+// header comment for why: output: "static" means every row here is built
+// client-side by src/console/scripts/review-queue.ts against the real
+// /console/exports API, never baked in at build time.
+import ConsoleLayout from "../../layouts/ConsoleLayout.astro";
+import ConsoleShell from "../../console/components/ConsoleShell.astro";
+
+const tabs: { status: string; label: string }[] = [
+  { status: "ready_for_review", label: "Ready for review" },
+  { status: "reviewed", label: "Reviewed" },
+  { status: "discarded", label: "Discarded" },
+  { status: "expired", label: "Expired" },
+];
+---
+
+<ConsoleLayout title="Review queue">
+  <ConsoleShell active="review" />
+
+  <main class="mx-auto max-w-4xl px-6 pb-16">
+    <div id="console-api-error" data-console-api-error class="glass-card mb-6 hidden p-4 font-mono text-xs text-rose">
+      Console API not reachable — Phase 8's Worker routes aren't wired up yet.
+    </div>
+
+    <div class="mb-6 flex flex-wrap gap-2" role="tablist" aria-label="Export status filter">
+      {
+        tabs.map((tab, i) => (
+          <button
+            type="button"
+            role="tab"
+            aria-selected={i === 0 ? "true" : "false"}
+            data-status-tab={tab.status}
+            class:list={[
+              "rounded-full border px-3 py-1.5 font-mono text-xs uppercase tracking-wide transition-colors",
+              i === 0 ? "border-sodium/50 text-sodium" : "border-mercury/20 text-mercury/60 hover:text-mercury",
+            ]}
+          >
+            {tab.label}
+          </button>
+        ))
+      }
+    </div>
+
+    <ul id="export-list" class="flex flex-col gap-3">
+      <li class="text-sm text-mercury/50">Loading…</li>
+    </ul>
+  </main>
+
+  <script>
+    import { initReviewQueue } from "../../console/scripts/review-queue.ts";
+    initReviewQueue();
+  </script>
+</ConsoleLayout>
