@@ -4,6 +4,12 @@ Never edit or delete an entry. Append a new one if a decision changes.
 
 ---
 
+## 2026-08-27 (very late, post-pivot, follow-up) — Cloudflare's native "Workers Builds" disabled, per the prior entry's recommendation
+
+**What changed:** the operator disabled the Cloudflare-native "Workers Builds" git integration on `mythosengine` (Workers & Pages → Settings → Build), acting on the recommendation in the entry below. `PROVISIONED.md`'s Deployment table now records both that integration (disabled, with why) and the GitHub Actions CD as the one live deploy path — closing the documentation gap that let it go unrecorded since it was set up (`18:31` the same day).
+
+**Why:** it never had a working build command (`dist/` is gitignored, so `wrangler deploy` there had nothing to deploy even before today's `pnpm install` failure existed) and was fully redundant with `CI / deploy`, which does the correct build-then-deploy sequence gated on the full verify suite. No reason to spend effort fixing the `pnpm-workspace.yaml`/`minimumReleaseAge` issue for a path that should not have existed as a second deploy trigger regardless.
+
 ## 2026-08-27 (very late, post-pivot, fix) — `verify` CI failure: `worker-configuration.d.ts` isn't in git, and never got regenerated in CI
 
 **What broke:** the first push to `main` after the CD change (`1b4e017`) failed `CI / verify (push)` with `TS2688: Cannot find type definition file for './worker-configuration.d.ts'`. Separately, the same push showed a *second*, independent failure: Cloudflare's own native "Workers Builds" git integration (a pre-existing auto-deploy path this repo's docs never recorded — see the entry directly below) failed at `pnpm install --frozen-lockfile` with `ERROR packages field missing or empty`.

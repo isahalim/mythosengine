@@ -15,6 +15,8 @@ Last updated: `2026-08-27`
 | Hosting model | Worker with static assets (`[assets] directory = "./dist"`) | **not** Cloudflare Pages |
 | Custom domain | not registered | operator will handle |
 | Entry point | `src/index.ts` | `/healthz`, `/readyz` (503 until D1/KV exist), falls through to `env.ASSETS` |
+| CD | GitHub Actions (`.github/workflows/ci.yml`, `deploy` job) — push to `main`, gated on `verify` passing | See `docs/DECISIONS.md` (2026-08-27, "CD added") |
+| Cloudflare "Workers Builds" (native git integration) | **disabled** by the operator, 2026-08-27 | Existed since `2026-08-27 18:31` (build token), undocumented here until found broken (`packages field missing or empty` + no build command — `dist/` was gitignored and never got built there). Fully redundant with the GitHub Actions CD above. Do not re-enable without giving it a real build command and resolving the `pnpm-workspace.yaml` finding recorded in `docs/DECISIONS.md` |
 
 ## Cloudflare resources
 
