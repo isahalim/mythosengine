@@ -39,6 +39,11 @@
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp@latest"],
       "$note": "Optional. Version-pinned library docs for Astro/Zod/Drizzle/ogl."
+    },
+    "edge-tts-mcp": {
+      "command": "uvx",
+      "args": ["edge_tts_mcp"],
+      "$note": "Dev-time only: sample narration + inspect the subtitle/word-timing output shape before writing src/lib/drivers/tts-edge.ts. Requires Python + uv installed locally. NOT called at runtime by the pipeline -- the production driver speaks the underlying Edge TTS protocol directly (see ARCHITECTURE.md #3). Verified against https://pypi.org/project/edge-tts-mcp/ 2026-08-27; re-check if uvx fails."
     }
   }
 }

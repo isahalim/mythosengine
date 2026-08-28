@@ -1,8 +1,8 @@
-# Autonomous Game-Content Site — System Architecture
+# AutoShorts AI — System Architecture
 
-**Version:** 1.1 — object storage and GPU removed; operator console added.
+**Version:** 2.0 — pivot from MythosEngine (game-news publishing) to an autonomous YouTube Shorts pipeline. See `docs/DECISIONS.md` for the pivot rationale and the tradeoffs it accepted.
 **Owner:** single operator (you). One human account, passkey-authenticated. No public sign-ups.
-**Prime directive:** every runtime dependency has a **permanent** free tier reachable **without entering a credit card**.
+**Prime directive, carried over:** prefer a permanent, card-free free tier wherever one exists. It doesn't exist everywhere here — video generation has real costs the old text-only project didn't. Where it costs money, the cost is small, bounded, and stated plainly (§10), never hidden.
 
 ---
 
@@ -10,166 +10,239 @@
 
 | Service | Permanent free? | Card-free? | Role |
 |---|---|---|---|
-| **Groq Cloud** (Llama 3.3 70B, Whisper) | Yes — rate-limited, no credit system | **Yes** | Primary LLM. ~30 req/min, ~6k tokens/min, ~14.4k req/day, enforced **per organization** (extra keys don't raise limits) |
-| **Cloudflare Workers static assets** | Yes | **Yes** | Hosts the static site *and* the API in one deployment. Cloudflare's recommended path for new projects since Workers reached asset parity with Pages |
-| **Cloudflare Workers** | 100k req/day | **Yes** | API layer, console backend, auth |
-| **Cloudflare D1** | 5 GB, 5M row-reads/day | **Yes** | Pipeline state, claims, runs, audit log |
-| **Cloudflare KV** | 1 GB, 100k reads/day, **1k writes/day** | **Yes** | Hot manifests, rate-limit counters, encrypted key store |
-| **Cloudflare Turnstile** | Yes | **Yes** | Bot protection on the one public POST route |
-| **GitHub Actions** | 2,000 min/mo private, unlimited public | **Yes** | Pipeline runner + scheduler |
-| **YouTube** | Yes | **Yes** | The only video store. Full stop |
+| **Groq Cloud** (Llama 3.3 70B / 3.1 8B) | Yes — rate-limited, no credit system. ~30 req/min, ~6k tokens/min, ~14.4k req/day, enforced per organization | **Yes** | Script generation, critique, title/description/hashtag generation |
+| **Microsoft Edge "Read Aloud" TTS** (unofficial, via the same protocol as `edge-tts`) | Yes, but **not an official product** — no SLA, no ToS-sanctioned standalone use, can break without notice | **Yes** | Narration voice synthesis + native word-boundary timestamps for captions |
+| **Cloudflare Workers static assets** | Yes | **Yes** | Hosts the operator console and its API |
+| **Cloudflare D1** | 5 GB, 5M row-reads/day | **Yes** | Pipeline state, scripts, footage/segment/render/upload records, audit log |
+| **Cloudflare KV** | 1 GB, 100k reads/day, **1k writes/day** | **Yes** | Hot manifests, rate-limit counters, encrypted key vault |
+| **Cloudflare Turnstile** | Yes | **Yes** | Bot protection on any public POST route |
+| **GitHub Actions** | 2,000 min/mo private, unlimited public | **Yes** | Weekly footage refresh, daily render pipeline, scheduler. FFmpeg and yt-dlp both run here — Workers cannot execute native binaries or sustain multi-minute CPU jobs |
+| **GitHub repo (orphan branch)** | Yes, subject to repo size sanity | **Yes** | The footage clip library. Not R2 — R2's free tier requires a card to activate at all; a rotating library of short trimmed clips fits comfortably in a git branch |
+| **YouTube Data API v3** | Yes — 10,000 units/day default quota | **Yes** (Google account, no billing needed for this quota tier) | Upload, and the weekly footage-source discovery search |
+| **Reddit `.json` endpoints, News RSS** | Yes | **Yes** | Zero-key trend sources |
+| **X (Twitter) API** | **No** — the free tier has no meaningful search access as of 2026 | N/A | Not in the default profile. Driver exists, disabled unless the operator has a paid tier |
+| **YouTube Community tab** | No official API | **Yes**, but unofficial/fragile | Best-effort source, same fragility contract as `yt-captions` had in the old project |
 
-**Removed from v1.0 and why:**
+**What this costs in practice:** effectively $0/month at 3 uploads/day, with one caveat — Edge TTS is a free ride on an unofficial API, not a contractual guarantee. `config/providers.ts` keeps TTS behind the same driver interface as everything else specifically so a paid fallback (ElevenLabs, Groq TTS if it ships one) is a single env var away if Microsoft ever closes the endpoint off.
 
-- **Cloudflare R2** — activating it requires a payment method even for the free 10 GB, and with video on YouTube there is nothing left that needs object storage. Site images are build-time static assets served by the Worker (unlimited, free); mutable JSON lives in KV.
-- **Amazon SageMaker / any GPU** — the pipeline produces publishable output with zero GPU calls. Post cards use YouTube's own thumbnail URLs (`i.ytimg.com/vi/<id>/maxresdefault.jpg`); OG images are generated deterministically at build time with `satori` + `resvg`. No inference, no storage, no card.
-
-**Video handling, final:** the system never touches a video byte. It stores a `youtube_id`, the transcript, chapter timestamps, and a clip manifest (`{start, end, label}` arrays for footage references). Playback is an embedded YouTube iframe, lazy-loaded via `lite-youtube-embed` so an embed costs ~3 KB instead of ~700 KB until clicked.
-
-> Quotas change. Treat every number here as **unverified at runtime**. `scripts/verify-quotas.mjs` (Phase 0) re-checks them and warns on drift.
+> Quotas and the Edge TTS endpoint's availability both change without warning. Treat every number here as **unverified at runtime**. `scripts/verify-quotas.mjs` re-checks the documented numbers against `src/config/quotas.ts` and warns on drift; it cannot detect an Edge TTS outage, only the pipeline's own retry/alerting can (§9).
 
 ---
 
 ## 1. Design principles
 
-1. **Everything is a driver.** No provider name appears in business logic. `llm.complete()`, `asr.transcribe()`, `vector.search()`, `cache.put()` are interfaces; providers are adapters selected by env. Directly answers *Interface Abstraction & Decoupling* and *Context Drift* from your failure-mode doc.
-2. **The repository is the database of record.** Published content is MDX committed to Git. D1/KV are derived caches that can be rebuilt from the repo. This gives you free audit trails, free rollback, and free "who changed what" — closing your Compliance/Auditability gap without buying anything.
-3. **The pipeline is a state machine, not a prompt chain.** Every item moves through explicit states with a persisted row. A crashed run resumes; it does not restart.
-4. **The model never publishes.** The model *proposes*. A deterministic gate (schema validation + citation verification + link liveness + policy lint) decides. Autonomy comes from the gate being reliable, not from trusting the model.
-5. **Zero secrets in the browser.** The static site is public and dumb. Anything with a key runs in a Worker or in GitHub Actions.
-6. **Cheap to be wrong.** Every stage is idempotent and keyed, so a retry never double-publishes and never double-charges a quota.
+1. **Everything is a driver.** `llm.complete()`, `tts.synthesize()`, `downloader.fetch()`, `render.compose()`, `upload.publish()` are interfaces; providers are adapters selected by env, exactly as in the driver layer already built (`src/lib/drivers/**`). A provider swap is one new file and one env var.
+2. **The repository is the database of record for the footage library.** Clips live on a git orphan branch with full provenance (source video id, channel, download timestamp, clip timestamp range) committed alongside them — not a mystery blob in someone's bucket.
+3. **The pipeline is a state machine, not a prompt chain.** Every item — signal, script, render, upload — moves through explicit states with a persisted row. A crashed run resumes; it does not restart.
+4. **The model never uploads.** The model *proposes* a script; a separate model pass *critiques* it; a deterministic POLICY GATE (§9) decides whether it's allowed anywhere near FFmpeg or the YouTube API. Autonomy comes from the gate being reliable, not from trusting the model — same philosophy MythosEngine used for citation verification, redirected at a different risk (channel suspension instead of misinformation).
+5. **Footage acquisition is isolated, rate-limited, and the only place third-party video is fetched.** The daily render pipeline never touches the network for footage — it only reads from the already-vetted library. This is both a policy-risk control and a reliability one: a render job that doesn't depend on a live scrape can't fail because YouTube changed its page layout at 1pm.
+6. **Zero secrets in the browser.** Static console assets are public; the OAuth tokens, the vault key, and the Groq key run only in a Worker or in GitHub Actions.
+7. **Cheap to be wrong.** Every stage is idempotent and keyed. A retry never double-uploads and never re-downloads footage already in the library.
 
 ---
 
 ## 2. Topology
 
 ```
-   YOU ──passkey──► console.mythosengine.dev  ┐
-                    ┌───────────────────────┐ │  writes directives, rotates keys,
-                    │  OPERATOR CONSOLE     │ │  reads run history, approves/kills
-                    │  bento dashboard      │ │
-                    │  directive composer   │ │
-                    │  key vault UI         │ │
-                    └───────────┬───────────┘ │
+   YOU ──passkey──► console (Cloudflare Worker)   ┐
+                    ┌───────────────────────┐     │  writes directives, approves
+                    │  OPERATOR CONSOLE      │     │  uploads, reviews scripts,
+                    │  render queue, upload  │     │  rotates keys, kills the run
+                    │  approvals, key vault  │     │
+                    └───────────┬───────────┘     │
                                 │ POST /console/* (WebAuthn session cookie)
                                 ▼
-┌──────────────────────── CONSOLE WORKER (Cloudflare) ───────────────────────┐
-│  auth · directive versioning · encrypted key vault · run queries · kill sw │
-└───────┬───────────────────────────────┬────────────────────────────────────┘
-        │ reads/writes                  │ repository_dispatch (manual re-run)
-        ▼                               ▼
-   ┌──────────┐  ┌────────────┐   ┌──────────────────────────────────────────┐
-   │ D1 (SQL) │  │ KV         │   │  SCHEDULER — GitHub Actions cron (free)  │
-   │ items    │  │ enc. keys  │   │  */30 ingest  ·  hourly build  ·  daily  │
-   │ claims   │  │ hot JSON   │   └───────────────────┬──────────────────────┘
-   │ runs     │  │ ratelimits │                       │ pulls directives + keys
-   │ audit    │  └────────────┘                       ▼
-   │ directive│                 ┌──────────── PIPELINE RUNNER (Node/TS) ─────────────┐
-   └──────────┘                 │ 1 WATCH ▸ 2 NORMALIZE ▸ 3 DEDUPE ▸ 4 RETRIEVE      │
-        ▲                       │   ▸ 5 DRAFT ▸ 6 CRITIC ▸ 7 GATE ▸ 8 COMMIT         │
-        │ writes state          └──┬──────────────────┬──────────────────┬───────────┘
-        └──────────────────────────┘                  │                  │
-                                                      ▼                  ▼
-                                            ┌──────────────┐    ┌────────────────┐
-                                            │  GROQ API    │    │   GIT REPO     │
-                                            │ llama-3.3-70b│    │ content/*.mdx  │
-                                            │ whisper-v3   │    │ (source of     │
-                                            └──────────────┘    │  truth)        │
-   ┌──────────┐                                                 └───────┬────────┘
-   │ SOURCES  │ ──► WATCH                                               │ push
-   │ RSS/Atom │                                                         ▼
-   │ YT RSS   │                                        ┌────────────────────────────┐
-   │ Steam    │                                        │  BUILD (Actions):          │
-   │ Reddit   │                                        │  astro build + satori OG   │
-   └──────────┘                                        │  → wrangler deploy         │
-                                                       │  (Worker + ./dist assets)  │
-                                                       └─────────────┬──────────────┘
-                                                                     ▼
-   READER ──► mythosengine.<sub>.workers.dev ──► static HTML ──► YouTube iframe (lazy)
-                        ├─► /api/recent (KV, cached) · /api/ask (Turnstile + RL)
-                        └─► /console/*  (passkey-gated, same Worker)
+┌──────────────────────── CONSOLE WORKER (Cloudflare) ────────────────────────┐
+│  auth · directive versioning · encrypted key vault · run/upload queries      │
+└───────┬───────────────────────────────┬─────────────────────────────────────┘
+        │ reads/writes                  │ repository_dispatch (manual re-run,
+        ▼                               │ manual approve-and-upload)
+   ┌──────────┐  ┌────────────┐         ▼
+   │ D1 (SQL) │  │ KV         │   ┌───────────────────── SCHEDULER ───────────────────┐
+   │ signals  │  │ enc. keys  │   │  GitHub Actions cron:                             │
+   │ scripts  │  │ hot JSON   │   │   hourly  WATCH (trend ingestion)                 │
+   │ segments │  │ ratelimits │   │   08/13/18 UTC  daily pipeline (script→upload)    │
+   │ renders  │  └────────────┘   │   weekly  FOOTAGE REFRESH (§5.0)                  │
+   │ uploads  │                   └───────────┬───────────────────┬────────────────────┘
+   │ runs     │                               │                   │
+   │ audit    │                               ▼                   ▼
+   │ directive│                   ┌─────── PIPELINE RUNNER (Node/TS, GH Actions) ──────┐
+   └──────────┘                   │ 1 WATCH ▸ 2 SCORE ▸ 3 SCRIPT ▸ 4 CRITIC/POLICY     │
+        ▲                         │  ▸ 5 FOOTAGE SELECT ▸ 6 TTS+CAPTIONS ▸ 7 RENDER    │
+        │ writes state            │  ▸ 8 GATE ▸ 9 UPLOAD                               │
+        └─────────────────────────┴──┬──────────────────┬──────────────────┬──────────┘
+                                     ▼                   ▼                  ▼
+                           ┌──────────────┐    ┌──────────────────┐  ┌──────────────┐
+                           │  GROQ API    │    │  EDGE TTS         │  │ FFmpeg (local │
+                           │ llama-3.3-70b│    │ (unofficial, free)│  │  to the runner)│
+                           └──────────────┘    └───────────────────┘  └──────┬────────┘
+                                                                              │ finished .mp4
+                                                                              ▼
+   ┌─────────────────┐  weekly           ┌──────────────────────┐   ┌───────────────────┐
+   │ WALKTHROUGH      │ ─────────────►   │ FOOTAGE REFRESH job   │   │  YouTube Data API  │
+   │ CREATORS         │  yt-dlp download │  scene/motion scoring │   │  v3 (OAuth upload) │
+   │ (long-form guides)│  (rate-limited)  │  → clip candidates    │   └─────────┬──────────┘
+   └──────────────────┘                  └──────────┬────────────┘             │
+                                                      ▼                          ▼
+                                        ┌─────────────────────────┐   your YouTube channel,
+                                        │ git orphan branch:       │   3 Shorts/day
+                                        │ assets-library (clips +  │
+                                        │ provenance metadata)     │
+                                        └─────────────────────────┘
 ```
 
-**Why GitHub Actions is the runner and not a Worker:** Workers have a CPU-time ceiling per request and no long-running job model on the free plan. The pipeline is a batch job with minute-scale LLM waits. Actions gives you 2,000 free minutes/month on private repos (unlimited on public), a real filesystem, and a secret store — with zero card.
+**Why GitHub Actions is the runner and not a Worker:** unchanged reasoning from MythosEngine, stronger here — FFmpeg rendering and yt-dlp downloads need a real filesystem, real CPU minutes, and the ability to execute a native binary, none of which Workers offer.
 
 ---
 
 ## 3. Provider abstraction
 
-`config/providers.ts` is the only file that knows brand names.
+`config/providers.ts` is the only file that knows brand names — already built this way (see Phase 1 commit). Extended for this pivot:
 
 ```ts
-// config/providers.ts — the ONLY place vendor names appear
-export const config = {
-  llm:    pick(env.LLM_DRIVER,    ['groq', 'workers-ai', 'openai-compat'] as const),
-  asr:    pick(env.ASR_DRIVER,    ['groq-whisper', 'yt-captions', 'none'] as const),
-  embed:  pick(env.EMBED_DRIVER,  ['local-minilm', 'workers-ai'] as const),
-  vector: pick(env.VECTOR_DRIVER, ['sqlite-vec', 'd1-hybrid'] as const),
-  cache:  pick(env.CACHE_DRIVER,  ['kv', 'memory'] as const),   // hot JSON only, never blobs
-} as const;
+export const LLM_DRIVERS      = ['groq', 'workers-ai', 'openai-compat'] as const;
+export const TTS_DRIVERS      = ['edge-tts', 'elevenlabs', 'none'] as const;
+export const DOWNLOAD_DRIVERS = ['yt-dlp'] as const;
+export const RENDER_DRIVERS   = ['ffmpeg-local'] as const;
+export const UPLOAD_DRIVERS   = ['youtube-data-api'] as const;
+export const CACHE_DRIVERS    = ['kv', 'memory'] as const;
 ```
 
 **Default profile (`profiles/free.env`)** — the only profile that has to work:
 
 ```
 LLM_DRIVER=groq
-ASR_DRIVER=yt-captions         # free, no quota; falls back to groq-whisper when captions absent
-EMBED_DRIVER=local-minilm      # transformers.js in the Actions runner — no API, no quota
-VECTOR_DRIVER=sqlite-vec       # local SQLite index, committed as a build artifact
+TTS_DRIVER=edge-tts
+DOWNLOAD_DRIVER=yt-dlp
+RENDER_DRIVER=ffmpeg-local
+UPLOAD_DRIVER=youtube-data-api
 CACHE_DRIVER=kv
 ```
 
-There is no second profile. If a provider ever needs replacing, you write one adapter file and change one env var — that is the entire point of the layer, and it is cheaper than carrying dead configuration for services you decided not to use.
-
-Every adapter implements the same interface **and the same failure contract**: typed errors, explicit timeout, bounded retries with jitter, and a `quota` field on every response so the runner can back off before it gets 429'd.
+Every driver implements the same failure contract already established in `src/lib/drivers/types.ts`: `Result<T, DriverError>`, explicit timeout, bounded retries with jitter, quota fields where the provider exposes them. New interfaces this pivot needs:
 
 ```ts
-export interface LlmDriver {
-  complete(req: LlmRequest): Promise<Result<LlmResponse, LlmError>>;
-  // Result<> not exceptions — forces call sites to handle failure (kills "happy path" bias)
+export interface TtsDriver {
+  synthesize(req: TtsRequest): Promise<Result<TtsResponse, DriverError>>;
+}
+export interface TtsResponse extends Quota {
+  audio: Uint8Array<ArrayBuffer>;
+  mimeType: string;
+  wordTimings: { word: string; startMs: number; endMs: number }[];
+}
+
+export interface DownloadDriver {
+  fetchVideo(req: { url: string; maxDurationS?: number }): Promise<Result<{ filePath: string; durationS: number }, DriverError>>;
+}
+
+export interface RenderDriver {
+  compose(req: RenderRequest): Promise<Result<{ filePath: string; durationS: number }, DriverError>>;
+}
+export interface RenderRequest {
+  footageClipPath: string;
+  narrationAudioPath: string;
+  captionCues: { text: string; startMs: number; endMs: number }[];
+  outputPath: string;
+}
+
+export interface UploadDriver {
+  publish(req: UploadRequest): Promise<Result<{ videoId: string; url: string }, DriverError>>;
+}
+export interface UploadRequest {
+  filePath: string;
+  title: string;
+  description: string;
+  tags: string[];
+  containsSyntheticMedia: true; // always true here — see §9. Confirm the exact
+  // YouTube Data API v3 field name against current docs when Phase 6 implements
+  // this; it has moved/been renamed before and must not be guessed at upload time.
 }
 ```
 
+`DownloadDriver` and `RenderDriver` shell out to `yt-dlp` and `ffmpeg` respectively via `node:child_process` — neither is an npm package, so the "run `npm view`" rule doesn't apply, but the equivalent applies: pin `yt-dlp`'s version explicitly in the GitHub Actions workflow and verify its release checksum, the same supply-chain discipline for a non-npm binary dependency.
+
 ---
 
-## 4. Data model (D1 / SQLite — identical schema both places)
+## 4. Data model (D1 / SQLite)
 
 ```sql
-CREATE TABLE sources (
-  id            TEXT PRIMARY KEY,          -- 'rockstar-newswire'
-  kind          TEXT NOT NULL CHECK (kind IN ('rss','youtube','steam','reddit','html')),
+CREATE TABLE sources (                       -- trend-ingestion sources
+  id            TEXT PRIMARY KEY,            -- 'reddit-r-gaming'
+  kind          TEXT NOT NULL CHECK (kind IN ('reddit','rss','x','youtube_community')),
   url           TEXT NOT NULL,
-  trust_tier    INTEGER NOT NULL CHECK (trust_tier BETWEEN 1 AND 3), -- 1=official
-  franchise     TEXT NOT NULL,             -- 'gta6' | 'wolverine' | ...
   enabled       INTEGER NOT NULL DEFAULT 1,
   last_seen_at  TEXT
 );
 
-CREATE TABLE items (                        -- one raw thing observed in the world
-  id            TEXT PRIMARY KEY,          -- sha256(canonical_url) — natural key, idempotent
+CREATE TABLE signals (                       -- one trending discussion observed
+  id            TEXT PRIMARY KEY,            -- sha256(canonical_url)
   source_id     TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
   canonical_url TEXT NOT NULL,
   title         TEXT NOT NULL,
-  published_at  TEXT NOT NULL,
-  raw_hash      TEXT NOT NULL,
-  simhash       TEXT NOT NULL,             -- near-dup detection
+  observed_at   TEXT NOT NULL,
+  engagement_score REAL NOT NULL,            -- velocity/upvotes-normalized, drives SCORE stage
+  simhash       TEXT NOT NULL,
   state         TEXT NOT NULL CHECK (state IN
-                  ('observed','deduped','retrieved','drafted','critiqued',
-                   'gated','published','rejected','failed')),
+                  ('observed','scored','scripted','critiqued','gated','uploaded','rejected','failed')),
   attempts      INTEGER NOT NULL DEFAULT 0,
   UNIQUE (source_id, canonical_url)
 );
 
-CREATE TABLE claims (                       -- every factual assertion the model makes
+CREATE TABLE scripts (
   id            TEXT PRIMARY KEY,
-  item_id       TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-  text          TEXT NOT NULL,
-  support_url   TEXT,                       -- NULL => unsupported => blocks publish
-  support_span  TEXT,
-  confidence    REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1)
+  signal_id     TEXT NOT NULL REFERENCES signals(id) ON DELETE CASCADE,
+  hook          TEXT NOT NULL,               -- first 3 seconds
+  body          TEXT NOT NULL,
+  debate_question TEXT NOT NULL,
+  word_count    INTEGER NOT NULL,
+  originality_score REAL,                    -- critic-assigned, see §9
+  status        TEXT NOT NULL CHECK (status IN ('draft','approved','rejected'))
 );
 
-CREATE TABLE runs (                         -- observability without an APM bill
+CREATE TABLE footage_sources (                -- tracked long-form walkthrough channels
+  id            TEXT PRIMARY KEY,
+  channel_url   TEXT NOT NULL,
+  game          TEXT NOT NULL,                -- 'minecraft' | 'subway-surfers' | 'gta-v' | ...
+  license_note  TEXT NOT NULL                 -- operator's own recording, explicit reuse grant, etc.
+);
+
+CREATE TABLE footage_segments (                -- clips extracted by the weekly refresh job
+  id            TEXT PRIMARY KEY,
+  footage_source_id TEXT NOT NULL REFERENCES footage_sources(id) ON DELETE CASCADE,
+  source_video_id TEXT NOT NULL,               -- YouTube video id of the long-form source
+  clip_start_s  INTEGER NOT NULL,
+  clip_end_s    INTEGER NOT NULL,
+  motion_score  REAL NOT NULL,                 -- how the weekly job ranked this window
+  library_path  TEXT NOT NULL,                 -- path on the assets-library branch
+  used_count    INTEGER NOT NULL DEFAULT 0,
+  last_used_at  TEXT,
+  fetched_at    TEXT NOT NULL,
+  CHECK (clip_end_s > clip_start_s)
+);
+
+CREATE TABLE renders (
+  id            TEXT PRIMARY KEY,
+  script_id     TEXT NOT NULL REFERENCES scripts(id) ON DELETE CASCADE,
+  footage_segment_id TEXT NOT NULL REFERENCES footage_segments(id),
+  tts_driver    TEXT NOT NULL,
+  duration_s    REAL,
+  status        TEXT NOT NULL CHECK (status IN ('pending','rendered','failed')),
+  gate_result   TEXT                          -- JSON: which POLICY GATE checks passed/failed
+);
+
+CREATE TABLE uploads (
+  id            TEXT PRIMARY KEY,
+  render_id     TEXT NOT NULL REFERENCES renders(id),
+  youtube_video_id TEXT,
+  title         TEXT NOT NULL,
+  description   TEXT NOT NULL,
+  tags_json     TEXT NOT NULL,
+  contains_synthetic_media INTEGER NOT NULL DEFAULT 1,
+  uploaded_at   TEXT,
+  status        TEXT NOT NULL CHECK (status IN ('pending_approval','approved','published','failed'))
+);
+
+CREATE TABLE runs (                          -- observability, same shape as before
   id            TEXT PRIMARY KEY,
   started_at    TEXT NOT NULL, finished_at TEXT,
   stage         TEXT NOT NULL, status TEXT NOT NULL,
@@ -177,278 +250,175 @@ CREATE TABLE runs (                         -- observability without an APM bill
   error_class   TEXT, trace_id TEXT NOT NULL
 );
 
-CREATE TABLE audit_log (                    -- append-only; never UPDATE, never DELETE
+CREATE TABLE audit_log (                     -- append-only; never UPDATE, never DELETE
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  at            TEXT NOT NULL, actor TEXT NOT NULL,   -- 'agent:draft' | 'human:you'
+  at            TEXT NOT NULL, actor TEXT NOT NULL,
   action        TEXT NOT NULL, subject TEXT NOT NULL, detail_json TEXT NOT NULL
 );
 
-CREATE TABLE media_refs (                   -- YouTube references. No bytes, ever.
-  id            TEXT PRIMARY KEY,
-  item_id       TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-  youtube_id    TEXT NOT NULL,
-  kind          TEXT NOT NULL CHECK (kind IN ('source','published')),
-  clip_start_s  INTEGER, clip_end_s INTEGER, label TEXT,
-  CHECK (clip_end_s IS NULL OR clip_end_s > clip_start_s)
-);
-
-CREATE TABLE directives (                   -- operator steering, versioned and revertible
+CREATE TABLE directives (                    -- operator steering, versioned and revertible
   version       INTEGER PRIMARY KEY AUTOINCREMENT,
   created_at    TEXT NOT NULL,
-  raw_text      TEXT NOT NULL,             -- exactly what you typed
-  compiled_json TEXT NOT NULL,             -- parsed + schema-validated structure
+  raw_text      TEXT NOT NULL,
+  compiled_json TEXT NOT NULL,               -- focus games, tone, approval mode, banned topics
   status        TEXT NOT NULL CHECK (status IN ('draft','active','superseded','reverted')),
   parent_version INTEGER REFERENCES directives(version)
 );
 
-CREATE TABLE credentials (                  -- WebAuthn passkeys. One human.
+CREATE TABLE credentials (                   -- WebAuthn passkeys. One human.
   credential_id TEXT PRIMARY KEY,
   public_key    BLOB NOT NULL,
   counter       INTEGER NOT NULL DEFAULT 0,
   transports    TEXT, created_at TEXT NOT NULL, last_used_at TEXT,
-  label         TEXT NOT NULL              -- 'MacBook Touch ID', 'YubiKey 5'
+  label         TEXT NOT NULL
 );
 
-CREATE INDEX idx_items_state_pub ON items(state, published_at DESC);
-CREATE INDEX idx_claims_item     ON claims(item_id);
+CREATE INDEX idx_signals_state    ON signals(state, observed_at DESC);
+CREATE INDEX idx_segments_source  ON footage_segments(footage_source_id, used_count);
 CREATE UNIQUE INDEX idx_directive_active ON directives(status) WHERE status = 'active';
--- ^ partial unique index: exactly one active directive can exist. Enforced by the database,
---   not by application logic, so a race cannot produce two competing sets of instructions.
 ```
 
-Notes that map directly to your hardening checklist: natural-key `UNIQUE` constraints give you idempotency for free; `CHECK` constraints make illegal states unrepresentable at the database layer rather than in prompt instructions; `ON DELETE CASCADE` is explicit everywhere; `audit_log` is append-only.
+Same rationale as before: natural-key `UNIQUE` gives idempotency for free, `CHECK` makes illegal states unrepresentable, `audit_log` is append-only, `footage_segments.used_count`/`last_used_at` is what lets FOOTAGE SELECT (§5.5) rotate clips instead of reusing the same 15 seconds every day.
 
 ---
 
 ## 5. Pipeline stages — contracts
 
-Each stage is a pure-ish function `(input, deps) -> Result<output, error>`, with its own timeout, its own retry policy, and its own row transition. **A stage may only advance an item one state.**
+### 0. FOOTAGE REFRESH (weekly cron — the only stage that touches third-party video)
 
-### 1. WATCH
-- Polls `sources` on a 30-min cron. Conditional GETs (`ETag`/`If-Modified-Since`) so you burn no quota on unchanged feeds.
-- Zero-API-key sources to seed: publisher newswires (RSS), **YouTube channel RSS** (`https://www.youtube.com/feeds/videos.xml?channel_id=…` — no API key), Steam news API (`ISteamNews/GetNewsForApp`, no key), subreddit `.json` endpoints (set a real User-Agent), publisher press-site sitemaps.
-- Output: `items` rows in `observed`.
+- For each `footage_sources` row, `youtube.search` (Data API v3, 100 units/call) for that channel's long-form uploads, sorted by view count, filtered to duration ≥ 20 minutes (walkthrough/guide-length, not another Short).
+- `yt-dlp` downloads the top candidate **only if its video id isn't already represented in `footage_segments`** — this is what makes "the most-watched walkthrough doesn't change often" cheap: most weeks, most channels produce zero new downloads.
+- FFmpeg motion-scoring pass (frame-difference/`signalstats` over a sliding window) ranks candidate windows; the job clips the top-N into 15–30s segments, writes them to the `assets-library` orphan branch with commit metadata (source video id, channel, timestamp range), and inserts `footage_segments` rows.
+- The full long-form download is deleted after clipping — the library holds only the trimmed, transformed segments, never the source video itself.
+- **Known risk, stated plainly, not hidden:** downloading third-party video via `yt-dlp` is itself a YouTube ToS matter, separate from whether the resulting heavily-cropped-and-narrated clip qualifies as transformative use. Isolating this to one weekly, low-volume, fully-audited job is the mitigation this project chose — not a claim that the risk is zero. Revisit if a channel strike or takedown ever traces back to this stage.
 
-### 2. NORMALIZE
-- HTML → readable text (`@mozilla/readability` + `linkedom`), canonical URL resolution, `published_at` normalization to UTC ISO-8601.
-- Video items: fetch transcript. If absent, `ASR_DRIVER=groq-whisper` on the audio. Never store the video.
+### 1. WATCH (hourly cron)
+- Reddit `.json` endpoints (real User-Agent, conditional GET), News RSS, best-effort YouTube Community scraping (typed, fails safe like `yt-captions` did). X disabled in the free profile — no viable free API.
+- Output: `signals` rows in `observed`.
 
-### 3. DEDUPE
-- `simhash` + 3-gram Jaccard against the trailing 30-day window. Same news from 12 aggregators collapses to one item, with the highest-`trust_tier` source promoted to primary and the rest attached as corroboration.
-- This is the single highest-value stage for a games-rumor site: it's what separates you from slop farms.
+### 2. SCORE
+- Engagement-velocity scoring (upvote/comment growth rate, freshness decay), simhash dedupe against the trailing 7-day window.
 
-### 4. RETRIEVE — the multi-RAG layer
+### 3. SCRIPT (Groq, `llama-3.3-70b-versatile`)
+- Structured JSON output only, `schemas/script.schema.json`. Fields: `hook` (≤3s read-aloud), `body`, `debate_question`, target 130–170 words total.
+- The prompt receives the signal's title/summary and nothing else — no general "what you know about X," same hallucination-boundary discipline as MythosEngine's DRAFT stage.
 
-Three retrievers, fused, then re-ranked. All free.
+### 4. CRITIC / POLICY-DRAFT-CHECK (Groq, second pass, adversarial, doesn't see the drafting prompt)
+- Scores `originality_score` 0–1: does this script take a genuine angle, or does it just recite the signal back with narrator filler? Low scores block progression — this is the first half of the POLICY GATE story (§9).
+- Flags anything resembling defamation of a named real person, medical/legal claims stated as fact, or content that reads as a verbatim repost of the source discussion.
 
-| Retriever | Implementation | Purpose |
-|---|---|---|
-| **Lexical** | SQLite FTS5 / BM25 over the item corpus | exact names, patch numbers, quotes |
-| **Dense** | `all-MiniLM-L6-v2` via `transformers.js` in the runner, vectors in `sqlite-vec` | paraphrase + concept matching |
-| **Canon** | Curated franchise fact-file (`data/canon/gta6.yml`) — confirmed facts, dates, platform lists, retracted rumors | prevents the model from re-litigating settled facts |
+### 5. FOOTAGE SELECT
+- Picks a `footage_segments` row matching the directive's focus game(s), weighted away from recently-`last_used_at` segments. Increments `used_count`.
 
-Fusion: **Reciprocal Rank Fusion** (`score = Σ 1/(60 + rank_i)`) — no tuning, no training, robust. Re-rank the top 30 down to 8 chunks with a cheap Groq call (`llama-3.1-8b-instant`) scoring relevance 0–10, so you spend your 70B tokens on generation, not filtering.
+### 6. TTS + CAPTION SYNC (Edge TTS)
+- Synthesizes narration from the approved script text. The protocol returns word-boundary events with audio-offset timestamps in the same response — no separate forced-alignment step needed (verify the exact metadata shape against the current `edge-tts` protocol when the driver is implemented; it is unofficial and has changed shape before).
+- Word timings become `captionCues` for RENDER: rendered as bold, high-contrast text that fades word-group to word-group, matching the reference style in `docs/DECISIONS.md`'s pivot entry.
 
-Every retrieved chunk carries `{source_url, published_at, trust_tier, span}`. **A chunk without provenance is dropped**, not passed to the model.
+### 7. RENDER (FFmpeg, local to the GitHub Actions runner)
+- Crop/scale the footage segment to 1080×1920, filling ≥75% of frame height with gameplay (matches the "transformative" visual treatment the operator specified).
+- Mute the source segment's original audio entirely; mix in the narration track.
+- Burn in captions via an ASS subtitle file (word-timed fade, not a static SRT box) using FFmpeg's `ass` filter.
+- Loop or trim the footage segment to the narration's exact duration.
+- Headless export to MP4, `dist/render/<script_id>.mp4`, deleted after upload succeeds.
 
-### 5. DRAFT (Groq, `llama-3.3-70b-versatile`)
-- Structured output only: JSON Schema → post object. Never free-form prose parsed with regex.
-- The prompt receives *only* the 8 fused chunks + canon + the item. No general "what you know about GTA 6" — that's where hallucination enters.
-- Every sentence in `body_blocks` must carry a `citation_ids[]` array referencing supplied chunk ids.
+### 8. GATE (deterministic — no model call). See §9 for full detail. Fails closed.
 
-### 6. CRITIC (Groq, second pass, adversarial)
-- Separate call, separate system prompt, **does not see the drafting prompt**. Its job is to fail the draft.
-- Emits `claims` rows: for each factual assertion, is it (a) supported by a supplied chunk, (b) contradicted, or (c) unsupported?
-- Rumor discipline: anything not from `trust_tier=1` must be linguistically marked as a report/rumor with attribution. The critic checks the hedging is present, since this is a site about *unreleased* games.
-
-### 7. ASSETS (no GPU, no storage)
-- Video reference: `youtube_id` only. The post renders `lite-youtube-embed`, which ships a poster image plus ~3 KB of JS and only loads the real iframe on click.
-- Card/poster image: YouTube's own thumbnail URL for video items; for text items, a deterministic SVG composed from franchise tokens and the headline. No model, no file to store.
-- OG image: rendered at **build time** with `satori` → `resvg` into a static PNG under `dist/og/`. Served as a static asset by the Worker, free and unlimited.
-- Clip manifest: `{start, end, label, source_youtube_id}[]` persisted to D1 so a post can point at exact footage timestamps without hosting a frame of it.
-
-### 8. GATE (deterministic — no model)
-Fails closed. Publish only if **all** hold:
-- JSON Schema validation passes (Zod).
-- Zero claims with `support_url IS NULL`.
-- Zero claims marked contradicted.
-- Every cited URL returns 2xx/3xx on a HEAD request (link-liveness).
-- Rumor hedging present when max `trust_tier > 1`.
-- Similarity to the last 100 published posts < 0.85 (no accidental republishing).
-- Word count, title length, and slug uniqueness within bounds.
-- Policy lint: no reproduced source paragraphs (n-gram overlap with source text ≤ 12 consecutive words), no embedded copyrighted asset hotlinks.
-
-### 9. COMMIT & DEPLOY
-- Writes `content/posts/<yyyy>/<slug>.mdx` with full front-matter provenance.
-- One semantic commit per post: `feat(gta6): trailer 2 analysis [item:sha256…]`. Not a 400-file monolith — directly addresses the *Unmaintainable Git History* failure mode.
-- Push triggers the GitHub Actions build → `astro build` → `wrangler deploy` (Worker + `./dist` assets in one atomic deployment).
-- KV hot-window refreshed with the last 14 days of post manifests as a **single JSON key** (`recent:v1`), rewritten once per publish batch. One write per batch, not per post — KV's 1,000 writes/day is the tightest Cloudflare limit you have.
+### 9. UPLOAD (YouTube Data API v3, OAuth)
+- LLM-generated title/description/hashtags, schema-validated.
+- Sets the synthetic-media disclosure on the upload request (§9).
+- Two approval modes per the active directive: `auto` (uploads immediately once GATE passes) or `manual` (parks in `uploads.status = 'pending_approval'`, surfaced on the console dashboard for a one-click approve — this is the "Hybrid Execution Control" goal).
 
 ---
 
 ## 6. Runtime API surface (Cloudflare Worker)
 
-The static site needs almost no API. What exists is minimal and hardened:
-
 | Route | Purpose | Protection |
 |---|---|---|
-| `GET /api/recent` | hot-window manifest from KV | cached, no auth needed, 60s edge TTL |
-| `POST /api/ask` | optional RAG chat over your own posts | Turnstile token + sliding-window rate limit (KV counter) + origin allowlist + 400-token cap |
 | `GET /healthz` | liveness | public |
 | `GET /readyz` | D1 + KV reachability | public |
 | `POST /auth/passkey/*` | WebAuthn register + authenticate | origin-bound, one allowed credential |
-| `GET /console/*` | dashboard queries: runs, items, claims, directives | passkey session cookie, `__Host-` prefixed, HttpOnly, SameSite=Strict |
-| `POST /console/directive` | new steering directive | session + CSRF token + schema validation |
-| `POST /console/keys/:name` | validate-then-swap a provider key | session + reauth (fresh WebAuthn assertion < 5 min old) |
-| `POST /console/dispatch` | trigger a pipeline run | session + rate limited to 10/hour |
-| `POST /console/killswitch` | halt publishing immediately | session |
+| `GET /console/*` | dashboard queries: runs, signals, scripts, renders, uploads, directives | passkey session cookie, `__Host-` prefixed, HttpOnly, SameSite=Strict |
+| `POST /console/directive` | new steering directive | session + CSRF + schema validation |
+| `POST /console/keys/:name` | validate-then-swap a provider key | session + reauth (< 5 min old) |
+| `POST /console/dispatch` | trigger a pipeline run ad hoc | session + rate limited to 10/hour |
+| `POST /console/scripts/:id/approve` | approve a `pending_approval` script | session |
+| `POST /console/uploads/:id/approve` | approve a `pending_approval` upload | session + reauth |
+| `POST /console/killswitch` | halt everything immediately | session |
 
-`/api/ask` is the only path where an anonymous browser causes an LLM call. It **proxies**; the browser never sees `GROQ_API_KEY`. Without the rate limiter, a single scraper drains your 14.4k daily requests in about eight minutes.
+No `/api/ask` this time — there's no public content site to chat against. The console is the entire authenticated surface; nothing here causes an anonymous browser to trigger an LLM or upload call.
 
 Full console design: **`CONSOLE_SPEC.md`**.
 
 ---
 
-## 7. Secrets model — what keys you need and how they stay hidden
+## 7. Secrets model
 
-### Keys to create
+| Key | Where you get it | Scope |
+|---|---|---|
+| `GROQ_API_KEY` | console.groq.com | default |
+| `YOUTUBE_OAUTH_CLIENT_ID` / `_SECRET` | Google Cloud Console → OAuth consent screen + credentials | YouTube Data API v3, `youtube.upload` scope only |
+| `YOUTUBE_OAUTH_REFRESH_TOKEN` | one-time consent flow run on the operator's machine, never in CI | long-lived, vault-managed, rotatable from the console like `GROQ_API_KEY` was |
+| `CLOUDFLARE_API_TOKEN` | dash.cloudflare.com | Workers/KV/D1/Turnstile edit, no `Zone:Edit` |
+| `VAULT_MASTER_KEY` / `SESSION_SIGNING_KEY` | `openssl rand -base64 32` | Worker secret only |
+| `TWENTYFIRST_API_KEY` | 21st.dev | dev machine only, never CI/Workers |
 
-| Key | Where you get it | Card? | Scope to request |
-|---|---|---|---|
-| `GROQ_API_KEY` | console.groq.com → API Keys | No | default |
-| `CLOUDFLARE_API_TOKEN` | dash.cloudflare.com → My Profile → API Tokens → **Create Custom Token** | No | `Account:Workers Scripts:Edit`, `Account:Workers KV Storage:Edit`, `Account:D1:Edit`, `Account:Turnstile:Edit`. **Never** use the Global API Key |
-| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare dashboard URL / Workers overview | No | not secret, but keep it out of client code |
-| `GITHUB_TOKEN` | auto-injected in Actions | No | prefer the built-in token; only create a fine-grained PAT if you need cross-repo writes |
-| `TWENTYFIRST_API_KEY` | 21st.dev/mcp | No | dev-machine only — **never** in CI or Workers |
-| `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` | Cloudflare → Turnstile, **or created by the agent via API** (see below) | No | site key is public by design; secret key is server-only |
-| `VAULT_MASTER_KEY` | you generate it: `openssl rand -base64 32` | No | AES-GCM key for the console's encrypted key store. Worker secret only |
-| `SESSION_SIGNING_KEY` | `openssl rand -base64 32` | No | signs console session cookies |
-| `SENTRY_DSN` *(optional)* | sentry.io free tier | No | DSN is semi-public; still keep it in env |
+Edge TTS needs no key at all — that's the entire appeal and the entire risk (§0).
 
-**The agent can create the Turnstile keys itself.** Cloudflare exposes `POST /accounts/{account_id}/challenges/widgets`, which needs a token carrying **Turnstile Sites Write** (`Account:Turnstile:Edit`). A Workers/KV/D1 token does not carry it by default, but you can *edit* an existing token's permissions in the dashboard rather than making a new one. With it, the agent can run:
-
-```bash
-curl "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/challenges/widgets" \
-  --request POST \
-  --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-  --json '{"name":"mythosengine-console","mode":"managed",
-           "domains":["mythosengine.<subdomain>.workers.dev","localhost"]}'
-```
-
-**This is already done — see `PROVISIONED.md`.** The widget exists and `TURNSTILE_SECRET_KEY` is set. Keep the recipe here for the day you add the custom domain, which needs the hostname list updated and `Zone:Edit` on the token. The agent cannot *register* `mythosengine.dev`; a `.dev` registration is a paid transaction at a registrar, and `.dev` is HSTS-preloaded so it is HTTPS-only from day one. Until then everything runs on `mythosengine.<subdomain>.workers.dev`, console at `/console`.
-
-### Where each key lives
-
-```
-Developer machine    →  .env.local          (gitignored, chmod 600)   [21st.dev key, local dev]
-GitHub Actions       →  Repository Secrets  (Settings ▸ Secrets ▸ Actions)
-                        GROQ_API_KEY, CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID
-Cloudflare Worker    →  wrangler secret put (write-only, unreadable afterwards)
-                        GROQ_API_KEY, TURNSTILE_SECRET_KEY, VAULT_MASTER_KEY, SESSION_SIGNING_KEY
-Console key vault    →  KV, AES-GCM encrypted under VAULT_MASTER_KEY  [rotatable provider keys]
-Astro client bundle  →  NOTHING. Ever.
-```
-
-`GITHUB_TOKEN` inside Actions is auto-injected per run — you never create or store it. It is scoped to the repo and expires when the job ends. You only need a fine-grained PAT if the console Worker triggers workflows via `repository_dispatch`; scope that one to a single repo with `actions: write` and nothing else.
-
-### The rules that actually prevent leakage
-
-1. **Prefix discipline.** In Astro, only `PUBLIC_*` variables reach the browser (Vite's equivalent of `NEXT_PUBLIC_`/`REACT_APP_`). Add a build-time assertion that throws if any `PUBLIC_*` name matches `/KEY|SECRET|TOKEN|PASSWORD|DSN/i`.
-2. **Post-build bundle scan.** A CI step greps `dist/` for each secret's *value* (not name) and for high-entropy strings. Fails the build on a hit. This is the step that catches the case where an SSR component accidentally serialized a server object into the HTML payload — the most common real-world leak in generated code.
-3. **`gitleaks detect --no-git` on the working tree + `gitleaks detect` on full history**, in CI and as a pre-commit hook. Prototyping iterations are where keys get committed.
-4. **Never send a key to the browser to "save a hop."** If the client needs LLM output, it hits your Worker. Non-negotiable.
-5. **Rotate on the day of first deploy.** Any key that existed while the agent was iterating should be considered burned — agents paste keys into logs, error messages, and commit messages.
-6. **Worker secrets are write-only.** After `wrangler secret put GROQ_API_KEY`, the value can't be read back from the dashboard. Store your own copy in a password manager, not in the repo.
-7. **Least privilege on Cloudflare.** A token scoped to Workers, KV, D1, and Turnstile cannot be used to nuke your DNS if it leaks.
+**Where each key lives** — unchanged shape from MythosEngine: developer machine `.env.local` (gitignored), GitHub Actions Repository Secrets, `wrangler secret put` for the Worker, the console's own KV vault (AES-GCM under `VAULT_MASTER_KEY`) for rotatable provider keys including the YouTube refresh token. `CLOUDFLARE_API_TOKEN` stays outside the vault, same reasoning as before: a console that can rewrite its own infrastructure credentials is a privilege-escalation path.
 
 ---
 
-## 8. Frontend architecture & the hero
+## 8. Console frontend
 
-### Stack
-- **Astro** with islands. Static by default; the hero is the only hydrated island. Chosen over Next.js because 95% of the site is content pages and you get near-zero JS on article routes — which keeps Core Web Vitals green without a bundle-splitting fight.
-- **Tailwind + a token layer.** Tokens defined once in CSS custom properties; Tailwind consumes them. The agent is forbidden from writing raw hex values outside `tokens.css`.
-- **Content Collections** with a Zod schema for MDX front-matter — the same schema the pipeline validates against, imported from one shared package. Single source of truth between generator and renderer.
-
-### Hero: "ideation becoming reality"
-
-The signature element, stated as a design thesis so the agent doesn't drift into a generic gradient-blob:
-
-> A single bead of liquid metal rests on a dark, veined surface. It is unresolved — a mercury blob holding a smeared, unreadable reflection. As the pointer moves (or as the page scrolls on touch), surface tension breaks and the bead *resolves*: the reflection sharpens into the featured game's key art, the blob's silhouette settling into the shape of the franchise mark. Ideation → reality, rendered literally, in one gesture.
-
-Implementation constraints, because a WebGL hero is where free-tier sites go to die:
-
-- **Budget: ≤ 60 KB gzipped for the hero island**, measured in CI. Use `ogl` or raw WebGL2 with a hand-written GLSL fragment shader (raymarched metaballs + environment-map reflection). Do **not** pull in the full `three` + `@react-three/fiber` + `drei` stack for one effect; that's 400 KB+ and it will show up as a Core Web Vitals regression.
-- **Progressive enhancement, three tiers:**
-  1. No JS / crawler → static poster `<img>` with the resolved key art. The hero's *content* is always present in HTML.
-  2. `prefers-reduced-motion: reduce` → the resolved still frame plus a slow opacity crossfade. No pointer-driven distortion.
-  3. WebGL2 available and device passes a quick perf probe (≥ 30 fps over 500 ms) → full shader. Any failure downgrades silently to tier 1.
-- **Never blocks LCP.** The poster image *is* the LCP element; the canvas fades in over it after `requestIdleCallback`.
-- **Pause when off-screen** via `IntersectionObserver`, and cancel the RAF loop on unmount — your failure-mode doc's *Client-Side Memory & Lifecycle Leaks* item, which shader heroes violate constantly.
-
-### Proposed direction (revise, don't accept blindly)
-
-Deliberately avoiding the three defaults that AI-generated design clusters into (cream + serif + terracotta; near-black + one acid accent; broadsheet hairlines).
-
-```
-Palette — "wet slate"
-  --ink        #10131A   deep blue-black, the leaf-in-shadow ground
-  --slate      #232A36   panel / card
-  --mercury    #C9D2DA   the metal; also the primary text color
-  --oxide      #2F6B57   oxidized copper-green, the "leaf" accent — used ONLY for state and provenance
-  --sodium     #E8944A   warm amber CTA, borrowed from streetlight-at-night key art
-  --bone       #F2EFE9   rare high-contrast surface for pull-quotes
-
-Type
-  Display : a wide grotesk with tight tracking, set very large and very few times
-            (Archivo Expanded / Bricolage Grotesque). Self-hosted via Fontsource — no
-            Google Fonts request, no third-party origin, better privacy and LCP.
-  Body    : a humanist sans with a real italic (Public Sans / Inter Tight)
-  Utility : JetBrains Mono for timestamps, source tiers, patch numbers, confidence scores
-
-Structure that means something
-  Every post header shows a provenance strip: [ TIER 1 · OFFICIAL ] or [ TIER 3 · UNVERIFIED ]
-  rendered in --oxide or --sodium. It is not decoration — it is the site's whole editorial
-  claim, and it is generated from the pipeline's own trust data. That strip is the second
-  signature element and the reason a reader trusts a site that a machine writes.
-```
-
-Spend boldness on the hero and the provenance strip. Everything else stays quiet: generous measure, one column, no card grids with hover-lift, no numbered `01 / 02 / 03` markers unless the content is genuinely sequential.
+Astro island(s) mounted only on `/console/*`, same `tokens.css` token discipline as before (a wet-slate palette is still a reasonable default — revise if you want AutoShorts to have its own visual identity, that's a cheap change). There is no public marketing hero to build here; skip straight to the dashboard. Full spec in `CONSOLE_SPEC.md`.
 
 ---
 
-## 9. Quota budget (free-tier math)
+## 9. The POLICY GATE — why this project doesn't get suspended
 
-Assume 6 published posts/day.
+YouTube's inauthentic-content policy (renamed from "repetitious content," July 2025) explicitly targets mass-produced, templated, reused-visual videos with a three-strike system: warning → 90-day Partner Program suspension → permanent removal. Naive automation — the exact "narrate a script over recycled B-roll on a timer" pattern this project builds — is precisely what it's aimed at. The GATE exists to keep this project on the right side of that line, the same way MythosEngine's citation gate kept it from publishing fiction as fact.
+
+Fails closed. Publish only if **all** hold:
+
+- JSON Schema validation passes on the script and the upload metadata (Zod).
+- `originality_score` (from the CRITIC stage) clears a minimum bar — a script that's just narration over the source signal, no take, is rejected.
+- Word count, hook length, and debate-question presence within bounds.
+- The footage segment came from `footage_segments` (library-only, §1 NEVER) — a render referencing anything else is rejected before FFmpeg ever runs.
+- The same `footage_segment_id` was not used in the last N renders (variety, tracked via `used_count`/`last_used_at`).
+- Similarity to the last 100 uploaded scripts < 0.85 (no accidental self-repetition — the exact failure mode that reads as "templated" to YouTube's classifier).
+- `containsSyntheticMedia` disclosure is set on the upload request — confirm the current Data API v3 field name at implementation time, don't guess it into the schema now.
+- Caption/audio duration match within tolerance (a render where captions run past the narration audio is a rejection, not a "close enough").
+
+Rejected items go to `state = 'rejected'` with the reason, surfaced in the daily digest — same pattern as before.
+
+---
+
+## 10. Quota & cost budget
+
+Assume 3 uploads/day.
 
 | Resource | Per-day consumption | Free ceiling | Headroom |
 |---|---|---|---|
-| Groq requests | ~48 poll-summaries + 6 drafts + 6 critics + ~30 re-ranks ≈ **90** | ~14,400/day | 160× |
-| Groq tokens/min | draft ≈ 6k in / 1.5k out — **must be serialized**, one draft at a time | ~6k TPM | tight → the runner needs a token-bucket limiter |
-| GitHub Actions | 48 ingest runs × ~1.5 min + 6 build runs × ~3 min ≈ **90 min** | 2,000 min/mo private, unlimited public | make the repo public or budget ~22 min/day |
-| Worker deployments | 1–6 | no practical free-plan cap, but each is a full asset upload | **batch commits**; deploy once per publish batch, not per post |
-| Workers requests | reader traffic | 100k/day | fine |
-| D1 rows read | pipeline + `/api/*` | 5M/day | fine |
-| KV writes | ~6 batch manifests + ~40 rate-limit counters ≈ **50** | 1,000/day | fine, but rate-limit counters must be **per-minute buckets with TTL**, not per-request writes |
-| Console | your own browsing; D1 reads only | — | negligible |
+| Groq requests | ~24 score-passes + 3 scripts + 3 critics + 3 metadata-gens ≈ 33 | ~14,400/day | huge |
+| YouTube Data API units | 3 uploads × 1,600 = 4,800/day, + weekly search ≈ 100–500 | 10,000/day | comfortable, watch it if search volume grows |
+| GitHub Actions minutes | hourly WATCH × 24 (~1 min each) + 3 render jobs × ~5 min (FFmpeg is the expensive part) + weekly footage job (~15 min) ≈ ~40 min/day | 2,000 min/mo private | fine — public repo removes the ceiling entirely |
+| KV writes | batch manifest + rate-limit counters ≈ well under 50 | 1,000/day | fine |
+| Edge TTS | 3 × ~150 words ≈ 450 words/day | no formal quota — it's not a real product | **the actual risk isn't quota, it's the endpoint disappearing.** Alert loudly on TTS driver failure, don't silently fall back to a paid provider without telling the operator |
 
-The two real constraints: **Groq tokens-per-minute** (serialize LLM calls, never fan out) and **KV daily writes** (write on publish, not on read). If `/api/ask` ever gets real traffic, move rate limiting to a Durable Object or drop the route — it is optional.
+The two real constraints, updated from before: **YouTube API daily units** (a bad day of manual re-renders/re-uploads burns quota fast — 6 uploads/day is the hard ceiling on the free tier) and **Edge TTS's unofficial status** (this is a reliability risk, not a cost one — budget for it with retries and a loud alert, not with money).
 
 ---
 
-## 10. Failure modes this design closes
-
-Mapped to your ten-domain doc:
+## 11. Failure modes this design closes
 
 | Domain | Closed by |
 |---|---|
-| 1 Architecture | driver interfaces; repo-as-source-of-truth; one shared Zod schema between pipeline and renderer |
-| 2 Security | no client keys; scoped tokens; Turnstile + rate limit on the only LLM-touching route; gitleaks in history + bundle scan; lockfile pinning |
-| 3 Data integrity | natural-key UNIQUE constraints = idempotency; CHECK constraints; state machine with single-step transitions; migrations committed, never `db push` |
-| 4 Reliability | `Result<>` instead of exceptions; per-stage timeouts; backoff + jitter; failed items park in a `failed` state with `attempts` — your DLQ, in SQL |
-| 5 Verification | the GATE is the test suite for content; plus unit tests on dedupe/RRF/citation-verification, and Playwright E2E on the publish path |
-| 6 Performance | static-first Astro; 60 KB hero budget enforced in CI; conditional GETs; batched commits |
-| 7 Observability | `runs` + `audit_log` tables; structured JSON logs with `trace_id`; Discord webhook alert on gate-fail rate > 20% |
-| 8 Compliance | Git history is the audit trail; `audit_log` append-only; no PII collected at all (the strongest possible GDPR posture) |
-| 9 Maintainability | strict TS, no `any`, banned `@ts-ignore`; dead-code scan (`knip`) in CI |
-| 10 Ownership | one semantic commit per post; `docs/DECISIONS.md` ADR log the agent must append to |
+| Platform policy | the POLICY GATE (§9) — the single biggest existential risk to this project, addressed as a first-class deterministic stage, not an afterthought |
+| Copyright/ToS exposure | footage acquisition isolated to one weekly, low-volume, fully-audited job; daily render never touches the network for footage |
+| Architecture | driver interfaces; repo-as-source-of-truth for the footage library; one shared schema between pipeline and console |
+| Security | no client keys; scoped OAuth (`youtube.upload` only, not full account access); Turnstile + rate limit on any public route; gitleaks in history + bundle scan |
+| Data integrity | natural-key UNIQUE = idempotency; CHECK constraints; state machine with single-step transitions |
+| Reliability | `Result<>` instead of exceptions; per-stage timeouts; backoff + jitter; a `failed` state with `attempts` as the DLQ |
+| Observability | `runs` + `audit_log`; alert on GATE rejection rate, Edge TTS failure rate, or 3 consecutive stage failures |
+| Maintainability | strict TS, no `any`, no `@ts-ignore`; `knip` in CI |
+| Ownership | `docs/DECISIONS.md` ADR log, including this pivot itself |

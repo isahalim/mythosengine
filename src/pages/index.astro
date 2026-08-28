@@ -1,16 +1,24 @@
 ---
 import Base from "../layouts/Base.astro";
-import ProvenanceChip from "../components/ProvenanceChip.astro";
 import HeroBead from "../components/HeroBead.astro";
+
+const stages = [
+  ["WATCH", "trending discourse across Reddit, news RSS, YouTube"],
+  ["SCRIPT", "a 130–170 word narrative, hook → body → debate question"],
+  ["FOOTAGE", "a segment from a maintained, provenance-tracked clip library"],
+  ["RENDER", "TTS narration, word-synced captions, FFmpeg composite"],
+  ["GATE", "a deterministic pass–or–reject check — the model never uploads"],
+  ["UPLOAD", "three Shorts a day, or held for one-click approval"],
+];
 ---
 
 <Base
-  title="MythosEngine"
-  description="An autonomous publishing system that verifies every claim against retrieved sources before it publishes anything."
+  title="AutoShorts AI"
+  description="An autonomous system that turns trending discussion into narrated YouTube Shorts, gated by a deterministic policy check before anything uploads."
 >
   <header class="mx-auto flex max-w-5xl items-center justify-between px-6 py-8">
     <span class="font-mono text-sm uppercase tracking-[0.2em] text-mercury">
-      MythosEngine
+      AutoShorts AI
     </span>
     <span class="font-mono text-xs uppercase tracking-wider text-mercury/60">
       Provisioning
@@ -24,13 +32,13 @@ import HeroBead from "../components/HeroBead.astro";
           Ideation, becoming reality.
         </h1>
         <p class="mt-6 max-w-prose text-lg text-mercury/90">
-          MythosEngine ingests news about unreleased games, verifies every
-          factual claim against retrieved sources, and publishes only what
-          survives a deterministic gate. It never states an unconfirmed thing
-          as fact.
+          AutoShorts AI watches trending discussion, writes a narrated script,
+          pairs it with gameplay footage, and publishes to YouTube Shorts
+          three times a day &mdash; nothing uploads without passing a
+          deterministic policy gate first.
         </p>
         <p class="mt-6 font-mono text-sm text-sodium">
-          Pipeline: provisioning — ingestion and drafting are not live yet.
+          Pipeline: provisioning &mdash; ingestion and rendering are not live yet.
         </p>
       </div>
       <HeroBead />
@@ -38,17 +46,22 @@ import HeroBead from "../components/HeroBead.astro";
 
     <section class="border-t border-slate py-16">
       <h2 class="font-display text-2xl font-semibold text-bone">
-        Every post carries its provenance
+        Six stages, one gate
       </h2>
       <p class="mt-4 max-w-prose text-mercury/90">
-        Not decoration — the site's whole editorial claim, generated from the
-        pipeline's own trust data. This is a preview of that strip; no posts
-        exist yet.
+        Every video passes through the same pipeline, in order. Nothing
+        skips the gate.
       </p>
-      <div class="mt-6 flex flex-wrap gap-3">
-        <ProvenanceChip tier={1} label="OFFICIAL" />
-        <ProvenanceChip tier={3} label="UNVERIFIED" />
-      </div>
+      <ol class="mt-6 space-y-3 font-mono text-sm">
+        {
+          stages.map(([name, desc]) => (
+            <li class="flex flex-col gap-1 border-l-2 border-oxide/60 py-1 pl-4 sm:flex-row sm:items-baseline sm:gap-4">
+              <span class="text-oxide">{name}</span>
+              <span class="text-mercury/70">{desc}</span>
+            </li>
+          ))
+        }
+      </ol>
     </section>
   </main>
 
