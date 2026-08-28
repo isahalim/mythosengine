@@ -4,6 +4,23 @@ Never edit or delete an entry. Append a new one if a decision changes.
 
 ---
 
+## 2026-08-27 (later) — Full verify gate wired; Phase 1 driver layer
+
+**What changed:**
+- Wired `TURNSTILE_SITE_KEY` (`0x4AAAAAAEee0w7vUlvWpXFF`, confirmed live in the Cloudflare dashboard) into `wrangler.toml [vars]`.
+- Installed `semgrep` and `osv-scanner` (Homebrew) and added `knip`, `size-limit`, `@vitest/coverage-v8` as dependencies. `scripts/verify.mjs` now runs the complete `AGENT_PLAYBOOK.md` Task 0.3 gate in order: tsc, eslint, gitleaks (tree + history), semgrep (OWASP + TS rulesets), osv-scanner + `pnpm audit`, knip, build, vitest with an enforced 80% branch/line/statement/function coverage threshold on `src/lib/**`, size-limit, and the bundle secret scanner. `verify-quotas.mjs` runs last and warns (never fails) on drift between `src/config/quotas.ts` and `ARCHITECTURE.md`. Added `.github/workflows/ci.yml` running the same gate on push/PR, with every third-party Action pinned to a commit SHA (semgrep's `github-actions-mutable-action-tag` rule caught the initial `@v4` tags — fixed, not suppressed).
+- Only one gate item remains structurally unenforceable right now: size-limit's hero-island JS budget, because no hero/islands exist yet (Phase 7). `scripts/verify.mjs` prints this every run.
+- Built Phase 1 (`AGENT_PLAYBOOK.md` "Skeleton and drivers"): `src/lib/result.ts` (`Result<T,E>`), `src/lib/drivers/types.ts` (all five driver interfaces from ARCHITECTURE.md §3), `config/providers.ts` (`resolveProviderConfig`, the only file that names vendors), `profiles/free.env`.
+- Fully implemented and driver-contract-tested: `GroqLlmDriver`, `GroqWhisperDriver`, `YtCaptionsDriver`, `MemoryCacheDriver`, `KvCacheDriver`, and a shared `TokenBucketLimiter` (dual req/min + tokens/min bucket, FIFO-queued so concurrent `acquire()` calls serialize) and `fetchWithRetry` (hard timeout, bounded retries with jitter, retries only 429/5xx/network, honors `Retry-After`).
+
+**Why:**
+- The user asked to complete the full verify gate and continue into the next build phases in this session.
+- `LocalMinilmEmbedDriver` and `SqliteVecVectorDriver` are typed stubs that always return a `not_implemented` `DriverError` — never a fake success — rather than rushed implementations. Real ones need `transformers.js` model weights and a loadable sqlite-vec extension, and are only meaningful once Phase 4's recall@8 eval set exists to test them against; building them blind now would be exactly the "half-finished implementation" this project's own rules warn against.
+
+**What was rejected:**
+- A live smoke-test call to the real Groq API — `GROQ_API_KEY` lives only in `.env.local`/GitHub Actions secrets, not in this shell's environment, and the driver-contract suite against a local mock HTTP server already exercises every documented failure mode (429 exhaustion, timeout, malformed JSON, empty/shape-mismatched response, non-retryable 4xx) without spending real quota.
+- Two coverage-tool `/* v8 ignore */` pragmas (`http.ts`'s final unreachable return; `rate-limiter.ts`'s defensive rejection handler on an internal function that never rejects) — added only where the code is genuinely unreachable through the public API, not to hide an untested real path. No `eslint-disable` or `@ts-ignore` was used anywhere in this change.
+
 ## 2026-08-27 — Phase 0/1 skeleton: repo now matches PROVISIONED.md, minimal homepage live
 
 **What changed:**

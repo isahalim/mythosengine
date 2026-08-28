@@ -16,14 +16,12 @@ const steps = [
   ["pnpm audit", "pnpm", ["audit", "--audit-level=high"]],
   ["knip", "npx", ["knip"]],
   ["build", "npx", ["astro", "build"]],
-  ["test", "npx", ["vitest", "run"]],
+  ["test + coverage (80% on src/lib/**)", "npx", ["vitest", "run", "--coverage"]],
   ["size-limit", "npx", ["size-limit"]],
   ["scan dist/ for secrets", "node", ["scripts/scan-bundle-for-secrets.mjs"]],
 ];
 
 const PENDING = [
-  "vitest coverage thresholds (80% on src/lib/**) — src/lib/** doesn't exist yet (Phase 1 drivers). " +
-    "Add @vitest/coverage-v8 and a coverage.thresholds block to vitest config once it does.",
   "size-limit JS budget for the hero island (≤60KB gzip) and per-route JS (≤120KB gzip) — " +
     "no hero/islands exist yet (Phase 7). Currently only the CSS bundle is budgeted.",
 ];
