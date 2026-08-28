@@ -11,7 +11,7 @@
 | Service | Permanent free? | Card-free? | Role |
 |---|---|---|---|
 | **Groq Cloud** (Llama 3.3 70B / 3.1 8B) | Yes — rate-limited, no credit system. ~30 req/min, ~6k tokens/min, ~14.4k req/day, enforced per organization | **Yes** | Script generation, critique, title/description/hashtag generation |
-| **Microsoft Edge "Read Aloud" TTS** (unofficial, via the same protocol as `edge-tts`) | Yes, but **not an official product** — no SLA, no ToS-sanctioned standalone use, can break without notice | **Yes** | Narration voice synthesis + native word-boundary timestamps for captions |
+| **Microsoft Edge "Read Aloud" TTS**, via the `edge_tts` Python library (LGPL-3.0, `rany2/edge-tts`), invoked as a subprocess | Yes, but **not an official product** — no SLA, no ToS-sanctioned standalone use, can break without notice | **Yes** | Narration voice synthesis + word-level timestamps for captions |
 | **Cloudflare Workers static assets** | Yes | **Yes** | Hosts the operator console and its API |
 | **Cloudflare D1** | 5 GB, 5M row-reads/day | **Yes** | Pipeline state, scripts, footage/segment/render/upload records, audit log |
 | **Cloudflare KV** | 1 GB, 100k reads/day, **1k writes/day** | **Yes** | Hot manifests, rate-limit counters, encrypted key vault |
@@ -311,7 +311,7 @@ Same rationale as before: natural-key `UNIQUE` gives idempotency for free, `CHEC
 - Picks a `footage_segments` row matching the directive's focus game(s), weighted away from recently-`last_used_at` segments. Increments `used_count`.
 
 ### 6. TTS + CAPTION SYNC (Edge TTS)
-- Synthesizes narration from the approved script text. The protocol returns word-boundary events with audio-offset timestamps in the same response — no separate forced-alignment step needed (verify the exact metadata shape against the current `edge-tts` protocol when the driver is implemented; it is unofficial and has changed shape before).
+- `src/lib/drivers/tts-edge.ts` shells out to `scripts/edge_tts_synth.py`, a thin wrapper around the `edge_tts` Python library requesting `WordBoundary` events explicitly (the bare `edge-tts` CLI hard-codes sentence-level boundaries and has no flag to change that — confirmed by testing it directly, not assumed). Returns audio bytes plus one `{word, startMs, endMs}` entry per word — no separate forced-alignment step needed.
 - Word timings become `captionCues` for RENDER: rendered as bold, high-contrast text that fades word-group to word-group, matching the reference style in `docs/DECISIONS.md`'s pivot entry.
 
 ### 7. RENDER (FFmpeg, local to the GitHub Actions runner)

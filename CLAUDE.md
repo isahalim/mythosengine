@@ -22,8 +22,8 @@ A single-operator platform that monitors trending, polarizing discourse across R
 - **One Cloudflare Worker with static assets** — serves the console and the API. **Not Pages.**
 - **D1** (Drizzle) for state, **KV** for hot JSON and the encrypted key vault
 - **Groq** (`llama-3.3-70b-versatile`, `llama-3.1-8b-instant`) for script generation, critique, and metadata (title/description/hashtags)
-- **Microsoft Edge TTS** (unofficial, free, no key — see `ARCHITECTURE.md` §3) for narration voice synthesis, with native word-boundary timestamps driving the caption track
-- **yt-dlp + FFmpeg**, run in **GitHub Actions** (Cloudflare Workers cannot run FFmpeg — no native binary execution, hard CPU-time ceiling) for the weekly footage-refresh job and the per-render video pipeline
+- **Microsoft Edge TTS** (unofficial, free, no key — see `ARCHITECTURE.md` §3), via the `edge_tts` Python library shelled out to from `src/lib/drivers/tts-edge.ts`, for narration + word-level caption timing
+- **yt-dlp + FFmpeg + Python 3** (for `edge_tts`), run in **GitHub Actions** (Cloudflare Workers cannot run FFmpeg or spawn subprocesses — no native binary execution, hard CPU-time ceiling) for the weekly footage-refresh job and the per-render video pipeline
 - **YouTube Data API v3** (OAuth) for upload, and for the weekly footage-source discovery search
 - **GitHub Actions** as the pipeline runner and scheduler for everything compute-heavy; a Git orphan branch (`assets-library`) as the footage clip store — no R2, no paid object storage
 - Node 22, pnpm

@@ -59,6 +59,30 @@ export interface AsrDriver {
   transcribe(req: AsrRequest): Promise<Result<AsrResponse, DriverError>>;
 }
 
+export interface TtsRequest {
+  text: string;
+  voice: string;
+  rate?: string; // e.g. "+0%"
+  volume?: string; // e.g. "+0%"
+  pitch?: string; // e.g. "+0Hz"
+}
+
+export interface TtsWordTiming {
+  word: string;
+  startMs: number;
+  endMs: number;
+}
+
+export interface TtsResponse extends Quota {
+  audio: Uint8Array<ArrayBuffer>;
+  mimeType: string;
+  wordTimings: TtsWordTiming[];
+}
+
+export interface TtsDriver {
+  synthesize(req: TtsRequest): Promise<Result<TtsResponse, DriverError>>;
+}
+
 export interface EmbedRequest {
   texts: string[];
 }
