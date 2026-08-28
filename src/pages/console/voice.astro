@@ -1,0 +1,52 @@
+---
+// Voice control — a separate section from the text /console/chat, per the
+// operator's explicit request. Speech-to-text via Groq Whisper
+// (POST /console/voice/transcribe), tool calls dispatched through the MCP
+// tool contract (POST /console/voice/turn -> src/server/mcp/server.ts),
+// spoken replies via the browser's own SpeechSynthesis — not the Edge TTS
+// driver, which shells out to a Python subprocess a Cloudflare Worker
+// cannot run (docs/DECISIONS.md's MCP-as-runtime-integration ADR).
+// Static shell only, same output: "static" constraint as every other
+// console page — src/console/scripts/voice.ts drives it at runtime.
+import ConsoleLayout from "../../layouts/ConsoleLayout.astro";
+import ConsoleShell from "../../console/components/ConsoleShell.astro";
+---
+
+<ConsoleLayout title="Voice">
+  <ConsoleShell active="voice" />
+
+  <main class="mx-auto flex h-[calc(100vh-5.5rem)] max-w-3xl flex-col gap-4 px-6 pb-6">
+    <div id="console-api-error" data-console-api-error class="glass-alert hidden">Console API not reachable.</div>
+
+    <section id="voice-gradient" class="glass-card gradient-interactive flex min-h-0 flex-1 flex-col overflow-hidden">
+      <ul id="voice-thread" class="relative flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 py-6">
+        <li class="mx-auto max-w-md py-12 text-center font-body text-sm text-mercury/50">
+          Hold the mic and ask it to check the pipeline status, preview a settings change, or trigger a run.
+        </li>
+      </ul>
+
+      <div class="relative flex flex-col items-center gap-3 p-6 pt-0">
+        <div class="flex h-16 w-full max-w-md items-center justify-center">
+          <canvas id="voice-wave" width="480" height="64" class="h-16 w-full" aria-hidden="true"></canvas>
+        </div>
+        <p id="voice-status" data-field class="font-body text-xs text-mercury/50">Hold the button and speak</p>
+        <button
+          type="button"
+          id="voice-record-button"
+          aria-label="Hold to talk"
+          class="flex h-16 w-16 items-center justify-center rounded-full bg-bone text-ink transition-transform active:scale-95 disabled:opacity-40"
+        >
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <rect x="9" y="2" width="6" height="12" rx="3" fill="currentColor" />
+            <path d="M5 11a7 7 0 0 0 14 0M12 18v4" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+          </svg>
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    import { initVoice } from "../../console/scripts/voice.ts";
+    initVoice();
+  </script>
+</ConsoleLayout>

@@ -45,9 +45,6 @@ function threadEl(): HTMLElement | null {
 function errorBannerEl(): HTMLElement | null {
   return document.querySelector<HTMLElement>("[data-console-api-error]");
 }
-function composerFormEl(): HTMLFormElement | null {
-  return document.getElementById("chat-composer") as HTMLFormElement | null;
-}
 
 async function refreshSessionList(): Promise<void> {
   const list = sessionListEl();
@@ -152,13 +149,47 @@ async function openSession(sessionId: string): Promise<void> {
   renderThread(result.value);
 }
 
-function setComposerBusy(busy: boolean): void {
-  const form = composerFormEl();
-  if (!form) return;
-  const textarea = form.querySelector("textarea");
-  const button = form.querySelector("button");
-  if (textarea) textarea.disabled = busy;
-  if (button) (button as HTMLButtonElement).disabled = busy;
+/**
+ * Sends one composer message to completion: creates a session if this is
+ * the first message, optimistically renders the user's bubble, sends the
+ * turn, and refreshes both the session list and thread. Framework-agnostic
+ * on purpose — src/console/components/PromptInputBox.tsx (a React island,
+ * the only React anywhere in this project) calls this the same way the
+ * plain-DOM composer used to, via the "chat:send" bridge event wired in
+ * src/pages/console/chat.astro, rather than duplicating this orchestration
+ * in the island itself.
+ */
+export async function sendComposerMessage(content: string, onBusyChange?: (busy: boolean) => void): Promise<void> {
+  const trimmed = content.trim();
+  if (!trimmed) return;
+
+  let sessionId = activeSessionId;
+  if (!sessionId) {
+    const created = await createChatSession();
+    if (!created.ok) {
+      errorBannerEl()?.classList.remove("hidden");
+      return;
+    }
+    sessionId = created.value.id;
+    activeSessionId = sessionId;
+  }
+
+  onBusyChange?.(true);
+  const existing = await getChatMessages(sessionId);
+  if (existing.ok) {
+    renderThread([...existing.value, { id: "pending", role: "user", content: trimmed, toolName: null, toolArgsJson: null, toolResultJson: null, createdAt: new Date().toISOString() }]);
+  }
+
+  const result = await sendChatMessage(sessionId, trimmed);
+  onBusyChange?.(false);
+  if (!result.ok) {
+    errorBannerEl()?.classList.remove("hidden");
+    return;
+  }
+  errorBannerEl()?.classList.add("hidden");
+  await refreshSessionList();
+  const refreshed = await getChatMessages(sessionId);
+  if (refreshed.ok) renderThread(refreshed.value);
 }
 
 export function initChat(): void {
@@ -167,58 +198,6 @@ export function initChat(): void {
     void (async () => {
       const result = await createChatSession();
       if (result.ok) await openSession(result.value.id);
-    })();
-  });
-
-  const form = composerFormEl();
-  const textareaEl = form?.querySelector("textarea");
-  textareaEl?.addEventListener("input", () => {
-    textareaEl.style.height = "auto";
-    textareaEl.style.height = `${textareaEl.scrollHeight}px`;
-  });
-  textareaEl?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      form?.requestSubmit();
-    }
-  });
-
-  form?.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const textarea = form.querySelector("textarea");
-    const content = textarea?.value.trim();
-    if (!content) return;
-
-    void (async () => {
-      let sessionId = activeSessionId;
-      if (!sessionId) {
-        const created = await createChatSession();
-        if (!created.ok) {
-          errorBannerEl()?.classList.remove("hidden");
-          return;
-        }
-        sessionId = created.value.id;
-        activeSessionId = sessionId;
-      }
-
-      setComposerBusy(true);
-      if (textarea) {
-        textarea.value = "";
-        textarea.style.height = "auto";
-      }
-      const existing = await getChatMessages(sessionId);
-      if (existing.ok) renderThread([...existing.value, { id: "pending", role: "user", content, toolName: null, toolArgsJson: null, toolResultJson: null, createdAt: new Date().toISOString() }]);
-
-      const result = await sendChatMessage(sessionId, content);
-      setComposerBusy(false);
-      if (!result.ok) {
-        errorBannerEl()?.classList.remove("hidden");
-        return;
-      }
-      errorBannerEl()?.classList.add("hidden");
-      await refreshSessionList();
-      const refreshed = await getChatMessages(sessionId);
-      if (refreshed.ok) renderThread(refreshed.value);
     })();
   });
 

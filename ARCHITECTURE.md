@@ -313,7 +313,7 @@ Same rationale as before: natural-key `UNIQUE` gives idempotency for free, `CHEC
 ### 2. SCORE
 - Engagement-velocity scoring (upvote/comment growth rate, freshness decay), simhash dedupe against the trailing 7-day window.
 
-### 3. SCRIPT (Groq, `llama-3.3-70b-versatile`)
+### 3. SCRIPT (Groq, `openai/gpt-oss-120b` — `llama-3.3-70b-versatile` deprecated by Groq 2026-06-17)
 - Structured JSON output only, `schemas/script.schema.json`. Fields: `hook` (≤3s read-aloud), `body`, `debate_question`, target 130–170 words total.
 - The prompt receives the signal's title/summary and nothing else — no general "what you know about X," same hallucination-boundary discipline as MythosEngine's DRAFT stage.
 - Which signal gets scripted next weights `directives.compiled_json.preferred_source_ids` (favor signals from those sources) and, when `diversity_mode` is on, actively spreads the day's 3 picks across different `sources.id` values rather than always taking the single highest-`engagement_score` signal — queries today's already-`scripted` signals (via `scripts.created_at`) to know what's already been picked today.
@@ -367,7 +367,17 @@ Same rationale as before: natural-key `UNIQUE` gives idempotency for free, `CHEC
 | `GET /console/settings` | current pipeline settings (voice pool, rate, focus games, source weighting, diversity mode) | session |
 | `PUT /console/settings` | update pipeline settings — compiles to a new directive | session + CSRF + schema validation |
 | `POST /console/settings/reset-defaults` | compile + activate the canonical default directive (diverse games/sources/voices) | session |
-| `POST /console/killswitch` | halt everything immediately | session |
+| `POST /console/killswitch` | halt everything immediately | session + reauth (< 5 min old) |
+| `GET /console/chat/sessions` / `POST /console/chat/sessions` | list / start a chat-agent session | session |
+| `DELETE /console/chat/sessions/:id` | delete a chat session | session |
+| `GET /console/chat/sessions/:id/messages` | full message history for one session | session |
+| `POST /console/chat/sessions/:id/message` | one turn of the Groq tool-calling chat agent (`src/server/agent/**`) | session |
+| `POST /console/mcp` | MCP JSON-RPC endpoint (`initialize`/`tools/list`/`tools/call`) over the same `AGENT_TOOLS` allowlist the chat agent uses — no key rotation or killswitch tool exists, by construction | session cookie **or** a bearer token verified against `mcp_tokens` (external MCP clients — Claude Desktop, Claude Code) |
+| `GET /console/mcp-tokens` | list issued MCP access tokens (label, timestamps — never the token itself) | session |
+| `POST /console/mcp-tokens` | issue a new MCP access token, shown once | session + reauth (< 5 min old) — credential-equivalent, same bar as key rotation |
+| `DELETE /console/mcp-tokens/:id` | revoke an MCP access token | session |
+| `POST /console/voice/transcribe` | speech-to-text via Groq Whisper for the voice control surface | session |
+| `POST /console/voice/turn` | one voice turn — transcript in, tool calls dispatched through `POST /console/mcp`'s exact contract (actor `mcp` in `audit_log`, not `agent`) | session |
 
 No `/api/ask` this time — there's no public content site to chat against. The console is the entire authenticated surface; nothing here causes an anonymous browser to trigger an LLM call, and there is no upload call anywhere in this system to trigger.
 

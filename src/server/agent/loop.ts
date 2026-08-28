@@ -4,7 +4,7 @@ import { appendChatMessage, getChatMessages, type ChatMessageRow } from "../cons
 import { writeAuditLog } from "../audit.ts";
 import { AGENT_TOOLS, type ToolContext } from "./tools.ts";
 
-const MODEL = "llama-3.3-70b-versatile";
+const MODEL = "openai/gpt-oss-120b";
 const MAX_TOOL_ITERATIONS = 6;
 
 const SYSTEM_PROMPT = `You are the AutoShorts AI operator console's assistant. You can inspect the
@@ -47,6 +47,28 @@ export interface AgentTurnResult {
 }
 
 /**
+ * How a tool call the model asked for actually gets executed and audited.
+ * Defaults to calling AGENT_TOOLS directly with actor "agent" (the text
+ * chat's exact prior behavior, unchanged). The voice surface
+ * (src/server/router.ts's /console/voice/turn) instead supplies an invoker
+ * that dispatches through src/server/mcp/server.ts's callMcpTool, so a
+ * voice-triggered action is audited as actor "mcp" — same AGENT_TOOLS
+ * allowlist either way, just a different, traceable calling contract.
+ */
+export interface ToolInvoker {
+  invoke(ctx: ToolContext, sessionId: string, name: string, args: unknown, now: () => number): Promise<{ ok: boolean; data: unknown }>;
+}
+
+const directToolInvoker: ToolInvoker = {
+  async invoke(ctx, sessionId, name, args, now) {
+    const toolDef = AGENT_TOOLS.find((t) => t.definition.name === name);
+    const result = toolDef ? await toolDef.execute(ctx, args) : { ok: false, data: { error: "unknown_tool" } };
+    await writeAuditLog(ctx.db, "agent", `tool.${name}`, sessionId, { args, result }, now);
+    return result;
+  },
+};
+
+/**
  * Runs one user turn to completion: appends the user message, loops the
  * model against AGENT_TOOLS until it stops calling tools (or hits
  * MAX_TOOL_ITERATIONS, to guarantee termination), persisting every step to
@@ -54,7 +76,15 @@ export interface AgentTurnResult {
  * what happened — including every tool call, since CONSOLE_SPEC.md's
  * "nothing hides an action from the reviewer" guarantee applies here too.
  */
-export async function runAgentTurn(llm: LlmDriver, db: AppDb, ctx: ToolContext, sessionId: string, userContent: string, now: () => number = Date.now): Promise<AgentTurnResult> {
+export async function runAgentTurn(
+  llm: LlmDriver,
+  db: AppDb,
+  ctx: ToolContext,
+  sessionId: string,
+  userContent: string,
+  now: () => number = Date.now,
+  invoker: ToolInvoker = directToolInvoker,
+): Promise<AgentTurnResult> {
   await appendChatMessage(db, sessionId, "user", userContent, {}, now);
 
   const toolCallsMade: string[] = [];
@@ -83,7 +113,6 @@ export async function runAgentTurn(llm: LlmDriver, db: AppDb, ctx: ToolContext, 
       return { finalMessage: result.value.content, toolCallsMade };
     }
 
-    const toolDef = AGENT_TOOLS.find((t) => t.definition.name === call.name);
     let args: unknown;
     try {
       args = JSON.parse(call.argumentsJson);
@@ -91,10 +120,9 @@ export async function runAgentTurn(llm: LlmDriver, db: AppDb, ctx: ToolContext, 
       args = {};
     }
 
-    const execResult = toolDef ? await toolDef.execute(ctx, args) : { ok: false, data: { error: "unknown_tool" } };
+    const execResult = await invoker.invoke(ctx, sessionId, call.name, args, now);
     toolCallsMade.push(call.name);
 
-    await writeAuditLog(db, "agent", `tool.${call.name}`, sessionId, { args, result: execResult }, now);
     await appendChatMessage(
       db,
       sessionId,

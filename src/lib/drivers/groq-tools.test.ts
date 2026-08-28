@@ -55,7 +55,7 @@ describe("GroqLlmDriver tool calling", () => {
   it("sends tool definitions in OpenAI function-calling wire format", async () => {
     const driver = makeDriver(await mock.baseUrl);
     await driver.complete({
-      model: "llama-3.3-70b-versatile",
+      model: "openai/gpt-oss-120b",
       messages: [{ role: "user", content: "what's the pipeline status?" }],
       tools: [{ name: "get_summary", description: "Get the dashboard summary", parameters: { type: "object", properties: {} } }],
       toolChoice: "auto",
@@ -68,7 +68,7 @@ describe("GroqLlmDriver tool calling", () => {
 
   it("parses a tool-call response, including when content is null", async () => {
     const driver = makeDriver(await mock.baseUrl);
-    const result = await driver.complete({ model: "llama-3.3-70b-versatile", messages: [{ role: "user", content: "hi" }] });
+    const result = await driver.complete({ model: "openai/gpt-oss-120b", messages: [{ role: "user", content: "hi" }] });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.content).toBe("");
@@ -80,7 +80,7 @@ describe("GroqLlmDriver tool calling", () => {
   it("serializes a prior assistant tool-call and its tool-result message back onto the wire", async () => {
     const driver = makeDriver(await mock.baseUrl);
     await driver.complete({
-      model: "llama-3.3-70b-versatile",
+      model: "openai/gpt-oss-120b",
       messages: [
         { role: "user", content: "run the pipeline" },
         { role: "assistant", content: "", toolCalls: [{ id: "call_1", name: "dispatch_run", argumentsJson: "{}" }] },

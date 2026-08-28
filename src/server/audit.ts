@@ -1,7 +1,12 @@
 import type { AppDb } from "../../db/client.ts";
 import { auditLog } from "../../db/schema.ts";
 
-export type AuditActor = "human" | "agent";
+// "mcp" is a tool call dispatched through the MCP tool contract
+// (src/server/mcp/server.ts) — distinct from "agent" (the in-console
+// text-chat tool loop) so the audit trail can tell an external MCP client
+// apart from the console's own chat agent, even though both ultimately call
+// the same AGENT_TOOLS.
+export type AuditActor = "human" | "agent" | "mcp";
 
 /**
  * Every mutating console action — human or agent-triggered — writes here.

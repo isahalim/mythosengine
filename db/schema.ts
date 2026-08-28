@@ -294,3 +294,20 @@ export const chatMessages = sqliteTable(
     check("chk_chat_messages_role", sql`${t.role} IN ('user','assistant','tool')`),
   ],
 );
+
+// MCP access tokens (docs/DECISIONS.md, MCP-as-runtime-integration ADR):
+// lets an external MCP client (Claude Desktop, Claude Code) authenticate to
+// POST /console/mcp without a WebAuthn session. High-entropy random tokens,
+// not human passwords, so a fast SHA-256 hash (src/server/mcp/tokens.ts) is
+// the right primitive here — same reasoning src/lib/vault.ts's fingerprintOf
+// already uses, not Argon2id/PBKDF2. Only ever grants the same AGENT_TOOLS
+// allowlist the console chat/voice agent already has — no key rotation, no
+// killswitch tool exists for a token to call, by construction.
+export const mcpTokens = sqliteTable("mcp_tokens", {
+  id: text("id").primaryKey(),
+  label: text("label").notNull(),
+  hash: text("hash").notNull(),
+  createdAt: text("created_at").notNull(),
+  lastUsedAt: text("last_used_at"),
+  revokedAt: text("revoked_at"),
+});

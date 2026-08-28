@@ -107,6 +107,7 @@ export interface ConsoleSummary {
   ttsStatus: TtsStatus;
   settings: DirectiveSummary;
   keys: KeyStatus[];
+  mcpTokens: McpTokenSummary[];
   killswitch: { enabled: boolean };
 }
 
@@ -139,4 +140,20 @@ export interface ChatMessage {
 export interface AgentTurnResult {
   finalMessage: string;
   toolCallsMade: string[];
+}
+
+// Voice control (docs/DECISIONS.md's MCP-as-runtime-integration ADR):
+// speech-to-text via Groq Whisper, tool calls dispatched through the MCP
+// tool contract (src/server/mcp/server.ts) instead of directly, spoken
+// replies handled client-side via the browser's own SpeechSynthesis API.
+export interface VoiceTurnResult extends AgentTurnResult {
+  sessionId: string;
+}
+
+export interface McpTokenSummary {
+  id: string;
+  label: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
 }

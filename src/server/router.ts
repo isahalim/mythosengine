@@ -21,11 +21,13 @@ import { setPipelineEnabled } from "./console/killswitch.ts";
 import { approveScript } from "./console/scripts.ts";
 import { getConsoleSummary } from "./console/summary.ts";
 import { createChatSession, deleteChatSession, getChatMessages, listChatSessions } from "./console/chat.ts";
-import { runAgentTurn } from "./agent/loop.ts";
+import { runAgentTurn, type ToolInvoker } from "./agent/loop.ts";
+import { issueMcpToken, listMcpTokens, revokeMcpToken, verifyMcpToken } from "./mcp/tokens.ts";
+import { callMcpTool, handleMcpRequest } from "./mcp/server.ts";
 import { log } from "./log.ts";
 import type { KvLike } from "../lib/drivers/cache-kv.ts";
 import type { VaultKv } from "../lib/vault.ts";
-import { createGroqDriverFromVault } from "../lib/drivers/resolve-groq-driver.ts";
+import { createGroqDriverFromVault, createGroqWhisperDriverFromVault } from "../lib/drivers/resolve-groq-driver.ts";
 import { TokenBucketLimiter } from "../lib/drivers/rate-limiter.ts";
 
 export interface RouterEnv {
@@ -45,7 +47,7 @@ export interface RouterEnv {
 // behavior every other in-memory rate limit in a Workers app has.
 // (28 req/min, 4500 tokens/min) is a conservative placeholder, not a
 // number confirmed against Groq's current published limits for
-// llama-3.3-70b-versatile — re-check console.groq.com/settings/limits
+// openai/gpt-oss-120b — re-check console.groq.com/settings/limits
 // before this chat path sees real traffic.
 const groqLimiter = new TokenBucketLimiter(28, 4_500);
 
@@ -191,6 +193,32 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
         status: 200,
         headers: { "content-type": "application/json", "set-cookie": buildSessionCookie(token) },
       });
+    }
+
+    // POST /console/mcp accepts EITHER the console's own session cookie
+    // (same-origin use, e.g. the in-console voice surface) OR a bearer
+    // token (external MCP clients — Claude Desktop, Claude Code) verified
+    // against mcp_tokens — the one /console/* route that isn't
+    // session-only, so it's handled before the blanket requireSession gate
+    // below. Reuses ctx.hotKv/vaultKv/vaultMasterKey exactly like AGENT_TOOLS
+    // does elsewhere — no second tool implementation, no separate audit path.
+    if (pathname === "/console/mcp" && method === "POST") {
+      const authHeader = request.headers.get("authorization");
+      let callerLabel: string;
+      if (authHeader?.startsWith("Bearer ")) {
+        const tokenId = await verifyMcpToken(ctx.db, authHeader.slice("Bearer ".length));
+        if (!tokenId) return json({ error: "unauthorized" }, 401);
+        callerLabel = `token:${tokenId}`;
+      } else {
+        const mcpSession = await requireSession(request, deps);
+        if (isResponse(mcpSession)) return mcpSession;
+        callerLabel = `session:${mcpSession.sessionId}`;
+      }
+
+      const body = await readJson(request);
+      if (!body.ok) return json({ error: "invalid_json" }, 400);
+      const toolCtx = { db: ctx.db, rawClient: ctx.rawClient, hotKv: ctx.hotKv, vaultKv: ctx.vaultKv, vaultMasterKey: ctx.vaultMasterKey };
+      return handleMcpRequest(body.value, toolCtx, callerLabel);
     }
 
     // Everything past this point requires a session.
@@ -381,6 +409,67 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
       const toolCtx = { db: ctx.db, rawClient: ctx.rawClient, hotKv: ctx.hotKv, vaultKv: ctx.vaultKv, vaultMasterKey: ctx.vaultMasterKey };
       const result = await runAgentTurn(llm, ctx.db, toolCtx, chatSendMatch[1], content);
       return json(result);
+    }
+
+    // ---- MCP access tokens (external clients — Claude Desktop, Claude Code) ----
+    if (pathname === "/console/mcp-tokens" && method === "GET") {
+      return json(await listMcpTokens(ctx.db));
+    }
+
+    if (pathname === "/console/mcp-tokens" && method === "POST") {
+      // A live MCP token can call the same AGENT_TOOLS allowlist the chat agent
+      // can — credential-equivalent, same reauth bar as key rotation (CONSOLE_SPEC.md §2).
+      const reauth = await requireReauth(request, ctx, sessionId);
+      if (isResponse(reauth)) return reauth;
+
+      const body = await readJson(request);
+      if (!body.ok) return json({ error: "invalid_json" }, 400);
+      const { label } = body.value as { label?: string };
+      if (typeof label !== "string" || label.trim().length === 0) return json({ error: "invalid_request" }, 400);
+
+      const { token, summary } = await issueMcpToken(ctx.db, label.trim());
+      await writeAuditLog(ctx.db, "human", "mcp_token.issue", summary.id, { label: summary.label });
+      return json({ token, ...summary }, 201);
+    }
+
+    const mcpTokenDeleteMatch = pathname.match(/^\/console\/mcp-tokens\/([^/]+)$/);
+    if (mcpTokenDeleteMatch && method === "DELETE") {
+      const result = await revokeMcpToken(ctx.db, mcpTokenDeleteMatch[1]);
+      if (result.kind === "not_found") return json({ error: "not_found" }, 404);
+      await writeAuditLog(ctx.db, "human", "mcp_token.revoke", mcpTokenDeleteMatch[1], {});
+      return json({ ok: true });
+    }
+
+    // ---- Voice control (Groq Whisper STT + the same AGENT_TOOLS surface, dispatched via MCP) ----
+    if (pathname === "/console/voice/transcribe" && method === "POST") {
+      const bytes = new Uint8Array(await request.arrayBuffer());
+      if (bytes.byteLength === 0) return json({ error: "invalid_request" }, 400);
+
+      const asr = await createGroqWhisperDriverFromVault(ctx.vaultKv, ctx.vaultMasterKey, ctx.groqApiKeyFallback);
+      const mimeType = request.headers.get("content-type") ?? "audio/webm";
+      const result = await asr.transcribe({ source: { kind: "audio", bytes, mimeType } });
+      if (!result.ok) return json({ error: result.error.kind, message: result.error.message }, 502);
+      return json({ transcript: result.value.transcript });
+    }
+
+    const voiceTurnMatch = pathname === "/console/voice/turn";
+    if (voiceTurnMatch && method === "POST") {
+      const body = await readJson(request);
+      if (!body.ok) return json({ error: "invalid_json" }, 400);
+      const { sessionId: voiceSessionId, transcript } = body.value as { sessionId?: string; transcript?: string };
+      if (typeof transcript !== "string" || transcript.trim().length === 0) return json({ error: "invalid_request" }, 400);
+
+      const activeSessionId = typeof voiceSessionId === "string" && voiceSessionId.length > 0 ? voiceSessionId : (await createChatSession(ctx.db)).id;
+
+      const llm = await createGroqDriverFromVault(ctx.vaultKv, ctx.vaultMasterKey, ctx.groqApiKeyFallback, groqLimiter);
+      const toolCtx = { db: ctx.db, rawClient: ctx.rawClient, hotKv: ctx.hotKv, vaultKv: ctx.vaultKv, vaultMasterKey: ctx.vaultMasterKey };
+      // Dispatches every tool call through the exact MCP tool contract
+      // (src/server/mcp/server.ts's callMcpTool) instead of AGENT_TOOLS
+      // directly — this is what makes voice control genuinely "through
+      // MCP," audited with actor "mcp" instead of "agent" (docs/DECISIONS.md).
+      const mcpInvoker: ToolInvoker = { invoke: (invokerCtx, sid, name, args, now) => callMcpTool(invokerCtx, name, args, `session:${sid}`, now) };
+      const result = await runAgentTurn(llm, ctx.db, toolCtx, activeSessionId, transcript, Date.now, mcpInvoker);
+      return json({ sessionId: activeSessionId, ...result });
     }
 
     return json({ error: "not_found" }, 404);

@@ -8,6 +8,7 @@ import { listExports, type ExportListItem } from "./exports.ts";
 import { ROTATABLE_KEY_NAMES, type RotatableKeyName } from "./keys.ts";
 import { Vault, type VaultKv } from "../../lib/vault.ts";
 import type { KvLike } from "../../lib/drivers/cache-kv.ts";
+import { listMcpTokens, type McpTokenSummary } from "../mcp/tokens.ts";
 
 // Every shape below matches src/console/lib/types.ts exactly — that's the
 // contract the Phase 7 frontend already shipped against.
@@ -79,6 +80,7 @@ export interface ConsoleSummary {
   ttsStatus: TtsStatus;
   settings: DirectiveSummary;
   keys: KeyStatus[];
+  mcpTokens: McpTokenSummary[];
   killswitch: { enabled: boolean };
 }
 
@@ -167,12 +169,13 @@ export async function getConsoleSummary(db: AppDb, killswitchKv: KvLike, vaultKv
   const liveRunRow = await db.select().from(runs).where(gte(runs.startedAt, since)).orderBy(desc(runs.startedAt)).limit(1).get();
   const liveRun = liveRunRow && liveRunRow.status === "running" ? { stage: liveRunRow.stage, startedAt: liveRunRow.startedAt } : null;
 
-  const [readyForReview, reviewed, auditFlags, ttsStatus, keys, settings] = await Promise.all([
+  const [readyForReview, reviewed, auditFlags, ttsStatus, keys, mcpTokens, settings] = await Promise.all([
     listExports(db, "ready_for_review"),
     listExports(db).then((all) => all.filter((e) => e.status === "downloaded" || e.status === "reviewed").slice(0, 10)),
     getAuditFlags(db, now),
     getTtsStatus(db, now),
     getKeyStatuses(vaultKv, masterKeyB64),
+    listMcpTokens(db),
     getSettings(db),
   ]);
 
@@ -204,6 +207,7 @@ export async function getConsoleSummary(db: AppDb, killswitchKv: KvLike, vaultKv
       ? { version: settings.version, createdAt: settings.createdAt, compiled: settings.directive }
       : { version: 0, createdAt: new Date(now()).toISOString(), compiled: DEFAULT_DIRECTIVE },
     keys,
+    mcpTokens,
     killswitch: { enabled: await isPipelineEnabled(killswitchKv) },
   };
 }

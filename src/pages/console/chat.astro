@@ -11,6 +11,7 @@
 // read as a terminal, not the "ChatGPT-style prompting place" asked for.
 import ConsoleLayout from "../../layouts/ConsoleLayout.astro";
 import ConsoleShell from "../../console/components/ConsoleShell.astro";
+import { PromptInputBox } from "../../console/components/PromptInputBox.tsx";
 ---
 
 <ConsoleLayout title="Chat">
@@ -42,28 +43,25 @@ import ConsoleShell from "../../console/components/ConsoleShell.astro";
         </ul>
 
         <div class="p-4 pt-0">
-          <form id="chat-composer" class="glass-card gradient-accent-border flex items-end gap-2 p-2 pl-4">
-            <label for="chat-input" class="sr-only">Message</label>
-            <textarea
-              id="chat-input"
-              rows="1"
-              class="max-h-40 flex-1 resize-none bg-transparent py-2.5 font-body text-sm text-mercury placeholder:text-mercury/40 focus:outline-none"
-              placeholder="Message AutoShorts AI…"></textarea>
-            <button
-              type="submit"
-              aria-label="Send"
-              class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-bone text-ink transition-transform hover:scale-105 active:scale-95 disabled:opacity-40"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" /></svg>
-            </button>
-          </form>
+          <PromptInputBox client:load />
         </div>
       </section>
     </div>
   </main>
 
   <script>
-    import { initChat } from "../../console/scripts/chat.ts";
+    import { initChat, sendComposerMessage } from "../../console/scripts/chat.ts";
     initChat();
+
+    // Bridge for the PromptInputBox React island (src/console/components/
+    // PromptInputBox.tsx) — it can't take a function prop across the Astro
+    // island boundary, so it dispatches this event instead; the busy state
+    // flows back the same way so its send button/textarea disable correctly.
+    window.addEventListener("chat:send", (event) => {
+      const { content } = (event as CustomEvent<{ content: string }>).detail;
+      void sendComposerMessage(content, (busy) => {
+        window.dispatchEvent(new CustomEvent("chat:busy", { detail: { busy } }));
+      });
+    });
   </script>
 </ConsoleLayout>

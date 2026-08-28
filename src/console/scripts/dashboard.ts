@@ -6,6 +6,7 @@
 import { dispatchRun, getSummary, setKillswitch } from "../lib/api.ts";
 import { startPolling } from "./poll.ts";
 import { renderKeyList } from "./keys.ts";
+import { renderMcpTokenList } from "./mcp-tokens.ts";
 import { formatBytes, formatRelativeTime } from "../lib/format.ts";
 import { LIVE_STATUS_TEXT } from "../lib/status-style.ts";
 import type { AuditFlagCount, ConsoleSummary, ExportListItem, FootageHealthEntry, PipelinePulse, QuotaSnapshot, TtsStatus } from "../lib/types.ts";
@@ -166,6 +167,8 @@ function showUnavailableState(): void {
   setText("settings-summary", "Unavailable.");
   const keyList = document.getElementById("key-list");
   if (keyList) keyList.replaceChildren(el("li", "text-mercury/40", "Unavailable."));
+  const mcpTokenList = document.getElementById("mcp-token-list");
+  if (mcpTokenList) mcpTokenList.replaceChildren(el("li", "text-mercury/40", "Unavailable."));
   for (const id of ["quota-groq", "quota-youtube", "quota-actions", "quota-kv"]) {
     setText(`${id}-text`, "–");
   }
@@ -196,6 +199,7 @@ async function refresh(): Promise<void> {
   renderTtsStatus(summary.ttsStatus);
   renderSettingsSummary(summary);
   renderKeyList("key-list", summary.keys);
+  renderMcpTokenList("mcp-token-list", summary.mcpTokens, () => void refresh());
   latestKillswitchState = summary.killswitch.enabled;
   renderKillswitch(latestKillswitchState);
 }

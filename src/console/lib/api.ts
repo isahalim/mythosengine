@@ -21,6 +21,7 @@ import type {
   DryRunResult,
   ExportListItem,
   ExportStatus,
+  VoiceTurnResult,
 } from "./types.ts";
 
 const READ_TIMEOUT_MS = 8_000;
@@ -138,6 +139,37 @@ export function getChatMessages(sessionId: string): Promise<Result<ChatMessage[]
 
 export function sendChatMessage(sessionId: string, content: string): Promise<Result<AgentTurnResult, DriverError>> {
   return send<AgentTurnResult>(`/console/chat/sessions/${encodeURIComponent(sessionId)}/message`, "POST", { content });
+}
+
+// Voice control (separate section from /console/chat — docs/DECISIONS.md's
+// MCP-as-runtime-integration ADR): speech-to-text via Groq Whisper, tool
+// calls dispatched through MCP, spoken replies via the browser's own
+// SpeechSynthesis (no server round trip for that half).
+const VOICE_TIMEOUT_MS = 20_000; // audio upload + a real Groq Whisper call is slower than a chat completion
+
+export async function transcribeVoice(audio: Blob): Promise<Result<{ transcript: string }, DriverError>> {
+  const res = await fetchWithRetry(
+    "/console/voice/transcribe",
+    { method: "POST", credentials: "same-origin", headers: { "content-type": audio.type || "audio/webm" }, body: audio },
+    { timeoutMs: VOICE_TIMEOUT_MS, maxAttempts: 1, baseDelayMs: 0 },
+  );
+  if (!res.ok) return res;
+  return readJson(res.value);
+}
+
+export function sendVoiceTurn(transcript: string, sessionId?: string): Promise<Result<VoiceTurnResult, DriverError>> {
+  return send<VoiceTurnResult>("/console/voice/turn", "POST", { transcript, sessionId });
+}
+
+// MCP access tokens for external clients (Claude Desktop, Claude Code) —
+// listed as part of getSummary() (one round trip, same as everything else
+// on the dashboard); revoke only from this UI. Issuing a new token requires
+// a fresh reauth nonce (CONSOLE_SPEC.md §2's bar for a credential-equivalent
+// action), and the console has no step-up-reauth UI yet (same pre-existing
+// gap key rotation's own UI has) — until that exists, issuing a token is a
+// direct authenticated API call (see CONSOLE_SPEC.md §2), not a console button.
+export function revokeMcpToken(id: string): Promise<Result<{ ok: true }, DriverError>> {
+  return send(`/console/mcp-tokens/${encodeURIComponent(id)}`, "DELETE");
 }
 
 export function logout(): Promise<Result<{ ok: true }, DriverError>> {

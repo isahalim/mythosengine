@@ -226,6 +226,168 @@ describe("router", () => {
     expect(finish?.status).toBe(401);
   });
 
+  /** Completes a real reauth ceremony (begin + mocked-verified finish) for `cookie`'s own session, returning the resulting single-use nonce. */
+  async function completeReauth(cookie: string): Promise<string> {
+    const begin = await handleApiRequest(apiRequest("/auth/passkey/reauth/begin", { method: "POST", cookie }), deps);
+    const { challengeId } = (await begin?.json()) as { challengeId: string };
+
+    vi.mocked(simplewebauthn.verifyAuthenticationResponse).mockResolvedValue({
+      verified: true,
+      authenticationInfo: {
+        credentialID: "cred-1",
+        newCounter: 2,
+        userVerified: true,
+        credentialDeviceType: "multiDevice",
+        credentialBackedUp: true,
+        origin: "https://example.workers.dev",
+        rpID: "example.workers.dev",
+      },
+    });
+
+    const finish = await handleApiRequest(
+      apiRequest("/auth/passkey/reauth/finish", { method: "POST", cookie, body: JSON.stringify({ challengeId, response: { id: "cred-1" } }) }),
+      deps,
+    );
+    const { reauthNonce } = (await finish?.json()) as { reauthNonce: string };
+    return reauthNonce;
+  }
+
+  describe("MCP server (POST /console/mcp)", () => {
+    it("session-authenticated tools/list returns the AGENT_TOOLS allowlist, no key rotation or killswitch", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      const res = await handleApiRequest(
+        apiRequest("/console/mcp", { method: "POST", cookie, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) }),
+        deps,
+      );
+      expect(res?.status).toBe(200);
+      const body = (await res?.json()) as { result: { tools: { name: string }[] } };
+      const names = body.result.tools.map((t) => t.name);
+      expect(names).toContain("get_summary");
+      expect(names).not.toContain("rotate_key");
+    });
+
+    it("rejects a request with neither a session cookie nor a bearer token", async () => {
+      const res = await handleApiRequest(
+        apiRequest("/console/mcp", { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) }),
+        deps,
+      );
+      expect(res?.status).toBe(401);
+    });
+
+    it("rejects an unknown or revoked bearer token", async () => {
+      const res = await handleApiRequest(
+        apiRequest("/console/mcp", {
+          method: "POST",
+          headers: { authorization: "Bearer mcp_not-a-real-token" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+        }),
+        deps,
+      );
+      expect(res?.status).toBe(401);
+    });
+
+    it("a valid bearer token from POST /console/mcp-tokens authenticates an external client, and revoking it takes effect on the very next call", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      const nonce = await completeReauth(cookie);
+      const issueRes = await handleApiRequest(
+        apiRequest("/console/mcp-tokens", { method: "POST", cookie, headers: { "x-reauth-nonce": nonce }, body: JSON.stringify({ label: "Claude Desktop" }) }),
+        deps,
+      );
+      expect(issueRes?.status).toBe(201);
+      const { token, id } = (await issueRes?.json()) as { token: string; id: string };
+
+      const callRes = await handleApiRequest(
+        apiRequest("/console/mcp", {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_summary", arguments: {} } }),
+        }),
+        deps,
+      );
+      expect(callRes?.status).toBe(200);
+      const callBody = (await callRes?.json()) as { result: { isError: boolean } };
+      expect(callBody.result.isError).toBe(false);
+
+      const revokeRes = await handleApiRequest(apiRequest(`/console/mcp-tokens/${id}`, { method: "DELETE", cookie }), deps);
+      expect(revokeRes?.status).toBe(200);
+
+      const secondCallRes = await handleApiRequest(
+        apiRequest("/console/mcp", {
+          method: "POST",
+          headers: { authorization: `Bearer ${token}` },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
+        }),
+        deps,
+      );
+      expect(secondCallRes?.status).toBe(401);
+    });
+
+    it("issuing an MCP token without a fresh reauth nonce is refused, same bar as key rotation", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      const res = await handleApiRequest(apiRequest("/console/mcp-tokens", { method: "POST", cookie, body: JSON.stringify({ label: "x" }) }), deps);
+      expect(res?.status).toBe(401);
+    });
+  });
+
+  describe("Voice control (POST /console/voice/*)", () => {
+    it("transcribes uploaded audio via Groq Whisper and returns the transcript", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => new Response(JSON.stringify({ text: "check the pipeline status" }), { status: 200 })),
+      );
+      const cookie = await completeRegistrationAndLogin();
+      const res = await handleApiRequest(
+        apiRequest("/console/voice/transcribe", { method: "POST", cookie, headers: { "content-type": "audio/webm" }, body: new Uint8Array([1, 2, 3]) }),
+        deps,
+      );
+      expect(res?.status).toBe(200);
+      expect(await res?.json()).toEqual({ transcript: "check the pipeline status" });
+      vi.unstubAllGlobals();
+    });
+
+    it("rejects an empty audio body", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      const res = await handleApiRequest(apiRequest("/console/voice/transcribe", { method: "POST", cookie, body: new Uint8Array(0) }), deps);
+      expect(res?.status).toBe(400);
+    });
+
+    it("a voice turn dispatches tool calls through MCP, audited as actor 'mcp' — not 'agent', which is what the identical text-chat call would produce", async () => {
+      let callCount = 0;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => {
+          callCount += 1;
+          if (callCount === 1) {
+            return new Response(
+              JSON.stringify({
+                choices: [{ message: { content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "get_summary", arguments: "{}" } }] }, finish_reason: "tool_calls" }],
+              }),
+              { status: 200 },
+            );
+          }
+          return new Response(JSON.stringify({ choices: [{ message: { content: "Pipeline looks fine.", tool_calls: undefined }, finish_reason: "stop" }] }), { status: 200 });
+        }),
+      );
+
+      const cookie = await completeRegistrationAndLogin();
+      const res = await handleApiRequest(
+        apiRequest("/console/voice/turn", { method: "POST", cookie, body: JSON.stringify({ transcript: "what's the pipeline status?" }) }),
+        deps,
+      );
+      expect(res?.status).toBe(200);
+      const body = (await res?.json()) as { sessionId: string; finalMessage: string; toolCallsMade: string[] };
+      expect(body.toolCallsMade).toEqual(["get_summary"]);
+
+      const { auditLog } = await import("../../db/schema.ts");
+      const rows = await ctx.db.select().from(auditLog).all();
+      const row = rows.find((r) => r.action === "tool.get_summary");
+      expect(row?.actor).toBe("mcp");
+      expect(row?.subject).toBe(`session:${body.sessionId}`);
+
+      vi.unstubAllGlobals();
+    });
+  });
+
   it("streams a real export's bytes on download and marks it downloaded", async () => {
     const cookie = await completeRegistrationAndLogin();
     const { sources, signals, scripts, footageSources, footageSegments, renders, exports: exportsTable } = await import("../../db/schema.ts");

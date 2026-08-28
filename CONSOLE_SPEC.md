@@ -24,6 +24,8 @@ Core risk, updated: **the console can rotate keys and rewrite the settings the p
 | Replay of a sensitive action | Key rotation, killswitch require a fresh WebAuthn assertion (< 5 min) |
 | An export link reaching someone who isn't the operator | The download route requires the same passkey session as everything else in `/console/*`; no unauthenticated or long-lived public link is ever issued |
 | An upload going out that shouldn't have | N/A — no automated publish path exists anywhere in this system. Every video is downloaded and uploaded by the operator, by hand |
+| A leaked MCP access token (docs/DECISIONS.md's MCP-as-runtime-integration ADR) being used to control the console | Hashed at rest (SHA-256, never the plaintext) and shown only once at issuance; issuing one is credential-equivalent — session + reauth (< 5 min), same bar as key rotation; revocation takes effect on the very next call; the token can only ever reach the same `AGENT_TOOLS` allowlist the in-console chat/voice agent already has — no key rotation or killswitch tool exists for it to call, structurally, not by a permission check that could be misconfigured |
+| Voice input triggering an action the operator didn't intend | Same allowlist and audit trail as the text chat — every voice-triggered tool call is written to `audit_log` (actor `mcp`, distinguishable from the chat agent's `agent` actor) with the full transcript and arguments; nothing here can rotate a key or touch the killswitch, same structural limit as the chat agent |
 
 ---
 
@@ -69,6 +71,28 @@ There is no YouTube OAuth credential anywhere in this system — no refresh toke
 **Reader side:** `vault.get()` decrypts in memory, never logs, never crosses an HTTP boundary. ESLint rule bans `vault.get()` outside `src/lib/drivers/**`.
 
 **UI:** each provider is a row — name, masked value, fingerprint, last validated, last rotated, a live-status dot polled every 60s, a **Rotate** button with a **Test** action. `type="password"`, `autocomplete="off"`, cleared on success, never re-rendered into the DOM.
+
+### MCP access tokens (`mcp_tokens` table, `POST /console/mcp`)
+
+A different shape of credential from the provider keys above — not a third-party secret this console holds, but one *this console issues* so an external MCP client (Claude Desktop, Claude Code) can authenticate to `POST /console/mcp` without a WebAuthn session. Same "write-only, shown once" discipline as everything else here:
+
+```
+1. POST /console/mcp-tokens: session valid + reauth_nonce valid → else 401
+   (credential-equivalent action, same bar as key rotation)
+2. Generate 256 bits of randomness, hash with SHA-256 (not Argon2id/PBKDF2 —
+   this is a high-entropy random value, not a human password)
+3. Store { id, label, hash, createdAt, lastUsedAt: null, revokedAt: null }
+4. Response: { token, id, label, createdAt } — the only time the plaintext
+   token is ever sent anywhere
+5. DELETE /console/mcp-tokens/:id revokes immediately — no grace window,
+   unlike a provider key's 24h rollback: an MCP token has no live-check step
+   to make a rollback meaningful, and revocation should be exactly as
+   immediate as the operator asked for
+```
+
+**What a valid token can and can't do:** exactly the same `AGENT_TOOLS` allowlist the in-console chat and voice agents already have (`src/server/agent/tools.ts`) — `get_summary`, `list_exports`, `dispatch_run`, settings preview/activate, etc. No key rotation, no killswitch: neither has a tool defined for it, so no token — however it was obtained — can reach either. Every call is written to `audit_log` with actor `mcp` and a subject identifying which token (or which console session, for the in-console voice surface) made it.
+
+**UI:** the dashboard's Keys card lists issued tokens (label, issued/last-used time, **Revoke**) below the provider-key rows. Issuing a new token is a direct authenticated API call today, not yet a console button — CONSOLE_SPEC's own reauth-nonce requirement means it needs the same step-up-WebAuthn UI key rotation's own **Rotate** button will eventually need, which doesn't exist client-side yet.
 
 ---
 
@@ -128,11 +152,25 @@ Grid of cards, one `GET /console/summary` round-trip, poll every 30s.
 
 Same three rules as before: presentation only (rewrite every fetch/validation/auth call yourself), re-token every generated component to `tokens.css`, keep the console bundle under 200KB gzip with a `dependency-cruiser` rule forbidding `src/console/**` imports from `src/pages/**`.
 
+A fourth rule, added after the 2026-08-28 (night, later) pass that pulled real component code via `mcp__21st__get_component` instead of `get_inspiration`-only: **check what a component actually depends on before adopting it, not just what it looks like — then check whether the framework-agnostic core, not the framework wrapper, gets you the same asset for less.** A dependency-free component (raw WebGL/GLSL, plain CSS + a pointer listener) can be ported close to verbatim. `@paper-design/shaders-react`'s "Liquid Metal Hero" is a React binding over `@paper-design/shaders`, a zero-dependency vanilla core — installing the core and calling it directly (`src/shaders/liquid-metal.ts`) got the real shader without adding a UI framework. Where a component's actual behavior is irreducibly framework-shaped (Radix Dialog/Tooltip, `framer-motion`'s declarative API), that's a real, weighable bundle-size and dependency-surface decision — same `npm view` diligence `CLAUDE.md` already requires everywhere else — and `docs/DECISIONS.md` (2026-08-28, night, later still) has the one case in this codebase where that trade was made anyway: `@astrojs/react` + a single island (`src/console/components/PromptInputBox.tsx`), scoped to `/console/chat` only, not added project-wide.
+
 Useful prompts for this domain specifically: *"search 21st for a review queue row with a download action and a status pill"*, *"get_inspiration for a bento dashboard with a prominent live-status indicator card."*
 
 ---
 
-## 6. Acceptance tests
+## 6. Voice control (Groq + MCP)
+
+A separate section from the text chat (`/console/voice`, not a mode inside `/console/chat`), for steering the console by speaking instead of typing — same underlying `AGENT_TOOLS` allowlist, same audit guarantee, different input/output modality. `docs/DECISIONS.md`'s MCP-as-runtime-integration ADR has the full rationale for why MCP is involved here at all — it reverses an earlier, narrower decision that MCP was dev-tool-only.
+
+**Flow:** hold the mic button → `MediaRecorder` captures audio → `POST /console/voice/transcribe` (Groq Whisper, `src/lib/drivers/groq-whisper.ts`) → transcript shown → `POST /console/voice/turn` runs the same tool-calling loop the text chat uses (`src/server/agent/loop.ts`'s `runAgentTurn`), except every tool call is dispatched through the MCP tool contract (`src/server/mcp/server.ts`'s `callMcpTool`) instead of directly — audited as actor `mcp`, not `agent`, so the trail shows which path an action came through. The reply is spoken back via the browser's own `SpeechSynthesis` API, not the Edge TTS driver: Edge TTS shells out to a Python subprocess, which a Cloudflare Worker cannot run (`CLAUDE.md`'s stack list) — this is a deliberate, scoped substitution for this one surface, not a change to the render pipeline's narration TTS.
+
+**What it can't do:** identical limit to the text chat — no key rotation, no killswitch, no YouTube upload of any kind. A voice command asking for any of those gets the same "I can't do that, use the dashboard" answer the text agent already gives, because no tool exists for it to call, structurally, not because of a prompt instruction that could be argued around.
+
+**External MCP clients:** the same `POST /console/mcp` endpoint the voice page's own turn loop uses internally is also reachable by a real external MCP client (Claude Desktop, Claude Code) via a bearer token (§2's "MCP access tokens"). Same allowlist, same audit trail, either way in.
+
+---
+
+## 7. Acceptance tests
 
 1. Registering a passkey twice, then confirming the enrollment endpoint returns 410 forever after.
 2. A provider-key rotation (e.g. `YOUTUBE_API_KEY`) with a dead-but-well-formed key returns 422 and leaves the previous key active.
@@ -143,3 +181,5 @@ Useful prompts for this domain specifically: *"search 21st for a review queue ro
 7. Downloading a `ready_for_review` export streams the real MP4 from KV, matches the render it came from, and its `audit_json` deserializes to the exact script/critic/provenance/TTS-settings data recorded for that render.
 8. `POST /console/settings/reset-defaults` produces the documented default directive (§3) and a subsequent run picks 3 different games/voices for 3 signals from different sources, when fed 3+ eligible fixture signals.
 9. Playwright: full flow at 390px and 1440px, zero console errors, axe clean.
+10. A revoked MCP access token is rejected on the very next `POST /console/mcp` call — no grace window.
+11. An MCP `tools/call` for a tool name that doesn't exist on the allowlist (e.g. a hypothetical `rotate_key`) returns a normal tool-not-found result, never a 500 and never a bypass to a real route.

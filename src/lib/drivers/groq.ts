@@ -54,7 +54,7 @@ function fromWireToolCalls(calls: GroqWireToolCall[] | undefined): ToolCall[] | 
     .map((c) => ({ id: c.id, name: c.function.name, argumentsJson: c.function.arguments ?? "{}" }));
 }
 
-/** Groq LLM driver (llama-3.3-70b-versatile / llama-3.1-8b-instant). Supports OpenAI-compatible tool calling for src/server/agent/**. */
+/** Groq LLM driver (openai/gpt-oss-120b / openai/gpt-oss-20b — llama-3.3-70b-versatile and llama-3.1-8b-instant were both deprecated by Groq on 2026-06-17). Supports OpenAI-compatible tool calling for src/server/agent/**. */
 export class GroqLlmDriver implements LlmDriver {
   private readonly baseUrl: string;
   private readonly fetchImpl?: typeof fetch;

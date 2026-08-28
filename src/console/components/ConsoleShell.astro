@@ -3,8 +3,10 @@
 // mono nav every earlier console page inherited — this shell is shared by
 // every page here, so it's the single highest-leverage place to move the
 // console's whole feel toward the login/homepage's sans-serif, glassy look.
+import RadialNav from "./RadialNav.astro";
+
 interface Props {
-  active: "dashboard" | "review" | "settings" | "chat";
+  active: "dashboard" | "review" | "settings" | "chat" | "voice";
 }
 
 const { active } = Astro.props;
@@ -13,6 +15,7 @@ const links: { href: string; label: string; key: Props["active"] }[] = [
   { href: "/console", label: "Dashboard", key: "dashboard" },
   { href: "/console/review", label: "Review queue", key: "review" },
   { href: "/console/chat", label: "Chat", key: "chat" },
+  { href: "/console/voice", label: "Voice", key: "voice" },
   { href: "/console/settings", label: "Settings", key: "settings" },
 ];
 ---
@@ -20,7 +23,7 @@ const links: { href: string; label: string; key: Props["active"] }[] = [
 <header class="glass-card sticky top-4 z-30 mx-auto mb-6 mt-4 flex max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-5">
   <div class="flex min-w-0 items-center gap-4">
     <span class="shrink-0 font-display text-sm font-semibold tracking-tight text-bone">AutoShorts AI</span>
-    <nav class="flex items-center gap-1 overflow-x-auto font-body text-sm [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <nav class="flex items-center gap-1 overflow-x-auto font-body text-sm md:hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {
         links.map((link) => (
           <a
@@ -37,6 +40,7 @@ const links: { href: string; label: string; key: Props["active"] }[] = [
       }
     </nav>
   </div>
+  <RadialNav active={active} />
   <div class="flex shrink-0 items-center gap-2">
     <div id="killswitch-banner" data-killswitch-banner class="hidden items-center gap-1.5 rounded-full bg-rose/10 px-3 py-1 font-body text-xs text-rose">
       Pipeline halted

@@ -21,7 +21,7 @@ async function liveCheck(name: RotatableKeyName, candidate: string, fetchImpl?: 
       {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${candidate}` },
-        body: JSON.stringify({ model: "llama-3.1-8b-instant", messages: [{ role: "user", content: "hi" }], max_tokens: 1 }),
+        body: JSON.stringify({ model: "openai/gpt-oss-20b", messages: [{ role: "user", content: "hi" }], max_tokens: 1 }),
       },
       { timeoutMs: 8_000, maxAttempts: 1, baseDelayMs: 0, fetchImpl },
     );

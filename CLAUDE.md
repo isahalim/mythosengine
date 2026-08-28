@@ -18,10 +18,10 @@ A single-operator platform that monitors trending, polarizing discourse across R
 
 ## Stack
 
-- **Astro** + TypeScript (strict) + Tailwind consuming tokens from `tokens.css` — the operator console only. There is no public-facing content site; the Worker's public surface is a status/marketing page at most.
+- **Astro** + TypeScript (strict) + Tailwind consuming tokens from `tokens.css` — the operator console only. There is no public-facing content site; the Worker's public surface is a status/marketing page at most. One `@astrojs/react` island (`src/console/components/PromptInputBox.tsx`, `/console/chat` only, `docs/DECISIONS.md` 2026-08-28) is the sole exception to "no framework beyond Astro" — everything else, including every other console page, stays plain Astro + vanilla TS.
 - **One Cloudflare Worker with static assets** — serves the console and the API. **Not Pages.**
 - **D1** (Drizzle) for state, **KV** for hot JSON and the encrypted key vault
-- **Groq** (`llama-3.3-70b-versatile`, `llama-3.1-8b-instant`) for script generation, critique, and metadata (title/description/hashtags)
+- **Groq** (`openai/gpt-oss-120b`, `openai/gpt-oss-20b` — replacing `llama-3.3-70b-versatile`/`llama-3.1-8b-instant`, both deprecated by Groq 2026-06-17) for script generation, critique, and metadata (title/description/hashtags)
 - **Microsoft Edge TTS** (unofficial, free, no key — see `ARCHITECTURE.md` §3), via the `edge_tts` Python library shelled out to from `src/lib/drivers/tts-edge.ts`, for narration + word-level caption timing
 - **yt-dlp + FFmpeg + Python 3** (for `edge_tts`), run in **GitHub Actions** (Cloudflare Workers cannot run FFmpeg or spawn subprocesses — no native binary execution, hard CPU-time ceiling) for the weekly footage-refresh job and the per-render video pipeline
 - **YouTube Data API v3** (read-only API key only) for the weekly footage-source discovery search. No upload/OAuth scope exists anywhere in this system — publishing is manual, done by the operator in YouTube Studio

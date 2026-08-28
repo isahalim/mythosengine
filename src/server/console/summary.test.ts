@@ -33,6 +33,15 @@ describe("getConsoleSummary", () => {
     expect(summary.killswitch.enabled).toBe(true);
     expect(summary.ttsStatus.status).toBe("unknown");
     expect(summary.keys.every((k) => k.status === "down" && k.fingerprint === null)).toBe(true);
+    expect(summary.mcpTokens).toEqual([]);
+  });
+
+  it("lists issued MCP tokens", async () => {
+    const { issueMcpToken } = await import("../mcp/tokens.ts");
+    await issueMcpToken(ctx.db, "Claude Desktop");
+    const summary = await getConsoleSummary(ctx.db, kv, kv, MASTER_KEY_B64);
+    expect(summary.mcpTokens).toHaveLength(1);
+    expect(summary.mcpTokens[0].label).toBe("Claude Desktop");
   });
 
   it("buckets recent signals by state into the 24h pulse", async () => {
