@@ -1,6 +1,6 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["src/pages/**/*.astro", "scripts/*.mjs", "src/lib/drivers/*.ts", "config/*.ts"],
-  "project": ["src/**/*.{ts,astro}", "scripts/**/*.mjs", "config/**/*.ts"],
+  "entry": ["src/pages/**/*.astro", "scripts/*.mjs", "src/lib/drivers/*.ts", "config/*.ts", "db/*.ts"],
+  "project": ["src/**/*.{ts,astro}", "scripts/**/*.mjs", "config/**/*.ts", "db/**/*.ts"],
   "ignoreDependencies": ["tailwindcss"]
 }

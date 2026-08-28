@@ -4,6 +4,18 @@ Never edit or delete an entry. Append a new one if a decision changes.
 
 ---
 
+## 2026-08-27 (night) — Phase 2: data layer
+
+**What changed:** implemented `ARCHITECTURE.md` §4 with Drizzle (`db/schema.ts`), generated the initial migration (`db/migrations/0000_*.sql`), and wrote `src/lib/state.ts` (explicit transition maps for `signals`/`scripts`/`renders`/`uploads`, throwing `IllegalTransitionError` on anything not listed — e.g. skipping a stage or leaving a terminal state). 63 tests passing, including: every CHECK constraint proven to reject an illegal value at the DB layer (not just through the ORM), an idempotent-insert test proving a retried `signals` insert yields one row, a real transaction-rollback test, and `db/footage-select.ts`'s `claimNextFootageSegment` — the atomic single-`UPDATE...RETURNING` operation the rotation guarantee in `ARCHITECTURE.md` §9 depends on.
+
+**Why:** `pnpm verify`'s own gate demanded it (Task 0.3's coverage/lint/secret-scan bar), and the state machine exists because `renders`/`uploads` illegal transitions are exactly the kind of bug that reads as "the channel published something it shouldn't have" after the fact.
+
+**What was rejected:**
+- **Drizzle's `text(..., { enum: [...] })` alone** — it's TypeScript-only, does not emit a SQL `CHECK` constraint (confirmed by inspecting the generated migration before adding explicit `check()` calls). Relying on it alone would have meant illegal states were only prevented through the ORM, not the database — directly against `ARCHITECTURE.md`'s own stated rationale for using CHECK constraints at all. Every enum-shaped column now has both.
+- **`drizzle-orm/node-sqlite`** — this import doesn't exist in the installed `drizzle-orm@0.45.2`; a web search result had conflated a third-party community package (`yjl9903/drizzle-sqlite`) with official Drizzle support for Node's built-in `node:sqlite`. Caught by actually trying the import and checking the package's real `exports` map rather than trusting the search summary. Used `better-sqlite3` instead (devDependency only — production reads/writes D1, never this) — it's the standard, well-established choice for local Drizzle+D1 development and every official Drizzle+D1 guide uses it.
+- **A real multi-threaded concurrency test for `claimNextFootageSegment`** — Node's single-threaded and `better-sqlite3` is synchronous, so true interleaving can't be reproduced in a unit test. The correctness argument is structural instead: the claim is one `UPDATE ... WHERE id = (SELECT ...) RETURNING`, so there's no read-then-write window for a second caller to race into, regardless of what a timing-based test could or couldn't prove.
+- Kept the esbuild@0.18.20 fix as a `pnpm-workspace.yaml overrides` entry rather than waiting on drizzle-kit to update its bundled `esbuild-kit` dependency — `osv-scanner` caught the real, current GHSA-67mh-4wv8-2f99 finding; verified `drizzle-kit generate` still works against the overridden version before accepting the fix.
+
 ## 2026-08-27 (evening) — Project pivot: MythosEngine → AutoShorts AI
 
 **What changed:** the entire product direction. `CLAUDE.md`, `PROVISIONED.md`, `ARCHITECTURE.md`, `AGENT_PLAYBOOK.md`, and `CONSOLE_SPEC.md` were rewritten from a game-news publishing site to an autonomous YouTube Shorts pipeline (trend ingestion → scripted narration → gameplay footage → TTS + captions → FFmpeg render → policy gate → YouTube upload), at the operator's explicit direction. Same repo, same Cloudflare Worker (`mythosengine` — kept as the technical name; the product is branded AutoShorts AI in the console only), same driver-abstraction philosophy, same verify gate. `.mcp.json` gained an `edge-tts-mcp` entry (`uvx edge_tts_mcp`, verified against PyPI, not guessed).

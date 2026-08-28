@@ -1,6 +1,13 @@
 allowBuilds:
+  better-sqlite3: true
   esbuild: true
   workerd: true
+overrides:
+  # drizzle-kit pulls esbuild@0.18.20 transitively via esbuild-kit, which
+  # carries GHSA-67mh-4wv8-2f99 (dev-server CORS/request-smuggling). Force
+  # every esbuild resolution to a patched version; drizzle-kit's dev-only
+  # bundling still works fine on newer esbuild.
+  esbuild: ">=0.25.0"
 minimumReleaseAgeExclude:
   - astro@7.2.9
   - miniflare@5.20260826.0-alpha

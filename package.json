@@ -15,6 +15,7 @@
     "verify": "node scripts/verify.mjs"
   },
   "dependencies": {
+    "drizzle-orm": "^0.45.2",
     "@fontsource/bricolage-grotesque": "^5.3.0",
     "@fontsource/jetbrains-mono": "^5.3.0",
     "@fontsource/public-sans": "^5.3.0",
@@ -26,7 +27,10 @@
     "@eslint/js": "^10.0.1",
     "@size-limit/file": "^13.0.3",
     "@types/node": "^26.4.0",
+    "@types/better-sqlite3": "^9.6.0",
     "@vitest/coverage-v8": "^4.1.11",
+    "better-sqlite3": "^13.0.3",
+    "drizzle-kit": "^0.31.10",
     "eslint": "^10.9.1",
     "knip": "^6.32.3",
     "size-limit": "^13.0.3",
