@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  assertExportTransition,
   assertRenderTransition,
   assertScriptTransition,
   assertSignalTransition,
-  assertUploadTransition,
   IllegalTransitionError,
 } from "./state.ts";
 
@@ -12,8 +12,7 @@ describe("signal state machine", () => {
     expect(() => assertSignalTransition("observed", "scored")).not.toThrow();
     expect(() => assertSignalTransition("scored", "scripted")).not.toThrow();
     expect(() => assertSignalTransition("scripted", "critiqued")).not.toThrow();
-    expect(() => assertSignalTransition("critiqued", "gated")).not.toThrow();
-    expect(() => assertSignalTransition("gated", "uploaded")).not.toThrow();
+    expect(() => assertSignalTransition("critiqued", "exported")).not.toThrow();
   });
 
   it("allows dropping to rejected/failed from any non-terminal state", () => {
@@ -26,7 +25,7 @@ describe("signal state machine", () => {
   });
 
   it("rejects any transition out of a terminal state", () => {
-    expect(() => assertSignalTransition("uploaded", "scored")).toThrow(IllegalTransitionError);
+    expect(() => assertSignalTransition("exported", "scored")).toThrow(IllegalTransitionError);
     expect(() => assertSignalTransition("rejected", "observed")).toThrow(IllegalTransitionError);
   });
 
@@ -35,7 +34,7 @@ describe("signal state machine", () => {
   });
 });
 
-describe("script/render/upload state machines", () => {
+describe("script/render/export state machines", () => {
   it("script: draft -> approved is legal, approved -> draft is not", () => {
     expect(() => assertScriptTransition("draft", "approved")).not.toThrow();
     expect(() => assertScriptTransition("approved", "draft")).toThrow(IllegalTransitionError);
@@ -46,9 +45,14 @@ describe("script/render/upload state machines", () => {
     expect(() => assertRenderTransition("rendered", "pending")).toThrow(IllegalTransitionError);
   });
 
-  it("upload: full happy path, and no skipping straight to published", () => {
-    expect(() => assertUploadTransition("pending_approval", "approved")).not.toThrow();
-    expect(() => assertUploadTransition("approved", "published")).not.toThrow();
-    expect(() => assertUploadTransition("pending_approval", "published")).toThrow(IllegalTransitionError);
+  it("export: full happy path, and no skipping straight to reviewed", () => {
+    expect(() => assertExportTransition("ready_for_review", "downloaded")).not.toThrow();
+    expect(() => assertExportTransition("downloaded", "reviewed")).not.toThrow();
+    expect(() => assertExportTransition("ready_for_review", "reviewed")).toThrow(IllegalTransitionError);
+  });
+
+  it("export: ready_for_review can also be discarded or expire directly, without a download", () => {
+    expect(() => assertExportTransition("ready_for_review", "discarded")).not.toThrow();
+    expect(() => assertExportTransition("ready_for_review", "expired")).not.toThrow();
   });
 });

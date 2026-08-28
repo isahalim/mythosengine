@@ -22,7 +22,7 @@ Unchanged from the original project — these are the rules that actually change
 
 **6. Budget the context deliberately.** One bounded task per session; `docs/DECISIONS.md` appended after every phase and re-read at the start of the next.
 
-**7. Test-first for money, auth, or state.** Here that's specifically: the POLICY GATE, the OAuth token rotation, and the footage-library provenance checks.
+**7. Test-first for money, auth, or state.** Here that's specifically: AUDIT SUMMARY, the export driver's KV write path, and the footage-library provenance checks.
 
 **8. Force it to look at its own work.** Playwright + screenshot + console-error check after every console UI change.
 
@@ -154,13 +154,13 @@ contract-testing philosophy.
 - Migrations are committed files (drizzle-kit generate). `db push` is banned.
 - Every CHECK, UNIQUE, and ON DELETE from the doc must exist in generated
   SQL — paste it.
-- src/lib/state.ts: state machines for `signals`, `renders`, `uploads` that
+- src/lib/state.ts: state machines for `signals`, `renders`, `exports` that
   only permit the legal transitions in ARCHITECTURE.md §5.
 - Tests: concurrent insert of the same canonical_url yields one row; a
   partially-failed multi-table write leaves zero rows; footage_segments'
   used_count/last_used_at update is atomic under concurrent FOOTAGE SELECT
-  calls (this is the rotation mechanism the POLICY GATE depends on — a race
-  here silently breaks variety enforcement).
+  calls (this is the rotation mechanism AUDIT SUMMARY and the diversity
+  logic both depend on — a race here silently breaks variety enforcement).
 ```
 
 **Gate:** transaction rollback test passes; `sqlite3 .schema` shows all constraints.
@@ -322,35 +322,71 @@ boundaries and correct provenance metadata; a video already represented in
 
 ---
 
-### Phase 6 — TTS, captions, render, GATE, upload
+### Phase 6 — TTS, captions, render, AUDIT SUMMARY, EXPORT — done (2026-08-27, night)
+
+> Rescoped 2026-08-27: the operator now reviews and uploads every video manually. There is no
+> `UploadDriver`/`upload-youtube.ts` — it was deleted, not left dormant (see
+> `docs/DECISIONS.md`). The POLICY GATE is now AUDIT SUMMARY: the same checks, computed the same
+> way, but advisory — it never blocks a render from reaching EXPORT. See `ARCHITECTURE.md` §5/§9
+> for the full rewritten contract.
+
+**Done:** `src/lib/drivers/export-kv.ts` (`KvExportDriver`, API shape confirmed against
+Cloudflare's live docs), `src/lib/pipeline/audit.ts` (`computeAuditSummary`), `src/lib/pipeline/
+diversity.ts` (`preferUnusedToday` + 3 callers), `src/lib/pipeline/export.ts` (`runExport`),
+`src/config/voices.ts` (8-voice default pool, confirmed against a live `edge-tts --list-voices`
+run), the `db/migrations/0002_manual_review_pivot.sql` schema migration, and the `UploadDriver`→
+`ExportDriver` swap throughout `types.ts`/`state.ts`/`config/providers.ts`. Full detail in
+`docs/DECISIONS.md`'s "Phase 6" entry. **Not done in this session, flagged rather than skipped:**
+a full chained integration test (real TTS → real render → AUDIT → EXPORT in one run) and
+confirming a real rendered file's size against KV's actual per-value cap — the latter needs a
+provisioned KV namespace (Phase 8) that doesn't exist yet.
 
 ```
-Implement stages 6-9 from ARCHITECTURE.md §5, and the full POLICY GATE (§9)
-as pure, separately-testable functions with no model calls, fails closed.
+Implement stages 6-9 from ARCHITECTURE.md §5, and AUDIT SUMMARY (§9) as pure,
+separately-testable functions with no model calls. Nothing here blocks
+progression — every render reaches EXPORT.
 
-- TTS + caption sync from the Phase 1 Edge TTS driver's word timings.
-- ASS subtitle generation with fade transitions between word groups.
-- FFmpeg render per the RenderDriver contract.
-- GATE checks, each with its own test: schema validity, originality
-  threshold, footage-library-only provenance, rotation/no-repeat, script
-  similarity to last 100 < 0.85, caption/audio duration match, synthetic-
-  media disclosure set.
-- Upload via the Phase 1 YouTube driver, respecting the active directive's
-  approval mode (auto vs manual — park in uploads.status='pending_approval'
-  for manual).
+- TTS + caption sync from the Phase 1 Edge TTS driver's word timings. Voice
+  picked from directives.compiled_json.voice_pool (or the default curated
+  pool in src/config/voices.ts — verify real Edge TTS voice IDs against a
+  live `edge-tts --list-voices` run, don't guess them), excluding voices
+  already used by today's earlier renders when diversity_mode is on
+  (src/lib/pipeline/diversity.ts). rate/pitch from the directive's fixed
+  value or randomized within tts_rate_range. Record the actual voice used
+  on renders.tts_voice.
+- ASS subtitle generation with fade transitions between word groups
+  (already done, render-ffmpeg.ts/ass-subtitles.ts).
+- FFmpeg render per the RenderDriver contract (already done) — wire it into
+  the runner. Game selection (FOOTAGE SELECT) also consults diversity_mode:
+  exclude games used by today's earlier renders before calling
+  claimNextFootageSegment.
+- AUDIT SUMMARY checks (src/lib/pipeline/audit.ts), each with its own test,
+  all advisory/flagged not blocking: schema validity, originality vs.
+  min_originality_score, footage-library-only provenance echo,
+  rotation/no-repeat info, script similarity to last 100 < 0.85,
+  caption/audio duration match, synthetic-media disclosure reminder.
+- EXPORT (src/lib/pipeline/export.ts): assemble audit_json (script + critic
+  output + footage provenance + TTS settings used + AuditResult), call the
+  new KvExportDriver (src/lib/drivers/export-kv.ts) to PUT the mp4 into KV
+  with a 3-day TTL via CLOUDFLARE_API_TOKEN, insert an `exports` row
+  (status='ready_for_review'), delete the local render file only after a
+  confirmed KV write.
 - Tests: a render citing a footage_segment_id not in the library is
-  rejected before FFmpeg runs; a render with captions running past the
-  narration audio is rejected; --dry-run leaves YouTube and the repo
-  untouched.
+  rejected before FFmpeg runs (this is still enforced structurally at
+  FOOTAGE SELECT, unrelated to AUDIT SUMMARY); a render with captions
+  running past the narration audio is flagged in audit_result but still
+  exports; diversity.test.ts proves the 3rd pick of a fixture day excludes
+  today's already-used game/voice when diversity_mode is on, and doesn't
+  when it's off; --dry-run leaves KV and the repo untouched.
 ```
 
-**Gate:** a full end-to-end dry run on fixture data produces a real MP4 and a GATE result, with `--dry-run` uploading nothing.
+**Gate:** a full pipeline run for 3 signals produces 3 KV-stored exports with complete audit packages, verified by downloading one via the export driver's own contract test and inspecting `audit_json`. Before this is wired into a real scheduled run, confirm a real rendered MP4's size against KV's per-value cap against a real namespace — cite the observed number in `docs/DECISIONS.md`, don't assume it fits.
 
 ---
 
 ### Phase 7 — Console frontend
 
-No public marketing site or hero this time — skip straight to the dashboard, `CONSOLE_SPEC.md` §4 (updated for render/upload queues). Reuse `tokens.css`'s token discipline; revise the palette if you want AutoShorts to look distinct from MythosEngine, that's cheap.
+No public marketing site or hero this time — skip straight to the dashboard, `CONSOLE_SPEC.md` §4 (updated for the review/export queue, not upload approvals). The old "Pending approvals"/"Published" cards are now "Ready for review"/"Reviewed" — a Download button replaces an Approve button, since nothing here ever calls YouTube. Add a Pipeline Settings page: voice pool, rate range, focus games, source weighting, diversity toggle, and a prominent "Reset to defaults" button (`CONSOLE_SPEC.md` §3). Reuse `tokens.css`'s token discipline; revise the palette if you want AutoShorts to look distinct from MythosEngine, that's cheap.
 
 **Gate:** Lighthouse ≥ 95 on the console's own routes is a nice-to-have, not the bar — this is an internal single-operator tool, not a public page competing on Core Web Vitals. Zero console errors and a clean a11y pass are the actual bar.
 
@@ -364,34 +400,37 @@ Implement the Worker routes in ARCHITECTURE.md §6.
 - Secrets via `wrangler secret put` only; wrangler.toml grepped in CI for
   none.
 - Structured logging (pino), PII-scrubbing test (there is none to collect).
-- Discord webhook alert when: GATE rejection rate > 20%/24h, Edge TTS
-  driver fails 2 runs in a row (this is the "the free ride ended" alarm),
-  YouTube upload quota headroom < 20%, or any stage fails 3 runs running.
+- Discord webhook alert when: AUDIT SUMMARY flag rate > 20%/24h (informational,
+  not a rejection anymore), Edge TTS driver fails 2 runs in a row (this is
+  the "the free ride ended" alarm), a KV export write fails, or any stage
+  fails 3 runs running.
 
 Task 8.2 — provision D1 + KV per PROVISIONED.md (same idempotent recipe as
-before), then set up the YouTube OAuth app (Google Cloud Console, operator
-does the consent-screen click-through, agent scripts the token exchange
-locally, never in CI) and store the refresh token in the vault.
+before; the KV namespace now also holds export blobs, not just hot JSON/
+rate-limit counters). No YouTube OAuth app is needed — there is no upload
+credential in this system. Only the existing read-only YOUTUBE_API_KEY
+(Google Cloud Console → Credentials → API Key) is required, for footage
+discovery.
 
 Finally: hardening checklist against the codebase, table of item/status/
 evidence/file:line.
 ```
 
-**Gate:** hardening table complete; `wrangler deploy` green; a real end-to-end run (WATCH through a manually-approved UPLOAD) succeeds against the live channel once, supervised.
+**Gate:** hardening table complete; `wrangler deploy` green; a real end-to-end run (WATCH through EXPORT) produces a real downloadable export in the console, supervised.
 
 ---
 
 ### Phase 9 — Operator console deep dive
 
-Unchanged in shape from the original `CONSOLE_SPEC.md` — passkey auth, key vault (now including the YouTube refresh token as a vault-managed, rotatable entry), directive composer (steering focus games/tone/approval-mode instead of franchise focus), bento dashboard (render queue, upload approvals, GATE rejection reasons, footage library health, Edge TTS status dot). Read `CONSOLE_SPEC.md` before this phase; it's been updated for the new domain but the auth/vault sections carry over almost verbatim — that threat model didn't change.
+Unchanged in shape from the original `CONSOLE_SPEC.md` for auth/vault — passkey auth, key vault (no YouTube refresh token entry anymore — there is no YouTube OAuth credential in this system). The directive composer is now a **pipeline settings composer**: focus games, script-source weighting, voice pool, TTS rate range, diversity toggle, one-click reset to the diverse-by-default settings. Bento dashboard: review queue (script + render + export, download/mark-reviewed/discard), AUDIT SUMMARY flag reasons (informational), footage library health, Edge TTS status dot. Read `CONSOLE_SPEC.md` before this phase; it's been updated for the new domain but the auth/vault sections carry over almost verbatim — that threat model didn't change.
 
-**Gate:** same seven-item acceptance list as before, plus: approving a `pending_approval` upload from the dashboard actually publishes it, and the Edge TTS status dot goes red within one failed run.
+**Gate:** same acceptance list as `CONSOLE_SPEC.md` §6, plus: downloading a `ready_for_review` export streams the real MP4 and `audit_json` matches the render it came from, and the Edge TTS status dot goes red within one failed run.
 
 ---
 
 ## Part IV — Ongoing operating loop
 
-- **Daily digest** (09:00): uploads published, signals rejected + reasons, GATE rejection breakdown, footage rotation health (any game running low on unused segments), Edge TTS failure count.
+- **Daily digest** (09:00): exports ready for review, signals rejected + reasons, AUDIT SUMMARY flag breakdown (informational — nothing was blocked), footage rotation health (any game running low on unused segments), voice rotation health, Edge TTS failure count.
 - **Weekly prompt review**: cluster the week's CRITIC rejections, propose one versioned edit to `prompts/script.v*.md` or `prompts/critic.v*.md`.
 - **Weekly footage refresh review**: did any tracked channel produce a new top video; is any game's segment library shrinking toward reuse-heavy rotation.
 - **Monthly**: `osv-scanner`, `npm outdated`, re-run `verify-quotas.mjs`, re-check Edge TTS is still alive (it has no SLA — this is the one dependency that can silently die), re-check YouTube's policy pages for wording changes to the inauthentic-content rules.

@@ -33,22 +33,22 @@ Verify with `npx wrangler secret list`. If one is missing, name it and stop.
 
 ### Not yet provisioned, needed for AutoShorts AI
 
-These are new requirements from the pivot and do not exist yet. Do not invent placeholder values — ask the operator when the phase that needs them is reached:
+These are new requirements from the pivot and do not exist yet. Do not invent placeholder values — ask the operator when the phase that needs them is reached. **There is no YouTube OAuth app in this project's plans** — the manual-review pivot (see `docs/DECISIONS.md`) removed the automated upload path entirely, so no `YOUTUBE_OAUTH_CLIENT_ID`/`_SECRET`/`_REFRESH_TOKEN` is ever needed:
 
 | Secret | Purpose | When needed |
 |---|---|---|
-| `YOUTUBE_OAUTH_CLIENT_ID` / `YOUTUBE_OAUTH_CLIENT_SECRET` | YouTube Data API v3 OAuth app credentials (Google Cloud Console) | Phase 6 (upload) |
-| `YOUTUBE_OAUTH_REFRESH_TOKEN` | Long-lived refresh token for the channel owner's account, obtained via a one-time consent flow | Phase 6 (upload) |
-| `YOUTUBE_API_KEY` | Read-only Data API key (Google Cloud Console → Credentials → Create API Key, restricted to the YouTube Data API v3). **Not** the OAuth client secret — much lower privilege, used only for `channels.list`/`search.list`/`videos.list` (public read-only data: resolving `@handle` → channel id, finding a channel's top videos). Used by `src/lib/drivers/youtube-search.ts` (built, contract-tested; no real key available in that session — see docs/DECISIONS.md) | Phase 5 (footage discovery), Phase 8 (provisioning) |
+| `YOUTUBE_API_KEY` | Read-only Data API key (Google Cloud Console → Credentials → Create API Key, restricted to the YouTube Data API v3), used only for `channels.list`/`search.list`/`videos.list` (public read-only data: resolving `@handle` → channel id, finding a channel's top videos). Used by `src/lib/drivers/youtube-search.ts` (built, contract-tested; no real key available in that session — see docs/DECISIONS.md) | Phase 5 (footage discovery), Phase 8 (provisioning) |
 | `TWENTYFIRST_API_KEY` | dev-machine only, MCP component scaffolding — **operator has set this up already per 2026-08-27 conversation**, verify present in `.env.local` before Phase 7/9 | Phase 7 (console UI) / Phase 9 |
 
 `CONSOLE_ENROLLMENT_TOKEN` is single-use and burns after the second passkey is registered. If Phase 9 needs a fresh one, ask the operator to generate it — do not do it yourself.
+
+The KV namespace provisioned in Phase 8 (Task 8.2) now also stores export blobs (rendered MP4s, 3-day TTL), not just hot JSON/rate-limit counters/the key vault — no separate namespace needed, but size this into the 1GB free-tier ceiling when checking headroom.
 
 ## GitHub Actions secrets
 
 `GROQ_API_KEY` · `CLOUDFLARE_API_TOKEN` · `CLOUDFLARE_ACCOUNT_ID`
 
-Will additionally need `YOUTUBE_OAUTH_*` (see above) once Phase 6 needs to upload from a scheduled run, not just via the console's dispatch. `GITHUB_TOKEN` is injected automatically per run.
+Will additionally need `YOUTUBE_API_KEY` (see above) once Phase 5/8 wire real footage-source discovery into a scheduled run. `CLOUDFLARE_API_TOKEN` is also what Phase 6's render job uses to write export blobs into KV. `GITHUB_TOKEN` is injected automatically per run.
 
 ## Cloudflare API token permissions
 
@@ -63,4 +63,4 @@ Account ▸ Turnstile            ▸ Edit
 
 ## Not on the machine
 
-The 21st.dev key lives only in the operator's `.env.local` and is never used in CI or in a Worker. Same for the eventual YouTube OAuth client secret used for the one-time local consent flow to mint the refresh token — that flow runs on the operator's machine, never in CI.
+The 21st.dev key lives only in the operator's `.env.local` and is never used in CI or in a Worker. There is no YouTube OAuth client/consent flow to run anywhere, on this machine or otherwise — the manual-review pivot removed it.

@@ -130,29 +130,27 @@ export interface RenderDriver {
   compose(req: RenderRequest): Promise<Result<RenderResponse, DriverError>>;
 }
 
-export interface UploadRequest {
-  filePath: string;
-  title: string;
-  description: string;
-  tags: string[];
-  /** youtube.com/t/terms video category id. "20" = Gaming. */
-  categoryId?: string;
-  privacyStatus?: "public" | "unlisted" | "private";
-  /**
-   * Always true here — this pipeline's videos always have AI narration.
-   * Maps to the YouTube Data API v3 `status.containsSyntheticMedia` field
-   * (confirmed against Google's docs 2026-08-27, not guessed).
-   */
-  containsSyntheticMedia: true;
+/**
+ * No UploadDriver exists in this system, by design — there is no automated
+ * publish path (ARCHITECTURE.md §9, docs/DECISIONS.md manual-review pivot).
+ * ExportDriver packages a finished render into storage the operator can
+ * download and review; nothing here ever calls a YouTube upload endpoint.
+ */
+export interface ExportStoreRequest {
+  key: string;
+  bytes: Uint8Array<ArrayBuffer>;
+  mimeType: string;
+  /** 3 days by default — ARCHITECTURE.md §9. */
+  ttlSeconds: number;
 }
 
-export interface UploadResponse {
-  videoId: string;
-  url: string;
+export interface ExportStoreResponse {
+  key: string;
+  sizeBytes: number;
 }
 
-export interface UploadDriver {
-  publish(req: UploadRequest): Promise<Result<UploadResponse, DriverError>>;
+export interface ExportDriver {
+  store(req: ExportStoreRequest): Promise<Result<ExportStoreResponse, DriverError>>;
 }
 
 export interface ChannelTopVideoRequest {

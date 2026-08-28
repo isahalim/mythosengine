@@ -29,7 +29,7 @@ describe("schema + migrations", () => {
       "footage_sources",
       "footage_segments",
       "renders",
-      "uploads",
+      "exports",
       "runs",
       "audit_log",
       "directives",

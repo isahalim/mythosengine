@@ -15,6 +15,10 @@ export const ASR_DRIVERS = ["groq-whisper", "yt-captions", "none"] as const;
 export const EMBED_DRIVERS = ["local-minilm", "workers-ai"] as const;
 export const VECTOR_DRIVERS = ["sqlite-vec", "d1-hybrid"] as const;
 export const CACHE_DRIVERS = ["kv", "memory"] as const;
+// The only export destination — Cloudflare KV, written via the REST API
+// (ARCHITECTURE.md §3/§9). There is no UPLOAD_DRIVERS list; no component in
+// this system uploads to YouTube automatically.
+export const EXPORT_DRIVERS = ["kv-blob"] as const;
 
 export interface ProviderConfig {
   llm: (typeof LLM_DRIVERS)[number];
@@ -22,6 +26,7 @@ export interface ProviderConfig {
   embed: (typeof EMBED_DRIVERS)[number];
   vector: (typeof VECTOR_DRIVERS)[number];
   cache: (typeof CACHE_DRIVERS)[number];
+  export: (typeof EXPORT_DRIVERS)[number];
 }
 
 function pick<const T extends readonly string[]>(
@@ -38,9 +43,10 @@ function pick<const T extends readonly string[]>(
 /**
  * Default profile (profiles/free.env — the only profile that has to work):
  * LLM_DRIVER=groq, ASR_DRIVER=yt-captions, EMBED_DRIVER=local-minilm,
- * VECTOR_DRIVER=sqlite-vec, CACHE_DRIVER=kv. The fallback below is that
- * profile's default, not just the first entry in each driver list — those
- * lists are declared in a different order than the profile defaults them.
+ * VECTOR_DRIVER=sqlite-vec, CACHE_DRIVER=kv, EXPORT_DRIVER=kv-blob. The
+ * fallback below is that profile's default, not just the first entry in
+ * each driver list — those lists are declared in a different order than
+ * the profile defaults them.
  */
 export function resolveProviderConfig(env: EnvLike): ProviderConfig {
   return {
@@ -49,5 +55,6 @@ export function resolveProviderConfig(env: EnvLike): ProviderConfig {
     embed: pick(env.EMBED_DRIVER, EMBED_DRIVERS, "local-minilm"),
     vector: pick(env.VECTOR_DRIVER, VECTOR_DRIVERS, "sqlite-vec"),
     cache: pick(env.CACHE_DRIVER, CACHE_DRIVERS, "kv"),
+    export: pick(env.EXPORT_DRIVER, EXPORT_DRIVERS, "kv-blob"),
   };
 }

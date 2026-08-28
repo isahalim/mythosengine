@@ -39,7 +39,7 @@ export const signals = sqliteTable(
     engagementScore: real("engagement_score").notNull(),
     simhash: text("simhash").notNull(),
     state: text("state", {
-      enum: ["observed", "scored", "scripted", "critiqued", "gated", "uploaded", "rejected", "failed"],
+      enum: ["observed", "scored", "scripted", "critiqued", "exported", "rejected", "failed"],
     }).notNull(),
     attempts: integer("attempts").notNull().default(0),
   },
@@ -48,7 +48,7 @@ export const signals = sqliteTable(
     index("idx_signals_state").on(t.state, t.observedAt),
     check(
       "chk_signals_state",
-      sql`${t.state} IN ('observed','scored','scripted','critiqued','gated','uploaded','rejected','failed')`,
+      sql`${t.state} IN ('observed','scored','scripted','critiqued','exported','rejected','failed')`,
     ),
   ],
 );
@@ -66,8 +66,14 @@ export const scripts = sqliteTable(
     wordCount: integer("word_count").notNull(),
     originalityScore: real("originality_score"),
     status: text("status", { enum: ["draft", "approved", "rejected"] }).notNull(),
+    // Drives "today's diversity" queries (ARCHITECTURE.md §5.3) — which
+    // sources/games/voices today's earlier renders already used.
+    createdAt: text("created_at").notNull(),
   },
-  (t) => [check("chk_scripts_status", sql`${t.status} IN ('draft','approved','rejected')`)],
+  (t) => [
+    check("chk_scripts_status", sql`${t.status} IN ('draft','approved','rejected')`),
+    index("idx_scripts_created").on(t.createdAt),
+  ],
 );
 
 export const footageSources = sqliteTable("footage_sources", {
@@ -111,30 +117,48 @@ export const renders = sqliteTable(
       .notNull()
       .references(() => footageSegments.id),
     ttsDriver: text("tts_driver").notNull(),
+    // Actual voice used (not the directive's pool) — feeds the audit
+    // package and tomorrow's diversity query (ARCHITECTURE.md §5.6).
+    ttsVoice: text("tts_voice").notNull(),
     durationS: real("duration_s"),
     status: text("status", { enum: ["pending", "rendered", "failed"] }).notNull(),
-    gateResult: text("gate_result"),
+    // AUDIT SUMMARY result (ARCHITECTURE.md §9) — advisory, never blocking.
+    auditResult: text("audit_result"),
+    createdAt: text("created_at").notNull(),
   },
-  (t) => [check("chk_renders_status", sql`${t.status} IN ('pending','rendered','failed')`)],
+  (t) => [
+    check("chk_renders_status", sql`${t.status} IN ('pending','rendered','failed')`),
+    index("idx_renders_created").on(t.createdAt),
+  ],
 );
 
-export const uploads = sqliteTable(
-  "uploads",
+export const exports = sqliteTable(
+  "exports",
   {
     id: text("id").primaryKey(),
     renderId: text("render_id")
       .notNull()
       .references(() => renders.id),
-    youtubeVideoId: text("youtube_video_id"),
-    title: text("title").notNull(),
-    description: text("description").notNull(),
-    tagsJson: text("tags_json").notNull(),
+    storageKey: text("storage_key").notNull(), // KV key holding the mp4 bytes
+    sizeBytes: integer("size_bytes").notNull(),
+    suggestedTitle: text("suggested_title").notNull(),
+    suggestedDescription: text("suggested_description").notNull(),
+    suggestedTagsJson: text("suggested_tags_json").notNull(),
+    // Reminder for the operator's manual upload — not enforced anywhere.
     containsSyntheticMedia: integer("contains_synthetic_media").notNull().default(1),
-    uploadedAt: text("uploaded_at"),
-    status: text("status", { enum: ["pending_approval", "approved", "published", "failed"] }).notNull(),
+    // script + critic output + footage provenance + TTS settings + audit_result
+    auditJson: text("audit_json").notNull(),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(), // created_at + 3 days; KV TTL enforces the actual deletion
+    status: text("status", {
+      enum: ["ready_for_review", "downloaded", "reviewed", "discarded", "expired"],
+    }).notNull(),
   },
   (t) => [
-    check("chk_uploads_status", sql`${t.status} IN ('pending_approval','approved','published','failed')`),
+    check(
+      "chk_exports_status",
+      sql`${t.status} IN ('ready_for_review','downloaded','reviewed','discarded','expired')`,
+    ),
   ],
 );
 
@@ -165,6 +189,9 @@ export const directives = sqliteTable(
     version: integer("version").primaryKey({ autoIncrement: true }),
     createdAt: text("created_at").notNull(),
     rawText: text("raw_text").notNull(),
+    // focus_games, exclude_topics, min_originality_score, max_uploads_per_day,
+    // tone, editorial_note, voice_pool, tts_rate_range, preferred_source_ids,
+    // diversity_mode — full schema in CONSOLE_SPEC.md §3.
     compiledJson: text("compiled_json").notNull(),
     status: text("status", { enum: ["draft", "active", "superseded", "reverted"] }).notNull(),
     parentVersion: integer("parent_version"),

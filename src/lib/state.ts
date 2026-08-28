@@ -10,22 +10,22 @@ export type SignalState =
   | "scored"
   | "scripted"
   | "critiqued"
-  | "gated"
-  | "uploaded"
+  | "exported"
   | "rejected"
   | "failed";
 
 export type ScriptStatus = "draft" | "approved" | "rejected";
 export type RenderStatus = "pending" | "rendered" | "failed";
-export type UploadStatus = "pending_approval" | "approved" | "published" | "failed";
+export type ExportStatus = "ready_for_review" | "downloaded" | "reviewed" | "discarded" | "expired";
 
 const SIGNAL_TRANSITIONS: Record<SignalState, readonly SignalState[]> = {
   observed: ["scored", "rejected", "failed"],
   scored: ["scripted", "rejected", "failed"],
   scripted: ["critiqued", "rejected", "failed"],
-  critiqued: ["gated", "rejected", "failed"],
-  gated: ["uploaded", "rejected", "failed"],
-  uploaded: [],
+  // AUDIT SUMMARY (ARCHITECTURE.md §9) is advisory and never blocks — every
+  // critiqued signal that reaches RENDER proceeds straight to EXPORT.
+  critiqued: ["exported", "rejected", "failed"],
+  exported: [],
   rejected: [],
   failed: [],
 };
@@ -42,11 +42,12 @@ const RENDER_TRANSITIONS: Record<RenderStatus, readonly RenderStatus[]> = {
   failed: [],
 };
 
-const UPLOAD_TRANSITIONS: Record<UploadStatus, readonly UploadStatus[]> = {
-  pending_approval: ["approved", "failed"],
-  approved: ["published", "failed"],
-  published: [],
-  failed: [],
+const EXPORT_TRANSITIONS: Record<ExportStatus, readonly ExportStatus[]> = {
+  ready_for_review: ["downloaded", "discarded", "expired"],
+  downloaded: ["reviewed", "discarded", "expired"],
+  reviewed: [],
+  discarded: [],
+  expired: [],
 };
 
 export class IllegalTransitionError extends Error {
@@ -67,4 +68,4 @@ function makeAsserter<S extends string>(entity: string, transitions: Record<S, r
 export const assertSignalTransition = makeAsserter<SignalState>("signal", SIGNAL_TRANSITIONS);
 export const assertScriptTransition = makeAsserter<ScriptStatus>("script", SCRIPT_TRANSITIONS);
 export const assertRenderTransition = makeAsserter<RenderStatus>("render", RENDER_TRANSITIONS);
-export const assertUploadTransition = makeAsserter<UploadStatus>("upload", UPLOAD_TRANSITIONS);
+export const assertExportTransition = makeAsserter<ExportStatus>("export", EXPORT_TRANSITIONS);

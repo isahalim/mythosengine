@@ -9,6 +9,7 @@ describe("resolveProviderConfig", () => {
       embed: "local-minilm",
       vector: "sqlite-vec",
       cache: "kv",
+      export: "kv-blob",
     });
   });
 
