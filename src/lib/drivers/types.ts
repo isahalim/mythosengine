@@ -5,7 +5,16 @@ import type { Result } from "../result.ts";
  * thrown exceptions across a driver boundary.
  */
 export interface DriverError {
-  kind: "timeout" | "rate_limited" | "invalid_response" | "network" | "provider_error" | "not_implemented";
+  kind:
+    | "timeout"
+    | "rate_limited"
+    | "invalid_response"
+    | "network"
+    | "provider_error"
+    | "not_implemented"
+    // A deliberate refusal, not a technical failure — e.g. a candidate video
+    // exceeding maxDurationS. Never retryable; retrying can't fix a policy call.
+    | "policy_violation";
   message: string;
   retryable: boolean;
   retryAfterMs?: number;
@@ -81,6 +90,22 @@ export interface TtsResponse extends Quota {
 
 export interface TtsDriver {
   synthesize(req: TtsRequest): Promise<Result<TtsResponse, DriverError>>;
+}
+
+export interface DownloadRequest {
+  url: string;
+  /** Refuse (policy_violation) rather than download anything longer than this. */
+  maxDurationS?: number;
+}
+
+export interface DownloadResponse {
+  filePath: string;
+  durationS: number;
+  sourceVideoId: string;
+}
+
+export interface DownloadDriver {
+  fetchVideo(req: DownloadRequest): Promise<Result<DownloadResponse, DriverError>>;
 }
 
 export interface EmbedRequest {

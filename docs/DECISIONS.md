@@ -4,6 +4,14 @@ Never edit or delete an entry. Append a new one if a decision changes.
 
 ---
 
+## 2026-08-27 (late night) — download-ytdlp.ts
+
+**What changed:** implemented `src/lib/drivers/download-ytdlp.ts`. Fetches `yt-dlp --dump-json` metadata first; if `maxDurationS` is set and the real duration exceeds it, returns the new `policy_violation` `DriverError` kind (added to `src/lib/drivers/types.ts` — a deliberate refusal, distinct from a technical failure, never retryable) before any download call happens. Only then downloads (`-f "bestvideo[height<=1080]+bestaudio/best[height<=1080]" --merge-output-format mp4`). 7 contract tests against fixture scripts (success, over-duration refusal, under-duration pass, malformed metadata JSON, metadata-call failure, download producing no file, missing binary).
+
+**Why:** `ARCHITECTURE.md` §5.0 requires the duration check to happen *before* bytes move, specifically so a 4-hour stream can't become the accidental download target — metadata-first is the only way to guarantee that ordering rather than checking after the fact.
+
+**What was rejected — deliberately did not do a real full-video smoke test in this session:** proved the driver against the live `yt-dlp` binary two ways instead — a real `--dump-json` call (confirmed the response shape matches what the driver parses) and a real end-to-end driver call against a live URL where `maxDurationS` was set below the actual duration specifically to exercise the refusal path without downloading anything. That's enough to prove the integration is real, without this session being the first thing to actually pull video bytes through the pipeline this driver is one part of — that's a decision for whoever runs the weekly FOOTAGE REFRESH job for real, against the operator's actual tracked channels, not something to do incidentally while testing a driver.
+
 ## 2026-08-27 (later night) — tts-edge.ts: subprocess to a Python wrapper, not a hand-rolled protocol or an npm import
 
 **What changed:** implemented `src/lib/drivers/tts-edge.ts` + `scripts/edge_tts_synth.py`. The driver shells out to the wrapper script (`node:child_process.execFile`), which imports the `edge_tts` Python library (LGPL-3.0, `rany2/edge-tts`) directly and requests `WordBoundary` events explicitly. Real end-to-end smoke test passed: real audio bytes + real word-level timings (`startMs`/`endMs` per word) from the live, unauthenticated Microsoft endpoint. 6 contract tests against fixture Python scripts (success, malformed JSON, missing output files, non-zero exit/retry, hang/timeout, missing interpreter).

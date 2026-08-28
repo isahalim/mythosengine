@@ -88,25 +88,29 @@ end-to-end smoke test against the live service. Requires `python3` and
 `pip install edge-tts` in whatever environment runs it — document this in
 `PROVISIONED.md`/CI setup when Phase 6 wires the GitHub Actions workflow.
 
+**`download-ytdlp.ts` — done** (2026-08-27). Shells out to a `yt-dlp` binary
+(pinned in whatever environment runs it, installed via `pip` alongside
+`edge-tts` — one Python toolchain for both). Fetches `--dump-json` metadata
+first and refuses (`policy_violation`, non-retryable) anything over
+`maxDurationS` before a single video byte moves. 7 contract tests against
+fixture scripts, plus a real metadata-only smoke test against the live
+`yt-dlp` binary (YouTube's first-ever upload, 19s) proving the real
+integration and the policy-refusal path both work — deliberately did not
+smoke-test an actual full video download in this session; see
+docs/DECISIONS.md for why.
+
 **Still needed:**
 
 ```
 Implement, matching the existing driver pattern exactly (Result<T,E>, typed
-DriverError, fetchWithRetry where applicable, contract tests against a local
-mock — a mock HTTP server for upload, a fixture video file for
-download/render):
+DriverError, contract tests against fixture scripts/files):
 
-1. src/lib/drivers/download-ytdlp.ts — shells out to a pinned yt-dlp binary
-   via node:child_process. Returns a local file path + duration. Bounded by
-   maxDurationS so a 4-hour stream can't accidentally become the download
-   target of the weekly refresh job.
-
-2. src/lib/drivers/render-ffmpeg.ts — shells out to ffmpeg. Builds an ASS
+1. src/lib/drivers/render-ffmpeg.ts — shells out to ffmpeg. Builds an ASS
    subtitle file from word-timed caption cues (fade transition between
    groups, not a static box), crops/scales to 1080x1920 filling >=75% of
    frame height, mutes source audio, mixes narration, exports MP4.
 
-3. src/lib/drivers/upload-youtube.ts — YouTube Data API v3 via OAuth
+2. src/lib/drivers/upload-youtube.ts — YouTube Data API v3 via OAuth
    (refresh-token flow, vault-managed). Sets whatever the CURRENT synthetic-
    media disclosure field is — check https://developers.google.com/youtube
    /v3 (or the cloudflare-docs/context7 MCP if it mirrors third-party docs)
@@ -116,7 +120,7 @@ Do not write pipeline logic yet — this task is drivers only, same
 constraint as before.
 ```
 
-**Gate:** contract tests pass against fixtures/mock servers for the remaining three; a real (but tiny, cheap) smoke test renders one 3-second clip end-to-end locally before this phase is called done. (The TTS half of that smoke test — real audio + real word timings from the live service — already passed; see docs/DECISIONS.md.)
+**Gate:** contract tests pass against fixtures/mock servers for the remaining two; a real (but tiny, cheap) smoke test renders one 3-second clip end-to-end locally before this phase is called done. (TTS and download smoke tests already passed against live services; see docs/DECISIONS.md.)
 
 ---
 
