@@ -20,13 +20,13 @@
       "$note": "Component search/generation + search_logo + get_inspiration. Key from 21st.dev/mcp. Dev machine only -- never in CI or Workers."
     },
     "cloudflare-docs": {
-      "type": "sse",
-      "url": "https://docs.mcp.cloudflare.com/sse",
+      "type": "http",
+      "url": "https://docs.mcp.cloudflare.com/mcp",
       "$note": "Current Workers/Pages/D1/KV/Turnstile docs. Stops hallucinated wrangler flags."
     },
     "cloudflare-bindings": {
-      "type": "sse",
-      "url": "https://bindings.mcp.cloudflare.com/sse",
+      "type": "http",
+      "url": "https://bindings.mcp.cloudflare.com/mcp",
       "$note": "OAuth-based, read/write to your account. Add only when you are ready to let the agent touch real infrastructure."
     },
     "github": {
