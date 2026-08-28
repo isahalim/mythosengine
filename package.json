@@ -6,6 +6,7 @@
     "node": ">=22"
   },
   "scripts": {
+    "postinstall": "wrangler types",
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro build && wrangler dev",
