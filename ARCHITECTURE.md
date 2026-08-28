@@ -358,6 +358,7 @@ Full console design: **`CONSOLE_SPEC.md`**.
 | `GROQ_API_KEY` | console.groq.com | default |
 | `YOUTUBE_OAUTH_CLIENT_ID` / `_SECRET` | Google Cloud Console → OAuth consent screen + credentials | YouTube Data API v3, `youtube.upload` scope only |
 | `YOUTUBE_OAUTH_REFRESH_TOKEN` | one-time consent flow run on the operator's machine, never in CI | long-lived, vault-managed, rotatable from the console like `GROQ_API_KEY` was |
+| `YOUTUBE_API_KEY` | Google Cloud Console → Credentials → API Key, restricted to YouTube Data API v3 | read-only (`channels.list`/`search.list`/`videos.list`) — deliberately not the OAuth credential; footage discovery never needs upload-capable access |
 | `CLOUDFLARE_API_TOKEN` | dash.cloudflare.com | Workers/KV/D1/Turnstile edit, no `Zone:Edit` |
 | `VAULT_MASTER_KEY` / `SESSION_SIGNING_KEY` | `openssl rand -base64 32` | Worker secret only |
 | `TWENTYFIRST_API_KEY` | 21st.dev | dev machine only, never CI/Workers |

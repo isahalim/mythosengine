@@ -1,0 +1,16 @@
+# Seed footage_sources (ARCHITECTURE.md §5.0). Tracked long-form
+# walkthrough/guide creators only — never a per-run scrape target, per the
+# footage-sourcing design in docs/DECISIONS.md. The weekly FOOTAGE REFRESH
+# job discovers each channel's current top video and clips from it; the
+# same source video can be reused across many distinct renders.
+
+footage_sources:
+  - id: hollowpoiint-gta
+    channel_url: https://www.youtube.com/@HollowPoiint
+    game: gta-v
+    license_note: >
+      Public, high-subscriber (3.2M) full-game walkthrough channel.
+      Footage acquisition follows the weekly-refresh + heavy-transformation
+      design in ARCHITECTURE.md §5.0/§9 (75%+ vertical crop, original
+      narration, animated captions) — see docs/DECISIONS.md for the
+      accepted risk profile; this is not a claim of zero risk.

@@ -155,6 +155,25 @@ export interface UploadDriver {
   publish(req: UploadRequest): Promise<Result<UploadResponse, DriverError>>;
 }
 
+export interface ChannelTopVideoRequest {
+  /** A channel handle, without the leading @ (e.g. "HollowPoiint"). */
+  channelHandle: string;
+  /** Only consider videos at least this long — filters out another Short. */
+  minDurationS: number;
+}
+
+export interface ChannelTopVideoResponse {
+  videoId: string;
+  title: string;
+  durationS: number;
+  viewCount: number;
+}
+
+export interface YoutubeSearchDriver {
+  /** Returns null (not an error) if the channel has no video meeting minDurationS. */
+  findTopLongFormVideo(req: ChannelTopVideoRequest): Promise<Result<ChannelTopVideoResponse | null, DriverError>>;
+}
+
 export interface EmbedRequest {
   texts: string[];
 }

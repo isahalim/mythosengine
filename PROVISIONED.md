@@ -39,6 +39,7 @@ These are new requirements from the pivot and do not exist yet. Do not invent pl
 |---|---|---|
 | `YOUTUBE_OAUTH_CLIENT_ID` / `YOUTUBE_OAUTH_CLIENT_SECRET` | YouTube Data API v3 OAuth app credentials (Google Cloud Console) | Phase 6 (upload) |
 | `YOUTUBE_OAUTH_REFRESH_TOKEN` | Long-lived refresh token for the channel owner's account, obtained via a one-time consent flow | Phase 6 (upload) |
+| `YOUTUBE_API_KEY` | Read-only Data API key (Google Cloud Console → Credentials → Create API Key, restricted to the YouTube Data API v3). **Not** the OAuth client secret — much lower privilege, used only for `channels.list`/`search.list`/`videos.list` (public read-only data: resolving `@handle` → channel id, finding a channel's top videos). Used by `src/lib/drivers/youtube-search.ts` (built, contract-tested; no real key available in that session — see docs/DECISIONS.md) | Phase 5 (footage discovery), Phase 8 (provisioning) |
 | `TWENTYFIRST_API_KEY` | dev-machine only, MCP component scaffolding — **operator has set this up already per 2026-08-27 conversation**, verify present in `.env.local` before Phase 7/9 | Phase 7 (console UI) / Phase 9 |
 
 `CONSOLE_ENROLLMENT_TOKEN` is single-use and burns after the second passkey is registered. If Phase 9 needs a fresh one, ask the operator to generate it — do not do it yourself.

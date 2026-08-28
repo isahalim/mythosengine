@@ -4,6 +4,29 @@ Never edit or delete an entry. Append a new one if a decision changes.
 
 ---
 
+## 2026-08-28 (afternoon) — Phase 5: footage pipeline, first real end-to-end proof of the full chain
+
+**What changed:** implemented FOOTAGE REFRESH end to end: `src/lib/drivers/youtube-search.ts` (+ `iso8601-duration.ts`), `src/lib/footage/{motion-score,clip,library,refresh}.ts`. Full technical detail in `AGENT_PLAYBOOK.md`'s Phase 5 entry.
+
+**Why the motion-scoring approach is what it is:** verified ffmpeg's `signalstats`+`metadata=print` output format against a real invocation before writing the parser (a `frame:N pts_time:T` header followed by `key=value` lines, including `lavfi.signalstats.YDIF/UDIF/VDIF` — per-channel frame-to-frame difference). Sliding a window across the resulting per-second series and picking non-overlapping high-motion peaks is a standard, simple motion proxy — not a claim of detecting "excitement" or "action" in any perceptual sense, just frame-to-frame pixel change, which is honest and good enough to rank candidates.
+
+**A real environment problem found and fixed along the way, not just software:** installing `ffmpeg-full` earlier (for the Phase 1 render-driver's real caption-burn-in test) left the plain Homebrew `ffmpeg` binary dynamically linked against an x265 library version that `brew`'s cleanup had since removed — the default `ffmpeg` on this machine's PATH silently stopped working. Found via a real test failure, not assumed; fixed with `brew reinstall ffmpeg` (relinks against current dependencies), verified working again, and the full suite was rerun to confirm.
+
+**What was rejected:**
+- **A perceptual "action" classifier** (motion detection via optical flow, object detection, or anything ML-based) for scoring candidate windows — `signalstats`' frame-difference metric is simpler, needs no additional model or dependency, and is transparent about what it actually measures. Revisit if simple frame-difference ever proves to pick bad clips in practice.
+- **A real live run of `youtube-search.ts`** — no `YOUTUBE_API_KEY` exists yet (not provisioned, see `PROVISIONED.md`). Contract-tested only, same honest gap as `upload-youtube.ts`'s missing OAuth smoke test.
+- **Pushing the `assets-library` branch to a remote as part of `commitClipToLibrary`** — deliberately out of scope for this function. Committing locally is safe and idempotent to retry; pushing is an action visible to others and stays a separate, explicit step (the actual GitHub Actions workflow's job, when Phase 8 wires it, not a driver's).
+
+## 2026-08-28 (midday) — First footage_sources entry: HollowPoiint; TubePull kept dev-time only
+
+**What changed:** `data/footage_sources.yml` seeded with `@HollowPoiint` (confirmed real: 3.2M subscribers, full-game walkthroughs including GTA V — matches the "long-form guide/movie-style" criteria `ARCHITECTURE.md` §5.0 was written around) at the operator's direction. `.mcp.json` gained a `tubepull` entry.
+
+**Why TubePull is dev-time only, not the production download path:** the operator suggested it specifically because its free tier caps at 3 downloads/day, which "fits" the weekly refresh job's low volume. That's a real observation, but it doesn't outweigh what TubePull actually is: a third-party hosted service that runs the download on *its own* infrastructure and hands back a signed link — built and marketed for interactive AI-assistant use (Claude/ChatGPT/Perplexity/Cursor), not documented or obviously intended for a headless cron job. Weighed against `download-ytdlp.ts`, which is already built, contract-tested, **and proven against a live YouTube URL in this session** (Phase 1): TubePull adds a business-continuity dependency (a free hosted service that could shut down, reprice, or change its tool schema with no notice — worse than `edge-tts`'s "unofficial but at least self-hostable" risk profile, since TubePull isn't open source and can't be forked if it disappears) and an external rate limit our own driver doesn't have, in exchange for no capability we didn't already have working. Presented this tradeoff to the operator directly rather than deciding silently; they agreed.
+
+**What TubePull is kept for:** quick manual `get_video_info`/preview checks on a candidate video during development, the same "dev-time convenience, not a runtime dependency" role `edge-tts-mcp` already has in this project.
+
+**What was rejected:** rewiring the weekly FOOTAGE REFRESH job to call TubePull instead of `yt-dlp` — would have replaced a proven, self-hosted, already-tested driver with a rate-limited third-party service for no functional gain.
+
 ## 2026-08-28 (morning) — Phase 3: trend ingestion, and Reddit's real access terms
 
 **What changed:** implemented WATCH + SCORE (`src/lib/ingest/{feed-parser,watch,simhash,score,seed-sources}.ts`), seeded `data/sources.yml`, added `etag`/`last_modified` to `sources` (migration `0001`). Full details of what was built are in `AGENT_PLAYBOOK.md`'s Phase 3 entry. This entry is specifically about the Reddit-sourcing finding, since it changed the plan mid-implementation.

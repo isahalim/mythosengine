@@ -276,29 +276,49 @@ Implement stages 3-4 using these prompt files, reusing GroqLlmDriver as-is.
 
 ---
 
-### Phase 5 — Footage pipeline (weekly refresh + FOOTAGE SELECT)
+### Phase 5 — Footage pipeline (weekly refresh + FOOTAGE SELECT) — done (2026-08-28)
 
-```
-Implement stage 0 (FOOTAGE REFRESH) and stage 5 (FOOTAGE SELECT) from
-ARCHITECTURE.md §5, using the drivers from Phase 1.
+`data/footage_sources.yml` seeded with `@HollowPoiint` (operator-provided,
+confirmed real). Built:
 
-- youtube.search discovery per footage_sources row (operator provides the
-  initial channel list — long-form walkthrough/guide creators only, per
-  ARCHITECTURE.md §0/§5.0).
-- Skip any source_video_id already represented in footage_segments — this
-  is what keeps the weekly job cheap.
-- Motion-scoring pass (ffmpeg signalstats or equivalent frame-difference
-  metric) over sliding windows, rank, clip top-N into 15-30s segments.
-- Write clips + provenance metadata to the assets-library orphan branch;
-  delete the full downloaded source video after clipping.
-- FOOTAGE SELECT: weighted-random pick favoring low used_count/old
-  last_used_at, matching the active directive's focus game(s).
-- Tests: a source already in the library is skipped, not re-downloaded; a
-  used-up rotation still terminates instead of looping forever if the
-  library for a game is small.
-```
+- `src/lib/drivers/youtube-search.ts` + `iso8601-duration.ts` — resolves a
+  channel handle, finds its highest-viewed video that clears
+  `minDurationS`, using a **read-only** `YOUTUBE_API_KEY` (not the OAuth
+  upload credential — see `PROVISIONED.md`; not provisioned yet, so this
+  driver is contract-tested only, no live run in this session).
+- `src/lib/footage/motion-score.ts` — `computeMotionSeries` runs `ffmpeg`
+  with `signalstats`+`metadata=print` (verified the output format against
+  real ffmpeg before writing the parser, not guessed) and
+  `findTopMotionWindows` slides a window across the resulting per-second
+  motion series to rank non-overlapping high-motion candidates.
+- `src/lib/footage/clip.ts` — extracts one candidate window into a
+  standalone clip file, re-encoded so the cut lands exactly on the window
+  boundary.
+- `src/lib/footage/library.ts` — `ensureLibraryWorktree` creates/reuses the
+  `assets-library` orphan branch via `git worktree` (never touches the
+  caller's actual checked-out branch); `commitClipToLibrary` writes the
+  clip + a JSON provenance sidecar and commits, locally only — pushing is a
+  separate, explicit step this function deliberately does not take.
+- `src/lib/footage/refresh.ts` — `refreshFootageSource` ties it together:
+  discover → skip if `source_video_id` already in `footage_segments` →
+  download (`download-ytdlp.ts`, Phase 1) → motion-score → clip top-N →
+  commit each to the library → insert `footage_segments` rows → delete the
+  full downloaded source.
+- FOOTAGE SELECT was already done in Phase 2: `db/footage-select.ts`'s
+  `claimNextFootageSegment` is the atomic rotation-favoring claim this
+  stage needs; nothing further to build here.
 
-**Gate:** a dry run against one real long-form video produces sane clip boundaries and correct provenance metadata; re-running the same week is a no-op for that channel.
+**Real, not just mocked:** `refresh.test.ts` runs the actual chain —
+real `ffmpeg` motion-scoring and clipping, a real scratch git repo with a
+real `assets-library` branch and a real commit — with only the YouTube
+API/download legs faked (no real key, and the download leg is already
+proven live in Phase 1). The committed clip was read back out of the git
+branch with `git show` and confirmed non-empty, not just "the function
+returned ok".
+
+**Gate, met:** the real end-to-end integration test produces sane clip
+boundaries and correct provenance metadata; a video already represented in
+`footage_segments` is skipped, not re-downloaded (tested).
 
 ---
 

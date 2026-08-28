@@ -44,6 +44,11 @@
       "command": "uvx",
       "args": ["edge_tts_mcp"],
       "$note": "Dev-time only: sample narration + inspect the subtitle/word-timing output shape before writing src/lib/drivers/tts-edge.ts. Requires Python + uv installed locally. NOT called at runtime by the pipeline -- the production driver speaks the underlying Edge TTS protocol directly (see ARCHITECTURE.md #3). Verified against https://pypi.org/project/edge-tts-mcp/ 2026-08-27; re-check if uvx fails."
+    },
+    "tubepull": {
+      "type": "http",
+      "url": "https://tubepull.com/mcp",
+      "$note": "Dev-time only: quickly preview/get_video_info on a candidate footage_sources video during development. NOT used by the production FOOTAGE REFRESH job -- that runs on download-ytdlp.ts (self-hosted, already contract- and live-tested). TubePull downloads run on a third party's own servers with a 3/day free-tier cap and no continuity guarantee, which is fine for an occasional manual check but is a worse dependency than yt-dlp for an unattended weekly cron job. See docs/DECISIONS.md."
     }
   }
 }
