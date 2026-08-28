@@ -1,8 +1,8 @@
-// Typed fetch client for the /console/* routes (ARCHITECTURE.md §6). The
-// Worker doesn't serve these yet (Phase 8) — every call here is expected to
-// fail honestly against today's dev server, and every caller in
-// src/console/scripts/** must render that failure as a real state, never a
-// fabricated fallback (CLAUDE.md NEVER block).
+// Typed fetch client for the /console/* routes (ARCHITECTURE.md §6),
+// implemented by src/server/router.ts as of Phase 8. Every caller in
+// src/console/scripts/** must still render a failed call as a real state,
+// never a fabricated fallback (CLAUDE.md NEVER block) — a real backend
+// existing doesn't change that discipline.
 //
 // Reuses the same Result<T,E>/fetchWithRetry discipline already
 // established for every backend driver (src/lib/drivers/http.ts) rather
@@ -12,6 +12,9 @@ import { err, ok, type Result } from "../../lib/result.ts";
 import { fetchWithRetry } from "../../lib/drivers/http.ts";
 import type { DriverError } from "../../lib/drivers/types.ts";
 import type {
+  AgentTurnResult,
+  ChatMessage,
+  ChatSessionSummary,
   ConsoleSummary,
   DirectiveCompiled,
   DirectiveSummary,
@@ -38,7 +41,12 @@ async function readJson<T>(res: Response): Promise<Result<T, DriverError>> {
 async function get<T>(path: string): Promise<Result<T, DriverError>> {
   const res = await fetchWithRetry(
     path,
-    { method: "GET", credentials: "same-origin" },
+    // The Accept header is load-bearing, not decorative: /console/settings is
+    // both this API route and an Astro page at the identical path
+    // (src/pages/console/settings.astro) — the Worker's router
+    // (src/server/router.ts) uses this header on GET to tell "the page's own
+    // fetch call" apart from "a browser navigating to the page."
+    { method: "GET", credentials: "same-origin", headers: { accept: "application/json" } },
     { timeoutMs: READ_TIMEOUT_MS, maxAttempts: 2, baseDelayMs: 300 },
   );
   if (!res.ok) return res;
@@ -48,7 +56,7 @@ async function get<T>(path: string): Promise<Result<T, DriverError>> {
 // Mutations never retry on their own — a retried POST could double-fire a
 // side effect (mark-reviewed, discard, killswitch). One attempt, hard
 // timeout, the caller decides whether to let the operator retry manually.
-async function send<T>(path: string, method: "POST" | "PUT", body?: unknown): Promise<Result<T, DriverError>> {
+async function send<T>(path: string, method: "POST" | "PUT" | "DELETE", body?: unknown): Promise<Result<T, DriverError>> {
   const res = await fetchWithRetry(
     path,
     {
@@ -110,6 +118,30 @@ export function testKey(name: string): Promise<Result<{ ok: true }, DriverError>
 
 export function dispatchRun(): Promise<Result<{ ok: true; runId: string }, DriverError>> {
   return send("/console/dispatch", "POST");
+}
+
+export function listChatSessions(): Promise<Result<ChatSessionSummary[], DriverError>> {
+  return get<ChatSessionSummary[]>("/console/chat/sessions");
+}
+
+export function createChatSession(): Promise<Result<ChatSessionSummary, DriverError>> {
+  return send<ChatSessionSummary>("/console/chat/sessions", "POST");
+}
+
+export function deleteChatSession(id: string): Promise<Result<{ ok: true }, DriverError>> {
+  return send(`/console/chat/sessions/${encodeURIComponent(id)}`, "DELETE");
+}
+
+export function getChatMessages(sessionId: string): Promise<Result<ChatMessage[], DriverError>> {
+  return get<ChatMessage[]>(`/console/chat/sessions/${encodeURIComponent(sessionId)}/messages`);
+}
+
+export function sendChatMessage(sessionId: string, content: string): Promise<Result<AgentTurnResult, DriverError>> {
+  return send<AgentTurnResult>(`/console/chat/sessions/${encodeURIComponent(sessionId)}/message`, "POST", { content });
+}
+
+export function logout(): Promise<Result<{ ok: true }, DriverError>> {
+  return send("/auth/passkey/logout", "POST");
 }
 
 export function setKillswitch(enabled: boolean): Promise<Result<{ ok: true; enabled: boolean }, DriverError>> {

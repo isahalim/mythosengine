@@ -422,6 +422,8 @@ evidence/file:line.
 
 **Gate:** hardening table complete; `wrangler deploy` green; a real end-to-end run (WATCH through EXPORT) produces a real downloadable export in the console, supervised.
 
+**Built (2026-08-28):** the full `ARCHITECTURE.md` §6 route table (`src/server/router.ts`), passkey auth + step-up reauth (`src/server/auth/**`), the encrypted key vault (`src/lib/vault.ts`), structured logging (`src/server/log.ts`, `pino/browser.js`) and Discord alert primitives (`src/server/alerts/**`, not yet wired to a caller — the runner they'd fire from doesn't exist), and the hardening table (`docs/DECISIONS.md`'s 2026-08-28 entry). Task 8.2 done for real: D1 database + `HOT`/`VAULT` KV namespaces created and migrated via the `cloudflare-bindings` MCP tools, IDs recorded in `PROVISIONED.md`. Also pulled Phase 9's login/passkey-enrollment UI forward into this session (`src/pages/console/login.astro`) — without it nothing built here was reachable by a human. **Gate not fully met, honestly:** `wrangler deploy` was not run (a separate confirmed action, or left to the existing GitHub Actions CD on push to `main`); a real end-to-end WATCH-through-EXPORT run isn't possible yet — that runner doesn't exist in this codebase. See `docs/DECISIONS.md` for the full account, including what was rejected and the known gaps (heuristic `vault.get()` lint restriction, no server-side session revocation, no Playwright pass on the new pages).
+
 ---
 
 ### Phase 9 — Operator console deep dive

@@ -1,0 +1,59 @@
+---
+// Chat-agent console — a Groq tool-calling assistant over the same
+// /console/* service layer every other page here uses
+// (src/server/agent/**). Static shell only, same output: "static"
+// constraint as every other console page (see index.astro's header
+// comment) — the session sidebar and message thread are built at runtime
+// by src/console/scripts/chat.ts against the real API, never baked in.
+import ConsoleLayout from "../../layouts/ConsoleLayout.astro";
+import ConsoleShell from "../../console/components/ConsoleShell.astro";
+---
+
+<ConsoleLayout title="Chat">
+  <ConsoleShell active="chat" />
+
+  <main class="mx-auto flex h-[calc(100vh-6rem)] max-w-6xl gap-6 px-6 pb-6">
+    <div id="console-api-error" data-console-api-error class="glass-card absolute left-6 right-6 top-24 hidden p-4 font-mono text-xs text-rose">
+      Console API not reachable.
+    </div>
+
+    <aside class="glass-card flex w-64 shrink-0 flex-col gap-3 p-4">
+      <button
+        id="chat-new-session"
+        type="button"
+        class="gradient-accent-border rounded-lg border border-mercury/20 px-3 py-2 font-mono text-xs uppercase tracking-wide text-mercury hover:text-sodium"
+      >
+        + New chat
+      </button>
+      <ul id="chat-session-list" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+        <li class="text-sm text-mercury/50">Loading…</li>
+      </ul>
+    </aside>
+
+    <section class="flex min-w-0 flex-1 flex-col gap-4">
+      <ul id="chat-thread" class="glass-card flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
+        <li class="text-sm text-mercury/50">Loading…</li>
+      </ul>
+
+      <form id="chat-composer" class="glass-card flex items-end gap-2 p-3">
+        <label for="chat-input" class="sr-only">Message</label>
+        <textarea
+          id="chat-input"
+          rows="2"
+          class="flex-1 resize-none rounded-md border border-mercury/20 bg-transparent px-3 py-2 font-body text-sm text-mercury focus-visible:outline-2 focus-visible:outline-sodium"
+          placeholder="Ask about the pipeline, or ask it to change settings and run one…"></textarea>
+        <button
+          type="submit"
+          class="rounded-md bg-sodium/90 px-4 py-2 font-mono text-xs uppercase tracking-wide text-ink hover:bg-sodium"
+        >
+          Send
+        </button>
+      </form>
+    </section>
+  </main>
+
+  <script>
+    import { initChat } from "../../console/scripts/chat.ts";
+    initChat();
+  </script>
+</ConsoleLayout>

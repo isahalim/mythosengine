@@ -26,9 +26,27 @@ export interface Quota {
   tokensUsed: number | null;
 }
 
+/** A single tool invocation the model asked for, or (on a "tool" message) the answer to one. */
+export interface ToolCall {
+  id: string;
+  name: string;
+  argumentsJson: string;
+}
+
 export interface LlmMessage {
-  role: "system" | "user" | "assistant";
+  role: "system" | "user" | "assistant" | "tool";
   content: string;
+  /** Set on an "assistant" message that invoked one or more tools. */
+  toolCalls?: ToolCall[];
+  /** Set on a "tool" message — which call (by id) this content answers. */
+  toolCallId?: string;
+}
+
+/** JSON-Schema-described function a tool-calling model may choose to invoke (src/server/agent/tools.ts). */
+export interface ToolDefinition {
+  name: string;
+  description: string;
+  parameters: unknown;
 }
 
 export interface LlmRequest {
@@ -37,11 +55,14 @@ export interface LlmRequest {
   jsonSchema?: unknown;
   maxTokens?: number;
   temperature?: number;
+  tools?: ToolDefinition[];
+  toolChoice?: "auto" | "none";
 }
 
 export interface LlmResponse extends Quota {
   content: string;
   finishReason: string;
+  toolCalls?: ToolCall[];
 }
 
 export interface LlmDriver {

@@ -1,6 +1,6 @@
 ---
 interface Props {
-  active: "dashboard" | "review" | "settings";
+  active: "dashboard" | "review" | "settings" | "chat";
 }
 
 const { active } = Astro.props;
@@ -8,6 +8,7 @@ const { active } = Astro.props;
 const links: { href: string; label: string; key: Props["active"] }[] = [
   { href: "/console", label: "Dashboard", key: "dashboard" },
   { href: "/console/review", label: "Review queue", key: "review" },
+  { href: "/console/chat", label: "Chat", key: "chat" },
   { href: "/console/settings", label: "Settings", key: "settings" },
 ];
 ---
@@ -32,7 +33,25 @@ const links: { href: string; label: string; key: Props["active"] }[] = [
       }
     </nav>
   </div>
-  <div id="killswitch-banner" data-killswitch-banner class="hidden font-mono text-xs uppercase tracking-wide text-rose">
-    Pipeline halted
+  <div class="flex items-center gap-4">
+    <div id="killswitch-banner" data-killswitch-banner class="hidden font-mono text-xs uppercase tracking-wide text-rose">
+      Pipeline halted
+    </div>
+    <button
+      id="console-logout-button"
+      type="button"
+      class="font-mono text-xs uppercase tracking-wide text-mercury/50 hover:text-rose"
+    >
+      Sign out
+    </button>
   </div>
 </header>
+
+<script>
+  import { logout } from "../lib/api.ts";
+  document.getElementById("console-logout-button")?.addEventListener("click", () => {
+    void logout().then(() => {
+      window.location.href = "/console/login";
+    });
+  });
+</script>

@@ -211,3 +211,86 @@ export const credentials = sqliteTable("credentials", {
   lastUsedAt: text("last_used_at"),
   label: text("label").notNull(),
 });
+
+// Step-up reauth (CONSOLE_SPEC.md §1/§2): a fresh WebAuthn assertion within
+// the last 5 minutes gates key rotation and the killswitch. Consumed via a
+// single atomic UPDATE...RETURNING (same pattern as
+// db/footage-select.ts's claimNextFootageSegment) rather than a KV
+// get-then-delete, which can't be made atomic at this binding level.
+export const reauthNonces = sqliteTable("reauth_nonces", {
+  nonce: text("nonce").primaryKey(),
+  sessionId: text("session_id").notNull(),
+  createdAt: text("created_at").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  consumed: integer("consumed").notNull().default(0),
+});
+
+// Pending WebAuthn ceremonies (CONSOLE_SPEC.md §1). The Worker is
+// stateless between the "generate options" and "verify response" calls of
+// a single ceremony, so the expected challenge has to live somewhere the
+// server — not the client — looks it up from; `id` is the only thing
+// handed to the browser, purely as a lookup key, never as the challenge
+// value itself. Consumed atomically, same UPDATE...RETURNING pattern as
+// reauth_nonces/footage_segments.
+export const webauthnChallenges = sqliteTable(
+  "webauthn_challenges",
+  {
+    id: text("id").primaryKey(),
+    challenge: text("challenge").notNull(),
+    purpose: text("purpose", { enum: ["register", "authenticate", "reauth"] }).notNull(),
+    sessionId: text("session_id"), // set for 'reauth' — ties the ceremony to the session it steps up
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    consumed: integer("consumed").notNull().default(0),
+  },
+  (t) => [check("chk_webauthn_challenges_purpose", sql`${t.purpose} IN ('register','authenticate','reauth')`)],
+);
+
+// Recovery codes (CONSOLE_SPEC.md §1): 8 shown once at first enrollment,
+// hashed here so a DB leak alone can't be used to log in. PBKDF2-SHA256 via
+// native crypto.subtle, not Argon2id as CONSOLE_SPEC.md literally says —
+// Argon2id has no Web Crypto implementation and every practical option
+// needs a wasm dependency disproportionate to 8 one-time codes; see
+// docs/DECISIONS.md. A redemption endpoint is out of scope here (not in
+// ARCHITECTURE.md §6's route table) — generation + storage only.
+export const recoveryCodes = sqliteTable("recovery_codes", {
+  id: text("id").primaryKey(),
+  hash: text("hash").notNull(),
+  salt: text("salt").notNull(),
+  used: integer("used").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+});
+
+// Chat-agent console (AGENT_PLAYBOOK.md Phase 8 follow-on) — one operator's
+// past conversations with the Groq tool-calling agent that drives the same
+// service layer as the REST console routes (src/server/console/**).
+export const chatSessions = sqliteTable("chat_sessions", {
+  id: text("id").primaryKey(),
+  title: text("title").notNull(), // derived from the first user message
+  createdAt: text("created_at").notNull(),
+  updatedAt: text("updated_at").notNull(),
+});
+
+export const chatMessages = sqliteTable(
+  "chat_messages",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id")
+      .notNull()
+      .references(() => chatSessions.id, { onDelete: "cascade" }),
+    role: text("role", { enum: ["user", "assistant", "tool"] }).notNull(),
+    content: text("content").notNull(),
+    // Set only when role = 'tool' — which console action ran and with what
+    // args/result, so the transcript shows agent actions as first-class,
+    // not just prose (CONSOLE_SPEC.md threat model: nothing here hides an
+    // action from the reviewer).
+    toolName: text("tool_name"),
+    toolArgsJson: text("tool_args_json"),
+    toolResultJson: text("tool_result_json"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    index("idx_chat_messages_session").on(t.sessionId, t.createdAt),
+    check("chk_chat_messages_role", sql`${t.role} IN ('user','assistant','tool')`),
+  ],
+);

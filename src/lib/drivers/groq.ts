@@ -1,12 +1,17 @@
 import { fetchWithRetry } from "./http.ts";
 import type { TokenBucketLimiter } from "./rate-limiter.ts";
-import type { DriverError, LlmDriver, LlmRequest, LlmResponse } from "./types.ts";
+import type { DriverError, LlmDriver, LlmMessage, LlmRequest, LlmResponse, ToolCall } from "./types.ts";
 import { err, ok, type Result } from "../result.ts";
 
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions";
 
+interface GroqWireToolCall {
+  id?: string;
+  function?: { name?: string; arguments?: string };
+}
+
 interface GroqChatResponse {
-  choices?: { message?: { content?: string }; finish_reason?: string }[];
+  choices?: { message?: { content?: string | null; tool_calls?: GroqWireToolCall[] }; finish_reason?: string }[];
   usage?: { total_tokens?: number };
 }
 
@@ -24,7 +29,32 @@ export interface GroqDriverOptions {
   baseDelayMs?: number;
 }
 
-/** Groq LLM driver (llama-3.3-70b-versatile / llama-3.1-8b-instant). */
+function toWireMessage(message: LlmMessage): Record<string, unknown> {
+  if (message.role === "tool") {
+    return { role: "tool", tool_call_id: message.toolCallId, content: message.content };
+  }
+  if (message.role === "assistant" && message.toolCalls && message.toolCalls.length > 0) {
+    return {
+      role: "assistant",
+      content: message.content || null,
+      tool_calls: message.toolCalls.map((tc) => ({
+        id: tc.id,
+        type: "function",
+        function: { name: tc.name, arguments: tc.argumentsJson },
+      })),
+    };
+  }
+  return { role: message.role, content: message.content };
+}
+
+function fromWireToolCalls(calls: GroqWireToolCall[] | undefined): ToolCall[] | undefined {
+  if (!calls || calls.length === 0) return undefined;
+  return calls
+    .filter((c): c is Required<GroqWireToolCall> & { function: { name: string; arguments: string } } => Boolean(c.id && c.function?.name))
+    .map((c) => ({ id: c.id, name: c.function.name, argumentsJson: c.function.arguments ?? "{}" }));
+}
+
+/** Groq LLM driver (llama-3.3-70b-versatile / llama-3.1-8b-instant). Supports OpenAI-compatible tool calling for src/server/agent/**. */
 export class GroqLlmDriver implements LlmDriver {
   private readonly baseUrl: string;
   private readonly fetchImpl?: typeof fetch;
@@ -54,10 +84,14 @@ export class GroqLlmDriver implements LlmDriver {
         },
         body: JSON.stringify({
           model: req.model,
-          messages: req.messages,
+          messages: req.messages.map(toWireMessage),
           max_tokens: req.maxTokens,
           temperature: req.temperature,
           ...(req.jsonSchema ? { response_format: { type: "json_object" } } : {}),
+          ...(req.tools
+            ? { tools: req.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })) }
+            : {}),
+          ...(req.toolChoice ? { tool_choice: req.toolChoice } : {}),
         }),
       },
       {
@@ -88,18 +122,24 @@ export class GroqLlmDriver implements LlmDriver {
       return err({ kind: "invalid_response", message: "Groq response was not an object", retryable: false });
     }
 
-    const content = body.choices?.[0]?.message?.content;
-    if (typeof content !== "string") {
+    const message = body.choices?.[0]?.message;
+    const toolCalls = fromWireToolCalls(message?.tool_calls);
+    const content = message?.content;
+
+    // A tool-calling turn legitimately has empty/null content — only a
+    // response with neither content nor a tool call is malformed.
+    if (typeof content !== "string" && !toolCalls) {
       return err({
         kind: "invalid_response",
-        message: "Groq response had no choices[0].message.content",
+        message: "Groq response had no choices[0].message.content and no tool_calls",
         retryable: false,
       });
     }
 
     return ok({
-      content,
+      content: content ?? "",
       finishReason: body.choices?.[0]?.finish_reason ?? "unknown",
+      toolCalls,
       quotaRemaining,
       tokensUsed: body.usage?.total_tokens ?? null,
     });

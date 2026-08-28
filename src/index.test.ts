@@ -8,7 +8,55 @@ function makeEnv(assetsResponse: Response): Env {
       throw new Error("connect() is not used by this test");
     },
   };
-  return { ASSETS: assets };
+  // Plain object literals structurally satisfying D1Database/KVNamespace —
+  // every method always throws/rejects, since these tests never exercise a
+  // real query. `Promise<never>` return types are assignable to every one
+  // of KVNamespace.get's overloads, so no `as`/cast is needed anywhere here
+  // (CLAUDE.md bans `as unknown as`).
+  const throwingDb: D1Database = {
+    prepare: () => {
+      throw new Error("D1 is not provisioned in this test");
+    },
+    batch: async (): Promise<never> => {
+      throw new Error("D1 is not provisioned in this test");
+    },
+    exec: async (): Promise<never> => {
+      throw new Error("D1 is not provisioned in this test");
+    },
+    withSession: () => {
+      throw new Error("D1 is not provisioned in this test");
+    },
+    dump: async (): Promise<never> => {
+      throw new Error("D1 is not provisioned in this test");
+    },
+  };
+  const throwingKv: KVNamespace = {
+    get: async (): Promise<never> => {
+      throw new Error("KV is not provisioned in this test");
+    },
+    put: async (): Promise<never> => {
+      throw new Error("KV is not provisioned in this test");
+    },
+    delete: async (): Promise<never> => {
+      throw new Error("KV is not provisioned in this test");
+    },
+    list: async (): Promise<never> => {
+      throw new Error("KV is not provisioned in this test");
+    },
+    getWithMetadata: async (): Promise<never> => {
+      throw new Error("KV is not provisioned in this test");
+    },
+  };
+  return {
+    ASSETS: assets,
+    DB: throwingDb,
+    HOT: throwingKv,
+    VAULT: throwingKv,
+    VAULT_MASTER_KEY: "unused",
+    SESSION_SIGNING_KEY: "unused",
+    CONSOLE_ENROLLMENT_TOKEN: "unused",
+    GROQ_API_KEY: "unused",
+  };
 }
 
 describe("worker fetch", () => {

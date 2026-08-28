@@ -1,0 +1,60 @@
+---
+// Passkey sign-in/enrollment (CONSOLE_SPEC.md §1) — the only /console/*
+// page reachable with no session. Everything else in this console assumes
+// one already exists; there is no server-side redirect-to-login yet (the
+// output: "static" constraint means no page here can check session state
+// at request time — see index.astro's header comment), so an unauthenticated
+// visit to another console page shows that page's own "Unavailable" state
+// (its API calls 401) rather than bouncing here automatically. Documented
+// as a known gap, not fixed in this pass.
+import ConsoleLayout from "../../layouts/ConsoleLayout.astro";
+---
+
+<ConsoleLayout title="Sign in">
+  <main class="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-8 px-6">
+    <div class="flex flex-col gap-1 text-center">
+      <span class="font-mono text-sm uppercase tracking-[0.2em] text-mercury">AutoShorts AI · Console</span>
+      <p class="font-mono text-xs text-mercury/50">Operator sign-in — passkey only.</p>
+    </div>
+
+    <div class="glass-card gradient-accent-border flex flex-col gap-6 p-6">
+      <button
+        id="login-signin-button"
+        type="button"
+        class="rounded-md bg-sodium/90 px-4 py-2.5 font-mono text-xs uppercase tracking-wide text-ink hover:bg-sodium"
+      >
+        Sign in with passkey
+      </button>
+
+      <div class="h-px bg-mercury/10"></div>
+
+      <details class="flex flex-col gap-3">
+        <summary class="cursor-pointer font-mono text-xs uppercase tracking-wide text-mercury/60">First time — register a passkey</summary>
+        <form id="login-register-form" class="mt-3 flex flex-col gap-3">
+          <label for="enrollment-token" class="font-mono text-xs uppercase tracking-wide text-mercury/70">
+            Enrollment token
+          </label>
+          <input
+            id="enrollment-token"
+            type="password"
+            autocomplete="off"
+            class="rounded-md border border-mercury/20 bg-transparent px-3 py-2 font-mono text-sm text-mercury focus-visible:outline-2 focus-visible:outline-sodium"
+          />
+          <button
+            type="submit"
+            class="rounded-md border border-mercury/20 px-4 py-2 font-mono text-xs uppercase tracking-wide text-mercury hover:border-sodium/60 hover:text-sodium"
+          >
+            Register passkey
+          </button>
+        </form>
+      </details>
+
+      <p id="login-status" class="min-h-4 font-mono text-xs text-mercury/70" aria-live="polite"></p>
+    </div>
+  </main>
+
+  <script>
+    import { initLogin } from "../../console/scripts/login.ts";
+    initLogin();
+  </script>
+</ConsoleLayout>

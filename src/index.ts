@@ -1,5 +1,9 @@
-export interface Env {
+import { routeRequest, type RouterEnv } from "./server/router.ts";
+
+export interface Env extends RouterEnv {
   ASSETS: Fetcher;
+  YOUTUBE_API_KEY?: string;
+  DISCORD_WEBHOOK_URL?: string;
 }
 
 export default {
@@ -11,13 +15,17 @@ export default {
     }
 
     if (url.pathname === "/readyz") {
-      // D1 and KV are not provisioned yet (see PROVISIONED.md, Task 8.2) — report
-      // not-ready honestly rather than a hardcoded ok.
-      return Response.json(
-        { ok: false, reason: "d1_kv_not_provisioned" },
-        { status: 503 },
-      );
+      try {
+        await env.DB.prepare("SELECT 1").first();
+        await env.HOT.get("readyz-probe");
+        return Response.json({ ok: true });
+      } catch (cause) {
+        return Response.json({ ok: false, reason: cause instanceof Error ? cause.message : String(cause) }, { status: 503 });
+      }
     }
+
+    const apiResponse = await routeRequest(request, env);
+    if (apiResponse) return apiResponse;
 
     const assetResponse = await env.ASSETS.fetch(request);
 

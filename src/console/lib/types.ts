@@ -114,3 +114,29 @@ export interface DryRunResult {
   wouldSkip: { signalId: string; title: string; reason: string }[];
   wouldPick: { signalId: string; title: string }[];
 }
+
+// Chat-agent console (Groq tool-calling over this same API surface —
+// src/server/agent/**). Mirrors db/schema.ts's chat_sessions/chat_messages.
+export interface ChatSessionSummary {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+type ChatRole = "user" | "assistant" | "tool";
+
+export interface ChatMessage {
+  id: string;
+  role: ChatRole;
+  content: string;
+  toolName: string | null;
+  toolArgsJson: string | null;
+  toolResultJson: string | null;
+  createdAt: string;
+}
+
+export interface AgentTurnResult {
+  finalMessage: string;
+  toolCallsMade: string[];
+}

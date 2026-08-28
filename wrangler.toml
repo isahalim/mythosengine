@@ -9,3 +9,16 @@ TURNSTILE_SITE_KEY = "0x4AAAAAAEee0w7vUlvWpXFF"
 [assets]
 directory = "./dist"
 binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mythosengine"
+database_id = "77a0969e-2fb8-460e-9e52-f2606b2fa2fa"
+
+[[kv_namespaces]]
+binding = "HOT"
+id = "e1a2adff832742ae8953cab9905a7aa6"
+
+[[kv_namespaces]]
+binding = "VAULT"
+id = "84b02470f3ca4e65807ba09c53cbe426"
