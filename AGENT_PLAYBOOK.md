@@ -99,18 +99,32 @@ integration and the policy-refusal path both work — deliberately did not
 smoke-test an actual full video download in this session; see
 docs/DECISIONS.md for why.
 
+**`render-ffmpeg.ts` — done** (2026-08-27), including the real smoke test the
+gate below asks for. `src/lib/drivers/ass-subtitles.ts` builds the caption
+track as a pure function (fully unit-tested — timing format, brace-escaping
+so cue text can never inject ASS override tags, newline handling — with no
+ffmpeg dependency at all); `render-ffmpeg.ts` shells out to `ffmpeg`/
+`ffprobe`, loops the footage segment to cover the narration's exact length
+(`-stream_loop -1` + `-shortest`), crops/scales to fill the full 1080x1920
+frame (a superset of the ">=75%" requirement), and burns in the ASS track.
+5 contract tests against fixture scripts, plus a **real** end-to-end render
+— genuine narration audio, real word timings, a 2-second test clip looped to
+cover a 4.6-second narration, real caption burn-in — verified by extracting
+a frame and looking at it, not just checking the process exit code. One
+environment note: the default Homebrew `ffmpeg` formula on macOS ships
+*without* `libass`, so the `subtitles`/`ass` filter silently isn't there;
+`ffmpeg-full` (bottled, includes libass) is what actually rendered the smoke
+test. Confirm whatever `ffmpeg` GitHub Actions' `ubuntu-latest` provides has
+it before Phase 6 wires this into CI — very likely does (Ubuntu's package
+includes it by default) but "very likely" isn't "confirmed."
+
 **Still needed:**
 
 ```
 Implement, matching the existing driver pattern exactly (Result<T,E>, typed
-DriverError, contract tests against fixture scripts/files):
+DriverError, contract tests against fixture scripts/mock server):
 
-1. src/lib/drivers/render-ffmpeg.ts — shells out to ffmpeg. Builds an ASS
-   subtitle file from word-timed caption cues (fade transition between
-   groups, not a static box), crops/scales to 1080x1920 filling >=75% of
-   frame height, mutes source audio, mixes narration, exports MP4.
-
-2. src/lib/drivers/upload-youtube.ts — YouTube Data API v3 via OAuth
+1. src/lib/drivers/upload-youtube.ts — YouTube Data API v3 via OAuth
    (refresh-token flow, vault-managed). Sets whatever the CURRENT synthetic-
    media disclosure field is — check https://developers.google.com/youtube
    /v3 (or the cloudflare-docs/context7 MCP if it mirrors third-party docs)
@@ -120,7 +134,7 @@ Do not write pipeline logic yet — this task is drivers only, same
 constraint as before.
 ```
 
-**Gate:** contract tests pass against fixtures/mock servers for the remaining two; a real (but tiny, cheap) smoke test renders one 3-second clip end-to-end locally before this phase is called done. (TTS and download smoke tests already passed against live services; see docs/DECISIONS.md.)
+**Gate:** contract tests pass against a mock server; a real end-to-end upload smoke test needs a real OAuth app + consent flow, which is Task 8.2 territory (provisioning), not something to improvise mid-driver — see docs/DECISIONS.md for how this one is being sequenced. (TTS, download, and render smoke tests already passed against live services/real ffmpeg.)
 
 ---
 

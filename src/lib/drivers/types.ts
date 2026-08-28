@@ -108,6 +108,28 @@ export interface DownloadDriver {
   fetchVideo(req: DownloadRequest): Promise<Result<DownloadResponse, DriverError>>;
 }
 
+export interface CaptionCue {
+  text: string;
+  startMs: number;
+  endMs: number;
+}
+
+export interface RenderRequest {
+  footageClipPath: string;
+  narrationAudioPath: string;
+  captionCues: CaptionCue[];
+  outputPath: string;
+}
+
+export interface RenderResponse {
+  filePath: string;
+  durationS: number;
+}
+
+export interface RenderDriver {
+  compose(req: RenderRequest): Promise<Result<RenderResponse, DriverError>>;
+}
+
 export interface EmbedRequest {
   texts: string[];
 }
