@@ -7,54 +7,78 @@
 // visit to another console page shows that page's own "Unavailable" state
 // (its API calls 401) rather than bouncing here automatically. Documented
 // as a known gap, not fixed in this pass.
+//
+// Restyled 2026-08-28 (docs/DECISIONS.md) away from the mono/terminal
+// treatment every earlier console page used — this is the first thing an
+// operator sees, so it leans on --font-display/--font-body the way the
+// public homepage does, keeping --font-mono for the one genuinely
+// technical field (the enrollment token) rather than every label.
 import ConsoleLayout from "../../layouts/ConsoleLayout.astro";
 ---
 
 <ConsoleLayout title="Sign in">
+  <div class="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_50%_20%,color-mix(in_srgb,var(--violet)_16%,transparent),transparent_55%)]">
+  </div>
+
   <main class="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-8 px-6">
-    <div class="flex flex-col gap-1 text-center">
-      <span class="font-mono text-sm uppercase tracking-[0.2em] text-mercury">AutoShorts AI · Console</span>
-      <p class="font-mono text-xs text-mercury/50">Operator sign-in — passkey only.</p>
+    <div class="flex flex-col items-center gap-2 text-center">
+      <span class="font-mono text-[0.65rem] uppercase tracking-[0.25em] text-mercury/50">AutoShorts AI</span>
+      <h1 class="font-display text-2xl font-semibold text-bone">Welcome back</h1>
+      <p class="font-body text-sm text-mercury/60">Sign in with the passkey on this device.</p>
     </div>
 
-    <div class="glass-card gradient-accent-border flex flex-col gap-6 p-6">
+    <div class="glass-card gradient-accent-border flex flex-col gap-5 p-7">
       <button
         id="login-signin-button"
         type="button"
-        class="rounded-md bg-sodium/90 px-4 py-2.5 font-mono text-xs uppercase tracking-wide text-ink hover:bg-sodium"
+        class="gradient-spin-border flex items-center justify-center gap-2 rounded-full bg-bone px-5 py-3 font-body text-sm font-medium text-ink transition-transform hover:scale-[1.01] active:scale-[0.99]"
       >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M12 2a5 5 0 0 0-5 5c0 1.6.73 3.02 1.88 3.96L7 15h4l-1 2 2 2 2-2-1-2h4l-1.88-4.04A5 5 0 0 0 12 2Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" />
+        </svg>
         Sign in with passkey
       </button>
 
-      <div class="h-px bg-mercury/10"></div>
+      <button
+        id="login-toggle-enroll"
+        type="button"
+        aria-expanded="false"
+        aria-controls="login-register-form"
+        class="self-center font-body text-xs text-mercury/50 underline-offset-4 hover:text-mercury hover:underline"
+      >
+        First time here? Register a passkey
+      </button>
 
-      <details class="flex flex-col gap-3">
-        <summary class="cursor-pointer font-mono text-xs uppercase tracking-wide text-mercury/60">First time — register a passkey</summary>
-        <form id="login-register-form" class="mt-3 flex flex-col gap-3">
-          <label for="enrollment-token" class="font-mono text-xs uppercase tracking-wide text-mercury/70">
-            Enrollment token
-          </label>
-          <input
-            id="enrollment-token"
-            type="password"
-            autocomplete="off"
-            class="rounded-md border border-mercury/20 bg-transparent px-3 py-2 font-mono text-sm text-mercury focus-visible:outline-2 focus-visible:outline-sodium"
-          />
-          <button
-            type="submit"
-            class="rounded-md border border-mercury/20 px-4 py-2 font-mono text-xs uppercase tracking-wide text-mercury hover:border-sodium/60 hover:text-sodium"
-          >
-            Register passkey
-          </button>
-        </form>
-      </details>
+      <form id="login-register-form" class="flex flex-col gap-3 border-t border-mercury/10 pt-5" hidden>
+        <label for="enrollment-token" class="font-body text-xs text-mercury/60"> Enrollment token </label>
+        <input
+          id="enrollment-token"
+          type="password"
+          autocomplete="off"
+          class="rounded-lg border border-mercury/15 bg-black/20 px-3 py-2.5 font-mono text-sm text-mercury focus-visible:outline-2 focus-visible:outline-sodium"
+        />
+        <button
+          type="submit"
+          class="w-full rounded-lg border border-mercury/15 px-4 py-2.5 font-body text-sm text-mercury transition-colors hover:border-sodium/50 hover:text-sodium"
+        >
+          Register this device
+        </button>
+      </form>
 
-      <p id="login-status" class="min-h-4 font-mono text-xs text-mercury/70" aria-live="polite"></p>
+      <p id="login-status" class="min-h-4 text-center font-body text-xs text-mercury/60" aria-live="polite"></p>
     </div>
   </main>
 
   <script>
     import { initLogin } from "../../console/scripts/login.ts";
     initLogin();
+
+    const toggle = document.getElementById("login-toggle-enroll");
+    const panel = document.getElementById("login-register-form");
+    toggle?.addEventListener("click", () => {
+      const isOpen = toggle.getAttribute("aria-expanded") === "true";
+      toggle.setAttribute("aria-expanded", String(!isOpen));
+      panel?.toggleAttribute("hidden", isOpen);
+    });
   </script>
 </ConsoleLayout>

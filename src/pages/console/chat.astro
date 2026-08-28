@@ -5,6 +5,10 @@
 // constraint as every other console page (see index.astro's header
 // comment) — the session sidebar and message thread are built at runtime
 // by src/console/scripts/chat.ts against the real API, never baked in.
+//
+// Restyled 2026-08-28 (later) toward an actual ChatGPT-pattern layout —
+// docs/DECISIONS.md — the mono/all-caps treatment used here originally
+// read as a terminal, not the "ChatGPT-style prompting place" asked for.
 import ConsoleLayout from "../../layouts/ConsoleLayout.astro";
 import ConsoleShell from "../../console/components/ConsoleShell.astro";
 ---
@@ -12,44 +16,50 @@ import ConsoleShell from "../../console/components/ConsoleShell.astro";
 <ConsoleLayout title="Chat">
   <ConsoleShell active="chat" />
 
-  <main class="mx-auto flex h-[calc(100vh-6rem)] max-w-6xl gap-6 px-6 pb-6">
-    <div id="console-api-error" data-console-api-error class="glass-card absolute left-6 right-6 top-24 hidden p-4 font-mono text-xs text-rose">
-      Console API not reachable.
-    </div>
+  <main class="mx-auto flex h-[calc(100vh-5.5rem)] max-w-6xl flex-col gap-4 px-6 pb-6">
+    <div id="console-api-error" data-console-api-error class="glass-alert hidden">Console API not reachable.</div>
 
-    <aside class="glass-card flex w-64 shrink-0 flex-col gap-3 p-4">
-      <button
-        id="chat-new-session"
-        type="button"
-        class="gradient-accent-border rounded-lg border border-mercury/20 px-3 py-2 font-mono text-xs uppercase tracking-wide text-mercury hover:text-sodium"
-      >
-        + New chat
-      </button>
-      <ul id="chat-session-list" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
-        <li class="text-sm text-mercury/50">Loading…</li>
-      </ul>
-    </aside>
-
-    <section class="flex min-w-0 flex-1 flex-col gap-4">
-      <ul id="chat-thread" class="glass-card flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-4">
-        <li class="text-sm text-mercury/50">Loading…</li>
-      </ul>
-
-      <form id="chat-composer" class="glass-card flex items-end gap-2 p-3">
-        <label for="chat-input" class="sr-only">Message</label>
-        <textarea
-          id="chat-input"
-          rows="2"
-          class="flex-1 resize-none rounded-md border border-mercury/20 bg-transparent px-3 py-2 font-body text-sm text-mercury focus-visible:outline-2 focus-visible:outline-sodium"
-          placeholder="Ask about the pipeline, or ask it to change settings and run one…"></textarea>
+    <div class="flex min-h-0 flex-1 flex-col gap-4 md:flex-row">
+      <aside class="glass-card flex max-h-40 shrink-0 flex-col gap-1 p-3 md:w-72 md:max-h-none">
         <button
-          type="submit"
-          class="rounded-md bg-sodium/90 px-4 py-2 font-mono text-xs uppercase tracking-wide text-ink hover:bg-sodium"
+          id="chat-new-session"
+          type="button"
+          class="mb-2 flex items-center gap-2 rounded-xl border border-mercury/15 px-3 py-2.5 font-body text-sm text-bone transition-colors hover:border-sodium/40 hover:bg-mercury/5"
         >
-          Send
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+          New chat
         </button>
-      </form>
-    </section>
+        <ul id="chat-session-list" class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
+          <li class="px-3 py-2 font-body text-sm text-mercury/40">Loading…</li>
+        </ul>
+      </aside>
+
+      <section class="glass-card flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <ul id="chat-thread" class="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 py-6">
+          <li class="mx-auto max-w-md py-12 text-center font-body text-sm text-mercury/50">
+            Ask it to check the pipeline status, preview a settings change, or trigger a run.
+          </li>
+        </ul>
+
+        <div class="p-4 pt-0">
+          <form id="chat-composer" class="glass-card gradient-accent-border flex items-end gap-2 p-2 pl-4">
+            <label for="chat-input" class="sr-only">Message</label>
+            <textarea
+              id="chat-input"
+              rows="1"
+              class="max-h-40 flex-1 resize-none bg-transparent py-2.5 font-body text-sm text-mercury placeholder:text-mercury/40 focus:outline-none"
+              placeholder="Message AutoShorts AI…"></textarea>
+            <button
+              type="submit"
+              aria-label="Send"
+              class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-bone text-ink transition-transform hover:scale-105 active:scale-95 disabled:opacity-40"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+            </button>
+          </form>
+        </div>
+      </section>
+    </div>
   </main>
 
   <script>

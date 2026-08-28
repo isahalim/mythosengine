@@ -49,7 +49,14 @@ export async function beginRegistration(
   expectedToken: string,
 ): Promise<BeginRegistrationResult> {
   if ((await credentialCount(db)) >= MAX_REGISTERED_CREDENTIALS) return { kind: "enrollment_closed" };
-  if (providedToken !== expectedToken) return { kind: "invalid_token" };
+  // Trimmed on both sides: a secret set via `wrangler secret put` from a
+  // piped file or `echo` without `-n` commonly carries a trailing newline
+  // that a human pasting the same value into a browser field never types —
+  // an exact-match comparison then fails forever, for a reason invisible
+  // from either side. This can't regress into accepting a wrong token: a
+  // real mismatch (different characters, not just edge whitespace) still
+  // fails after trimming.
+  if (providedToken.trim() !== expectedToken.trim()) return { kind: "invalid_token" };
 
   const existing = await allCredentials(db);
   const options = await generateRegistrationOptions({

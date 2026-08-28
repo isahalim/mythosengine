@@ -15,8 +15,8 @@ import QuotaMeter from "../../console/components/QuotaMeter.astro";
   <ConsoleShell active="dashboard" />
 
   <main class="mx-auto max-w-6xl px-6 pb-16">
-    <div id="console-api-error" data-console-api-error class="glass-card mb-6 hidden p-4 font-mono text-xs text-rose">
-      Console API not reachable — Phase 8's Worker routes aren't wired up yet.
+    <div id="console-api-error" data-console-api-error class="glass-alert mb-6 hidden">
+      Console API not reachable.
     </div>
 
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:auto-rows-[minmax(160px,auto)]">
@@ -38,7 +38,7 @@ import QuotaMeter from "../../console/components/QuotaMeter.astro";
             type="button"
             id="dispatch-run-button"
             data-field
-            class="rounded-md border border-mercury/20 px-3 py-1.5 font-mono text-xs uppercase tracking-wide text-mercury/70 transition-colors hover:border-sodium/60 hover:text-sodium"
+            class="rounded-full border border-mercury/20 px-3.5 py-1.5 font-body text-xs text-mercury/70 transition-colors hover:border-sodium/50 hover:text-sodium"
           >
             Run now
           </button>
@@ -101,7 +101,7 @@ import QuotaMeter from "../../console/components/QuotaMeter.astro";
           id="killswitch-toggle"
           data-field
           aria-pressed="false"
-          class="w-full rounded-lg border border-rose/40 px-4 py-3 font-mono text-xs uppercase tracking-wide text-rose transition-colors hover:bg-rose/10"
+          class="w-full rounded-xl border border-rose/40 px-4 py-3 font-body text-sm text-rose transition-colors hover:bg-rose/10"
         >
           Halt pipeline
         </button>

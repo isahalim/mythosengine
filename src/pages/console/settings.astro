@@ -13,13 +13,13 @@ import { DEFAULT_VOICE_POOL } from "../../config/voices.ts";
   <ConsoleShell active="settings" />
 
   <main class="mx-auto max-w-3xl px-6 pb-16">
-    <div id="console-api-error" data-console-api-error class="glass-card mb-6 hidden p-4 font-mono text-xs text-rose">
-      Console API not reachable — Phase 8's Worker routes aren't wired up yet.
+    <div id="console-api-error" data-console-api-error class="glass-alert mb-6 hidden">
+      Console API not reachable.
     </div>
 
     <form id="settings-form" class="glass-card flex flex-col gap-6 p-6">
       <div class="flex flex-col gap-1">
-        <label for="focus-games" class="font-mono text-xs uppercase tracking-wide text-mercury/70">
+        <label for="focus-games" class="font-body text-xs font-medium text-mercury/60">
           Focus games <span class="text-mercury/40">(comma-separated, up to 10 — empty = all)</span>
         </label>
         <input
@@ -32,7 +32,7 @@ import { DEFAULT_VOICE_POOL } from "../../config/voices.ts";
       </div>
 
       <div class="flex flex-col gap-1">
-        <label for="exclude-topics" class="font-mono text-xs uppercase tracking-wide text-mercury/70">
+        <label for="exclude-topics" class="font-body text-xs font-medium text-mercury/60">
           Exclude topics <span class="text-mercury/40">(comma-separated, up to 25)</span>
         </label>
         <input
@@ -44,7 +44,7 @@ import { DEFAULT_VOICE_POOL } from "../../config/voices.ts";
       </div>
 
       <div class="flex flex-col gap-1">
-        <label for="preferred-sources" class="font-mono text-xs uppercase tracking-wide text-mercury/70">
+        <label for="preferred-sources" class="font-body text-xs font-medium text-mercury/60">
           Preferred source ids <span class="text-mercury/40">(comma-separated, up to 10)</span>
         </label>
         <input
@@ -57,7 +57,7 @@ import { DEFAULT_VOICE_POOL } from "../../config/voices.ts";
 
       <div class="grid grid-cols-2 gap-4">
         <div class="flex flex-col gap-1">
-          <label for="min-originality" class="font-mono text-xs uppercase tracking-wide text-mercury/70">
+          <label for="min-originality" class="font-body text-xs font-medium text-mercury/60">
             Min originality score (advisory)
           </label>
           <input
@@ -71,7 +71,7 @@ import { DEFAULT_VOICE_POOL } from "../../config/voices.ts";
           />
         </div>
         <div class="flex flex-col gap-1">
-          <label for="max-uploads" class="font-mono text-xs uppercase tracking-wide text-mercury/70"> Max exports / day </label>
+          <label for="max-uploads" class="font-body text-xs font-medium text-mercury/60"> Max exports / day </label>
           <input
             id="max-uploads"
             name="maxUploadsPerDay"
@@ -85,7 +85,7 @@ import { DEFAULT_VOICE_POOL } from "../../config/voices.ts";
       </div>
 
       <div class="flex flex-col gap-1">
-        <label for="tone" class="font-mono text-xs uppercase tracking-wide text-mercury/70">Tone</label>
+        <label for="tone" class="font-body text-xs font-medium text-mercury/60">Tone</label>
         <select
           id="tone"
           name="tone"
@@ -99,7 +99,7 @@ import { DEFAULT_VOICE_POOL } from "../../config/voices.ts";
       </div>
 
       <div class="flex flex-col gap-1">
-        <label for="editorial-note" class="font-mono text-xs uppercase tracking-wide text-mercury/70">
+        <label for="editorial-note" class="font-body text-xs font-medium text-mercury/60">
           Editorial note <span class="text-mercury/40">(max 280 chars — the only free text a prompt ever sees)</span>
         </label>
         <textarea
@@ -112,7 +112,7 @@ import { DEFAULT_VOICE_POOL } from "../../config/voices.ts";
       </div>
 
       <fieldset class="flex flex-col gap-2">
-        <legend class="font-mono text-xs uppercase tracking-wide text-mercury/70">
+        <legend class="font-body text-xs font-medium text-mercury/60">
           Voice pool <span class="text-mercury/40">(none selected = full default pool)</span>
         </legend>
         <div class="grid grid-cols-2 gap-2 sm:grid-cols-3">
@@ -129,7 +129,7 @@ import { DEFAULT_VOICE_POOL } from "../../config/voices.ts";
 
       <div class="grid grid-cols-2 gap-4">
         <div class="flex flex-col gap-1">
-          <label for="rate-min" class="font-mono text-xs uppercase tracking-wide text-mercury/70">
+          <label for="rate-min" class="font-body text-xs font-medium text-mercury/60">
             Rate range min <span class="text-mercury/40">e.g. -10%</span>
           </label>
           <input
@@ -141,7 +141,7 @@ import { DEFAULT_VOICE_POOL } from "../../config/voices.ts";
           />
         </div>
         <div class="flex flex-col gap-1">
-          <label for="rate-max" class="font-mono text-xs uppercase tracking-wide text-mercury/70">
+          <label for="rate-max" class="font-body text-xs font-medium text-mercury/60">
             Rate range max <span class="text-mercury/40">e.g. +15%</span>
           </label>
           <input
@@ -154,7 +154,7 @@ import { DEFAULT_VOICE_POOL } from "../../config/voices.ts";
         </div>
       </div>
 
-      <label class="flex items-center gap-3 font-mono text-xs uppercase tracking-wide text-mercury/70">
+      <label class="flex items-center gap-3 font-body text-xs font-medium text-mercury/60">
         <input type="checkbox" id="diversity-mode" name="diversityMode" class="accent-sodium" checked />
         Diversity mode — spread today's picks across games/sources/voices
       </label>
@@ -167,7 +167,7 @@ import { DEFAULT_VOICE_POOL } from "../../config/voices.ts";
         <button
           type="button"
           id="dry-run-button"
-          class="rounded-md border border-mercury/30 px-4 py-2 font-mono text-xs uppercase tracking-wide text-mercury hover:border-sodium/60 hover:text-sodium"
+          class="rounded-full border border-mercury/25 px-4 py-2 font-body text-sm text-mercury transition-colors hover:border-sodium/50 hover:text-sodium"
         >
           Dry run
         </button>
@@ -175,14 +175,14 @@ import { DEFAULT_VOICE_POOL } from "../../config/voices.ts";
           type="submit"
           id="activate-button"
           disabled
-          class="rounded-md border border-sodium/40 px-4 py-2 font-mono text-xs uppercase tracking-wide text-sodium transition-opacity hover:bg-sodium/10 disabled:cursor-not-allowed disabled:opacity-40"
+          class="gradient-spin-border rounded-full bg-bone px-4 py-2 font-body text-sm font-medium text-ink transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
         >
           Activate
         </button>
         <button
           type="button"
           id="reset-defaults-button"
-          class="ml-auto rounded-md border border-mercury/20 px-4 py-2 font-mono text-xs uppercase tracking-wide text-mercury/70 hover:border-mercury/40"
+          class="ml-auto rounded-full border border-mercury/20 px-4 py-2 font-body text-sm text-mercury/70 transition-colors hover:border-mercury/40 hover:text-bone"
         >
           Reset to defaults
         </button>

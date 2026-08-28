@@ -26,9 +26,25 @@ body {
 .glass-card {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
-  border-radius: 1rem;
+  border-radius: 1.25rem;
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+}
+
+/* A quiet inline alert for a failed API call (CLAUDE.md NEVER block: never
+   fabricate data on failure — this is the honest state every console page
+   shows instead). Icon + message, not a shouting mono strip. */
+.glass-alert {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  background: color-mix(in srgb, var(--rose) 10%, var(--glass-bg));
+  border: 1px solid color-mix(in srgb, var(--rose) 30%, transparent);
+  border-radius: 0.875rem;
+  padding: 0.75rem 1rem;
+  color: var(--rose);
+  font-family: var(--font-body);
+  font-size: 0.8125rem;
 }
 
 /* A thin gradient hairline, used sparingly (card top edge, focus rings) —
@@ -52,11 +68,13 @@ body {
   pointer-events: none;
 }
 
-/* Public-homepage-only: a slowly rotating conic version of the same
-   oxide/sodium/violet gradient, for the hero's primary CTA. Pure CSS
-   (@property + a custom-property animation) — no JS, no bundle cost.
-   Never used in the console (CONSOLE_SPEC.md's restrained-aesthetic call
-   still stands there); this is the public page's own, richer treatment. */
+/* A slowly rotating conic version of the oxide/sodium/violet gradient, for
+   a page's primary CTA. Pure CSS (@property + a custom-property animation)
+   — no JS, no bundle cost. Originally scoped to the public homepage only;
+   used on the console's sign-in button too as of the 2026-08-28 (later)
+   restyle — see docs/DECISIONS.md — since the operator asked for one
+   consistent, richer visual language across sign-in and the public page,
+   not a split "restrained console vs. expressive homepage" look. */
 @property --spin-angle {
   syntax: "<angle>";
   initial-value: 0deg;

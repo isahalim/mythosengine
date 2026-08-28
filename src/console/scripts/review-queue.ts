@@ -43,14 +43,14 @@ function buildRow(item: ExportListItem, onChanged: () => void): HTMLLIElement {
 
   const download = document.createElement("a");
   download.href = downloadExportUrl(item.id);
-  download.className = "rounded-md border border-mercury/20 px-3 py-1.5 font-mono text-xs text-mercury hover:border-sodium/60 hover:text-sodium";
+  download.className = "rounded-full border border-mercury/20 px-3.5 py-1.5 font-body text-xs text-mercury transition-colors hover:border-sodium/50 hover:text-sodium";
   download.textContent = "Download";
   right.appendChild(download);
 
   if (item.status === "ready_for_review") {
     const reviewBtn = document.createElement("button");
     reviewBtn.type = "button";
-    reviewBtn.className = "rounded-md border border-oxide/40 px-3 py-1.5 font-mono text-xs text-oxide hover:bg-oxide/10";
+    reviewBtn.className = "rounded-full border border-oxide/40 px-3.5 py-1.5 font-body text-xs text-oxide transition-colors hover:bg-oxide/10";
     reviewBtn.textContent = "Mark reviewed";
     reviewBtn.addEventListener("click", () => {
       void (async () => {
@@ -64,7 +64,7 @@ function buildRow(item: ExportListItem, onChanged: () => void): HTMLLIElement {
 
     const discardBtn = document.createElement("button");
     discardBtn.type = "button";
-    discardBtn.className = "rounded-md border border-rose/40 px-3 py-1.5 font-mono text-xs text-rose hover:bg-rose/10";
+    discardBtn.className = "rounded-full border border-rose/40 px-3.5 py-1.5 font-body text-xs text-rose transition-colors hover:bg-rose/10";
     discardBtn.textContent = "Discard";
     discardBtn.addEventListener("click", () => {
       void (async () => {

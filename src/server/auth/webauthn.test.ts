@@ -42,6 +42,13 @@ describe("webauthn ceremonies", () => {
     expect(result.kind).toBe("invalid_token");
   });
 
+  it("tolerates a trailing newline on either side (a common `wrangler secret put` artifact), but not an actual mismatch", async () => {
+    const { beginRegistration } = await import("./webauthn.ts");
+    expect((await beginRegistration(ctx.db, rp, "correct-token", "correct-token\n")).kind).toBe("ok");
+    expect((await beginRegistration(ctx.db, rp, "correct-token\n", "correct-token")).kind).toBe("ok");
+    expect((await beginRegistration(ctx.db, rp, "correct-token", "correct-tokens")).kind).toBe("invalid_token");
+  });
+
   it("issues registration options for a correct token", async () => {
     const { beginRegistration } = await import("./webauthn.ts");
     const result = await beginRegistration(ctx.db, rp, "correct-token", "correct-token");

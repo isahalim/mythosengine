@@ -1,4 +1,8 @@
 ---
+// Restyled 2026-08-28 (later, docs/DECISIONS.md) away from the all-caps
+// mono nav every earlier console page inherited — this shell is shared by
+// every page here, so it's the single highest-leverage place to move the
+// console's whole feel toward the login/homepage's sans-serif, glassy look.
 interface Props {
   active: "dashboard" | "review" | "settings" | "chat";
 }
@@ -13,18 +17,18 @@ const links: { href: string; label: string; key: Props["active"] }[] = [
 ];
 ---
 
-<header class="mx-auto flex max-w-6xl flex-col gap-4 px-6 py-6 sm:flex-row sm:items-center sm:justify-between">
-  <div class="flex items-center gap-6">
-    <span class="font-mono text-sm uppercase tracking-[0.2em] text-mercury">AutoShorts AI · Console</span>
-    <nav class="flex items-center gap-4 font-mono text-xs uppercase tracking-wide">
+<header class="glass-card sticky top-4 z-30 mx-auto mb-6 mt-4 flex max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-5">
+  <div class="flex min-w-0 items-center gap-4">
+    <span class="shrink-0 font-display text-sm font-semibold tracking-tight text-bone">AutoShorts AI</span>
+    <nav class="flex items-center gap-1 overflow-x-auto font-body text-sm [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {
         links.map((link) => (
           <a
             href={link.href}
             aria-current={active === link.key ? "page" : undefined}
             class:list={[
-              "transition-colors",
-              active === link.key ? "text-sodium" : "text-mercury/60 hover:text-mercury",
+              "shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 transition-colors",
+              active === link.key ? "bg-mercury/10 text-bone" : "text-mercury/60 hover:text-bone",
             ]}
           >
             {link.label}
@@ -33,14 +37,14 @@ const links: { href: string; label: string; key: Props["active"] }[] = [
       }
     </nav>
   </div>
-  <div class="flex items-center gap-4">
-    <div id="killswitch-banner" data-killswitch-banner class="hidden font-mono text-xs uppercase tracking-wide text-rose">
+  <div class="flex shrink-0 items-center gap-2">
+    <div id="killswitch-banner" data-killswitch-banner class="hidden items-center gap-1.5 rounded-full bg-rose/10 px-3 py-1 font-body text-xs text-rose">
       Pipeline halted
     </div>
     <button
       id="console-logout-button"
       type="button"
-      class="font-mono text-xs uppercase tracking-wide text-mercury/50 hover:text-rose"
+      class="rounded-full px-3 py-1.5 font-body text-xs text-mercury/50 transition-colors hover:bg-rose/10 hover:text-rose"
     >
       Sign out
     </button>

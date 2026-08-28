@@ -76,15 +76,20 @@ const FRAGMENT = `
 
     vec3 n = calcNormal(p);
     vec3 viewDir = normalize(ro - p);
-    float fresnel = pow(1.0 - max(dot(n, viewDir), 0.0), 2.5);
+    float fresnel = pow(1.0 - max(dot(n, viewDir), 0.0), 2.2);
     float gradientT = n.y * 0.5 + 0.5 + uTime * 0.05;
-    vec3 base = palette(gradientT) * 0.3;
-    vec3 rim = palette(gradientT + 0.3);
+    vec3 base = palette(gradientT) * 0.22;
+    vec3 rim = palette(gradientT + 0.3) * 1.3;
     vec3 col = mix(base, rim, fresnel);
 
+    // Two lights: a broad fill for the fresnel rim above, plus a tight,
+    // bright key light for the glossy "flare" a chrome/liquid-metal surface
+    // needs to actually read as reflective rather than matte-shaded.
     vec3 lightDir = normalize(vec3(0.5, 0.8, 0.6));
-    float spec = pow(max(dot(reflect(-lightDir, n), viewDir), 0.0), 28.0);
-    col += spec * 0.5;
+    float spec = pow(max(dot(reflect(-lightDir, n), viewDir), 0.0), 24.0);
+    vec3 keyDir = normalize(vec3(-0.6, 0.5, 0.4));
+    float keySpec = pow(max(dot(reflect(-keyDir, n), viewDir), 0.0), 90.0);
+    col += spec * 0.6 + keySpec * 1.4;
 
     gl_FragColor = vec4(col, 1.0);
   }
@@ -114,20 +119,30 @@ export function initHeroOrb(canvas: HTMLCanvasElement): void {
   const gl = renderer.gl;
   if (!gl) return;
 
+  // Renderer.setSize() (called by ogl's own constructor, with its 300x150
+  // default, before any of this runs) writes canvas.style.width/height as
+  // inline styles — so canvas.clientWidth/clientHeight would just read back
+  // whatever ogl last wrote there, not the CSS-driven size the surrounding
+  // layout actually gives it. The parent element (this component's own
+  // relative/aspect-square div) is never touched by ogl, so its bounding
+  // box is the only size that reflects the real, current layout.
+  const container = canvas.parentElement ?? canvas;
+
   const geometry = new Triangle(gl);
   const program = new Program(gl, {
     vertex: VERTEX,
     fragment: FRAGMENT,
-    uniforms: { uTime: { value: 0 }, uResolution: { value: [canvas.clientWidth, canvas.clientHeight] } },
+    uniforms: { uTime: { value: 0 }, uResolution: { value: [1, 1] } },
     transparent: true,
     depthTest: false,
   });
   const mesh = new Mesh(gl, { geometry, program });
 
   function resize(): void {
-    const { clientWidth, clientHeight } = canvas;
-    renderer.setSize(clientWidth, clientHeight);
-    program.uniforms.uResolution.value = [clientWidth, clientHeight];
+    const { width, height } = container.getBoundingClientRect();
+    if (width === 0 || height === 0) return;
+    renderer.setSize(width, height);
+    program.uniforms.uResolution.value = [width, height];
   }
   resize();
   window.addEventListener("resize", resize);
