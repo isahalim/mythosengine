@@ -28,8 +28,8 @@ describe("refreshFootageSource (real ffmpeg + real scratch git repo)", () => {
   let sourceVideoPath: string;
 
   const fakeSearch: YoutubeSearchDriver = {
-    findTopLongFormVideo: async () =>
-      ok({ videoId: "vid123", title: "Full GTA V Walkthrough", durationS: 3600, viewCount: 1_000_000 }),
+    findTopLongFormVideos: async () =>
+      ok([{ videoId: "vid123", title: "Full GTA V Walkthrough", durationS: 3600, viewCount: 1_000_000 }]),
   };
 
   function fakeDownload(videoPath: string): DownloadDriver {
@@ -134,7 +134,7 @@ describe("refreshFootageSource (real ffmpeg + real scratch git repo)", () => {
 
   it("skips when the channel has no eligible long-form video", async () => {
     const source = ctx.db.select().from(footageSources).all()[0];
-    const noVideoSearch: YoutubeSearchDriver = { findTopLongFormVideo: async () => ok(null) };
+    const noVideoSearch: YoutubeSearchDriver = { findTopLongFormVideos: async () => ok([]) };
 
     const result = await refreshFootageSource(ctx.db, source, { search: noVideoSearch, download: fakeDownload(sourceVideoPath) }, { repoDir });
     expect(result.status).toBe("skipped_no_eligible_video");
@@ -143,7 +143,7 @@ describe("refreshFootageSource (real ffmpeg + real scratch git repo)", () => {
   it("reports failed with the driver error when search itself fails", async () => {
     const source = ctx.db.select().from(footageSources).all()[0];
     const failingSearch: YoutubeSearchDriver = {
-      findTopLongFormVideo: async () => err({ kind: "provider_error", message: "quota exceeded", retryable: true }),
+      findTopLongFormVideos: async () => err({ kind: "provider_error", message: "quota exceeded", retryable: true }),
     };
 
     const result = await refreshFootageSource(ctx.db, source, { search: failingSearch, download: fakeDownload(sourceVideoPath) }, { repoDir });
@@ -160,6 +160,37 @@ describe("refreshFootageSource (real ffmpeg + real scratch git repo)", () => {
     const result = await refreshFootageSource(ctx.db, source, { search: fakeSearch, download: failingDownload }, { repoDir });
     expect(result.status).toBe("failed");
     expect(result.error?.kind).toBe("policy_violation");
+  });
+
+  it.skipIf(!hasFfmpeg())("falls through to the next ranked candidate when the top one fails to download", async () => {
+    const source = ctx.db.select().from(footageSources).all()[0];
+    const twoCandidateSearch: YoutubeSearchDriver = {
+      findTopLongFormVideos: async () =>
+        ok([
+          { videoId: "age-restricted-vid", title: "Top Video (age-restricted)", durationS: 3600, viewCount: 2_000_000 },
+          { videoId: "vid123", title: "Full GTA V Walkthrough", durationS: 3600, viewCount: 1_000_000 },
+        ]),
+    };
+    const fallthroughDownload: DownloadDriver = {
+      fetchVideo: async (req) => {
+        if (req.url.includes("age-restricted-vid")) {
+          return err({ kind: "policy_violation", message: "Sorry, this content is age-restricted", retryable: false });
+        }
+        return ok({ filePath: sourceVideoPath, durationS: 8, sourceVideoId: "vid123" });
+      },
+    };
+
+    const result = await refreshFootageSource(
+      ctx.db,
+      source,
+      { search: twoCandidateSearch, download: fallthroughDownload },
+      { clipDurationS: 2, candidatesPerVideo: 2, repoDir },
+    );
+
+    expect(result.status).toBe("refreshed");
+    expect(result.newSegments).toBeGreaterThan(0);
+    const rows = ctx.db.select().from(footageSegments).all();
+    expect(rows.every((r) => r.sourceVideoId === "vid123")).toBe(true);
   });
 
   it("reports failed when the library worktree can't be created (bad repoDir)", async () => {

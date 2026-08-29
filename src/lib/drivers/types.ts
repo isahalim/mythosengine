@@ -189,8 +189,8 @@ export interface ChannelTopVideoResponse {
 }
 
 export interface YoutubeSearchDriver {
-  /** Returns null (not an error) if the channel has no video meeting minDurationS. */
-  findTopLongFormVideo(req: ChannelTopVideoRequest): Promise<Result<ChannelTopVideoResponse | null, DriverError>>;
+  /** Ranked by view count, highest first; empty array (not an error) if no video meets minDurationS. Callers should try candidates in order and fall through on a per-video failure (age-restricted, removed, transiently unavailable — all observed live, 2026-08-29) rather than failing the whole channel on the first pick. */
+  findTopLongFormVideos(req: ChannelTopVideoRequest): Promise<Result<ChannelTopVideoResponse[], DriverError>>;
 }
 
 export interface EmbedRequest {

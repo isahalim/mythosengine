@@ -48,7 +48,7 @@ describe("YoutubeDataApiSearchDriver", () => {
     return new YoutubeDataApiSearchDriver({ apiKey: "test-key", apiBase: await mock.baseUrl, maxAttempts: 1 });
   }
 
-  it("finds the highest-viewed video that clears minDurationS", async () => {
+  it("ranks eligible videos by view count, filtering out ones under minDurationS", async () => {
     mock.routes.set("/channels", jsonHandler({ items: [{ id: "chan1" }] }));
     mock.routes.set(
       "/search",
@@ -66,15 +66,16 @@ describe("YoutubeDataApiSearchDriver", () => {
     );
 
     const driver = await makeDriver();
-    const result = await driver.findTopLongFormVideo({ channelHandle: "HollowPoiint", minDurationS: 1200 });
+    const result = await driver.findTopLongFormVideos({ channelHandle: "HollowPoiint", minDurationS: 1200 });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.value?.videoId).toBe("long2"); // higher viewCount among the ones that clear the duration bar
-      expect(result.value?.durationS).toBe(6300);
+      // the Short is excluded entirely; the two long-form videos are ranked by viewCount, highest first
+      expect(result.value.map((v) => v.videoId)).toEqual(["long2", "long1"]);
+      expect(result.value[0].durationS).toBe(6300);
     }
   });
 
-  it("returns null (not an error) when no video meets minDurationS", async () => {
+  it("returns an empty array (not an error) when no video meets minDurationS", async () => {
     mock.routes.set("/channels", jsonHandler({ items: [{ id: "chan1" }] }));
     mock.routes.set("/search", jsonHandler({ items: [{ id: { videoId: "short1" } }] }));
     mock.routes.set(
@@ -83,15 +84,15 @@ describe("YoutubeDataApiSearchDriver", () => {
     );
 
     const driver = await makeDriver();
-    const result = await driver.findTopLongFormVideo({ channelHandle: "HollowPoiint", minDurationS: 1200 });
-    expect(result).toEqual({ ok: true, value: null });
+    const result = await driver.findTopLongFormVideos({ channelHandle: "HollowPoiint", minDurationS: 1200 });
+    expect(result).toEqual({ ok: true, value: [] });
   });
 
   it("fails cleanly when the handle doesn't resolve to a channel", async () => {
     mock.routes.set("/channels", jsonHandler({ items: [] }));
 
     const driver = await makeDriver();
-    const result = await driver.findTopLongFormVideo({ channelHandle: "NotARealHandle", minDurationS: 1200 });
+    const result = await driver.findTopLongFormVideos({ channelHandle: "NotARealHandle", minDurationS: 1200 });
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.kind).toBe("invalid_response");
@@ -106,7 +107,7 @@ describe("YoutubeDataApiSearchDriver", () => {
     });
 
     const driver = await makeDriver();
-    const result = await driver.findTopLongFormVideo({ channelHandle: "HollowPoiint", minDurationS: 1200 });
+    const result = await driver.findTopLongFormVideos({ channelHandle: "HollowPoiint", minDurationS: 1200 });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe("invalid_response");
   });
@@ -116,7 +117,7 @@ describe("YoutubeDataApiSearchDriver", () => {
     mock.routes.set("/search", jsonHandler(null));
 
     const driver = await makeDriver();
-    const result = await driver.findTopLongFormVideo({ channelHandle: "HollowPoiint", minDurationS: 1200 });
+    const result = await driver.findTopLongFormVideos({ channelHandle: "HollowPoiint", minDurationS: 1200 });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.message).toContain("search.list");
   });
@@ -127,17 +128,17 @@ describe("YoutubeDataApiSearchDriver", () => {
     mock.routes.set("/videos", jsonHandler(null));
 
     const driver = await makeDriver();
-    const result = await driver.findTopLongFormVideo({ channelHandle: "HollowPoiint", minDurationS: 1200 });
+    const result = await driver.findTopLongFormVideos({ channelHandle: "HollowPoiint", minDurationS: 1200 });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.message).toContain("videos.list");
   });
 
-  it("returns an empty result (no video) when the channel has no videos at all", async () => {
+  it("returns an empty array (no videos) when the channel has no videos at all", async () => {
     mock.routes.set("/channels", jsonHandler({ items: [{ id: "chan1" }] }));
     mock.routes.set("/search", jsonHandler({ items: [] }));
 
     const driver = await makeDriver();
-    const result = await driver.findTopLongFormVideo({ channelHandle: "HollowPoiint", minDurationS: 1200 });
-    expect(result).toEqual({ ok: true, value: null });
+    const result = await driver.findTopLongFormVideos({ channelHandle: "HollowPoiint", minDurationS: 1200 });
+    expect(result).toEqual({ ok: true, value: [] });
   });
 });

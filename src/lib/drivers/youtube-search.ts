@@ -52,25 +52,24 @@ export class YoutubeDataApiSearchDriver implements YoutubeSearchDriver {
     this.candidatePoolSize = options.candidatePoolSize ?? 10;
   }
 
-  async findTopLongFormVideo(req: ChannelTopVideoRequest): Promise<Result<ChannelTopVideoResponse | null, DriverError>> {
+  async findTopLongFormVideos(req: ChannelTopVideoRequest): Promise<Result<ChannelTopVideoResponse[], DriverError>> {
     const channelIdResult = await this.resolveChannelId(req.channelHandle);
     if (!channelIdResult.ok) return channelIdResult;
 
     const candidateIdsResult = await this.searchTopVideoIds(channelIdResult.value);
     if (!candidateIdsResult.ok) return candidateIdsResult;
-    if (candidateIdsResult.value.length === 0) return ok(null);
+    if (candidateIdsResult.value.length === 0) return ok([]);
 
     const detailsResult = await this.getVideoDetails(candidateIdsResult.value);
     if (!detailsResult.ok) return detailsResult;
 
-    // search.list's order=viewCount already sorts descending -- take the
-    // first candidate that clears the duration bar, not just the first
-    // overall (that might be a Short that outperformed the long-form videos).
-    const winner = detailsResult.value
-      .filter((v) => v.durationS >= req.minDurationS)
-      .sort((a, b) => b.viewCount - a.viewCount)[0];
+    // search.list's order=viewCount already sorts descending -- filter to
+    // candidates that clear the duration bar (a Short might otherwise
+    // outperform the long-form videos), then re-sort descending since
+    // filtering can change relative order versus the raw API response.
+    const ranked = detailsResult.value.filter((v) => v.durationS >= req.minDurationS).sort((a, b) => b.viewCount - a.viewCount);
 
-    return ok(winner ?? null);
+    return ok(ranked);
   }
 
   private async getJson(url: string): Promise<Result<unknown, DriverError>> {
