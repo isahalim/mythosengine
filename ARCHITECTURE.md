@@ -10,7 +10,7 @@
 
 | Service | Permanent free? | Card-free? | Role |
 |---|---|---|---|
-| **Groq Cloud** (`openai/gpt-oss-120b` / `openai/gpt-oss-20b`) | Yes — rate-limited, no credit system. ~30 req/min, ~8k tokens/min, ~14.4k req/day, enforced per organization | **Yes** | Script generation, critique, title/description/hashtag generation, the console chat/voice agent, and the footage-acquisition browser agent (§5.0). Groq deprecated `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` on 2026-06-17; the OpenAI open-weight models replaced them everywhere in `src/**` |
+| **Groq Cloud** (`openai/gpt-oss-120b` / `openai/gpt-oss-20b`; the footage browser agent on `qwen/qwen3.8-27b`) | Yes — rate-limited, no credit system. ~30 req/min, ~8k tokens/min, ~14.4k req/day, enforced per organization. **Limits are per-model, and the one that binds is tokens-per-day:** 200K for gpt-oss, 2M for qwen3.8-27b (§5.0) | **Yes** | Script generation, critique, title/description/hashtag generation, the console chat/voice agent, and the footage-acquisition browser agent (§5.0). Groq deprecated `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` on 2026-06-17; the OpenAI open-weight models replaced them everywhere in `src/**` |
 | **Microsoft Edge "Read Aloud" TTS**, via the `edge_tts` Python library (LGPL-3.0, `rany2/edge-tts`), invoked as a subprocess | Yes, but **not an official product** — no SLA, can break without notice | **Yes** | Narration voice synthesis + word-level timestamps for captions |
 | **Cloudflare Workers static assets** | Yes | **Yes** | Hosts the operator console and its API |
 | **Cloudflare D1** | 5 GB, 5M row-reads/day | **Yes** | Pipeline state, scripts, footage/segment/render/upload records, audit log |

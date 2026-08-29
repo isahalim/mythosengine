@@ -4,7 +4,28 @@ import { z } from "zod";
 import type { DriverError, LlmDriver, LlmMessage, ToolDefinition } from "./types.ts";
 import { err, ok, type Result } from "../result.ts";
 
-const MODEL = "openai/gpt-oss-120b";
+/**
+ * Deliberately not the `openai/gpt-oss-120b` the rest of the pipeline uses.
+ * This agent's binding constraint is Groq's **tokens-per-day** quota, not
+ * per-minute throughput: gpt-oss-120b allows 200K TPD, and a single
+ * 3-source footage run was measured at ~185K before the reductions below —
+ * one run could consume an entire day's allowance, which is exactly what
+ * happened on 2026-08-29. `qwen/qwen3.8-27b` carries **2M TPD** at the same
+ * 30 RPM / 8K TPM, so the leg that spends the most tokens now runs against
+ * the largest daily budget Groq's free tier offers.
+ *
+ * `groq/compound` was evaluated first (70K TPM, no TPD cap) and rejected on
+ * a hard blocker, not a preference: it exposes only Groq's own built-in
+ * tools and "custom user-provided tools are not supported at this time"
+ * (console.groq.com/docs/compound). Every tool in this file is custom and
+ * drives a local Playwright session, so `tools` would be ignored and the
+ * loop would never receive a tool call. Any replacement model must support
+ * OpenAI-compatible custom function calling.
+ *
+ * Script generation and critique stay on gpt-oss-120b — those are quality-
+ * sensitive and cheap; this is mechanical and expensive.
+ */
+const MODEL = "qwen/qwen3.8-27b";
 const DEFAULT_MAX_ITERATIONS = 8;
 const DEFAULT_ACTION_TIMEOUT_MS = 15_000;
 

@@ -15,6 +15,18 @@ export const QUOTAS = {
     // req/min (of 30) while crossing 8K tokens/min repeatedly.
     tokensPerMinute: 8000,
     requestsPerDay: 14400,
+    /**
+     * Tokens per day, per model — **the constraint that actually binds this
+     * project**, and the one nothing tracked until 2026-08-29. A footage
+     * run measured at ~185K tokens against gpt-oss-120b's 200K TPD, so a
+     * single run could exhaust the day while the per-minute dashboard still
+     * read 0% consumed. That is why the browser agent moved to
+     * qwen/qwen3.8-27b: same 30 RPM and 8K TPM, ten times the daily budget.
+     * Limits are per-model, so spreading work across models spreads the
+     * daily allowance too.
+     */
+    tokensPerDayGptOss: 200_000,
+    tokensPerDayQwen3: 2_000_000,
   },
   githubActions: {
     minutesPerMonthPrivate: 2000,
