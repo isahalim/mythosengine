@@ -21,8 +21,7 @@ import { readClipFromLibrary } from "../../src/lib/footage/library.ts";
 import { EdgeTtsDriver } from "../../src/lib/drivers/tts-edge.ts";
 import { FfmpegRenderDriver } from "../../src/lib/drivers/render-ffmpeg.ts";
 import { KvExportDriver } from "../../src/lib/drivers/export-kv.ts";
-import { TokenBucketLimiter } from "../../src/lib/drivers/rate-limiter.ts";
-import { createGroqDriverFromEnv } from "../../src/lib/drivers/resolve-groq-driver.ts";
+import { createGroqDriverFromEnv, createGroqLimiter } from "../../src/lib/drivers/resolve-groq-driver.ts";
 import { buildPipelineEnv, HOT_KV_NAMESPACE_ID } from "./env.ts";
 
 const REPO_DIR = process.cwd();
@@ -84,7 +83,7 @@ async function main(): Promise<void> {
     rankedSourceIds.map((sourceId) => scoredSignals.filter((s) => s.sourceId === sourceId)).find((candidates) => candidates.length > 0)?.reduce((best, s) => (s.engagementScore > best.engagementScore ? s : best)) ??
     scoredSignals[0];
 
-  const llm = createGroqDriverFromEnv(env.groqApiKey, new TokenBucketLimiter(30, 6000));
+  const llm = createGroqDriverFromEnv(env.groqApiKey, createGroqLimiter());
 
   // ---- SCRIPT ----
   const scriptRunId = await startRun(env.db, "script", traceId);

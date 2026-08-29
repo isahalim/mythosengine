@@ -8,7 +8,12 @@
 export const QUOTAS = {
   groq: {
     requestsPerMinute: 30,
-    tokensPerMinute: 6000,
+    // Corrected 2026-08-29 from 6000, against Groq's own dashboard for this
+    // account (openai/gpt-oss-120b, free tier), which plots the limit line
+    // at 8K and returns `rate_limit_exceeded` above it. This is the
+    // binding constraint on this tier: observed traffic peaked at ~6
+    // req/min (of 30) while crossing 8K tokens/min repeatedly.
+    tokensPerMinute: 8000,
     requestsPerDay: 14400,
   },
   githubActions: {

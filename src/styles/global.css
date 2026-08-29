@@ -34,8 +34,19 @@ body {
 /* A quiet inline alert for a failed API call (CLAUDE.md NEVER block: never
    fabricate data on failure — this is the honest state every console page
    shows instead). Icon + message, not a shouting mono strip. */
+/* `display` is deliberately NOT set here, but on the :not(.hidden) rule
+   below. Tailwind's `.hidden { display: none }` and a bare
+   `.glass-alert { display: flex }` have identical specificity, so whichever
+   the build emits last wins — and component CSS is emitted after the
+   utilities layer, so `.glass-alert` won every time. The "Console API not
+   reachable" banner ships as `class="glass-alert hidden"` and was therefore
+   *permanently visible on every console page*, in every state, for as long
+   as it has existed: the scripts toggling `.hidden` were correct and had no
+   effect. It was pure noise on a healthy console, and worse, it meant the
+   one signal the operator had for a real API failure was already lit.
+   Guarding the display rule makes `.hidden` authoritative regardless of
+   emission order. */
 .glass-alert {
-  display: flex;
   align-items: center;
   gap: 0.625rem;
   background: color-mix(in srgb, var(--rose) 10%, var(--glass-bg));
@@ -45,6 +56,9 @@ body {
   color: var(--rose);
   font-family: var(--font-body);
   font-size: 0.8125rem;
+}
+.glass-alert:not(.hidden) {
+  display: flex;
 }
 
 /* A thin gradient hairline, used sparingly (card top edge, focus rings) —

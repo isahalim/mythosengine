@@ -71,7 +71,7 @@ export class GroqLlmDriver implements LlmDriver {
   }
 
   async complete(req: LlmRequest): Promise<Result<LlmResponse, DriverError>> {
-    const estimatedTokens = (req.maxTokens ?? 1024) + estimatePromptTokens(req.messages);
+    const estimatedTokens = (req.maxTokens ?? 1024) + estimatePromptTokens(req.messages, req.tools);
     await this.options.limiter.acquire(estimatedTokens);
 
     const result = await fetchWithRetry(
@@ -152,7 +152,27 @@ function parseIntHeader(value: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function estimatePromptTokens(messages: LlmRequest["messages"]): number {
-  const chars = messages.reduce((sum, m) => sum + m.content.length, 0);
-  return Math.ceil(chars / 4); // rough chars-per-token heuristic, refined once real usage data exists
+/**
+ * Rough chars-per-token estimate of everything billed as *input* on a
+ * request — messages **and** tool definitions.
+ *
+ * Tool definitions used to be omitted entirely, which was not a rounding
+ * error: `AGENT_TOOLS` serializes to ~3,800 characters (~960 tokens) and is
+ * re-sent on every single call in a tool-calling loop, so the limiter
+ * consistently under-charged each request by roughly a quarter and let more
+ * through than Groq's tokens-per-minute quota allowed. Confirmed against
+ * Groq's own dashboard on 2026-08-29: requests/minute sat near 6 against a
+ * limit of 30 (comfortable), while tokens/minute peaked at 9.6K against a
+ * limit near 8K and returned `rate_limit_exceeded`. The binding constraint
+ * on this free tier is tokens, not requests, so the token estimate is the
+ * number that has to be honest.
+ *
+ * chars/4 still under-reads JSON-heavy content (dense punctuation tokenizes
+ * worse than prose), so this remains a floor, not a guarantee — which is
+ * why 429 handling has to be correct regardless (see http.ts).
+ */
+function estimatePromptTokens(messages: LlmRequest["messages"], tools: LlmRequest["tools"]): number {
+  const messageChars = messages.reduce((sum, m) => sum + m.content.length, 0);
+  const toolChars = tools ? JSON.stringify(tools).length : 0;
+  return Math.ceil((messageChars + toolChars) / 4);
 }

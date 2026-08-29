@@ -1,8 +1,37 @@
 import { GroqLlmDriver } from "./groq.ts";
 import { GroqWhisperDriver } from "./groq-whisper.ts";
-import type { TokenBucketLimiter } from "./rate-limiter.ts";
+import { TokenBucketLimiter } from "./rate-limiter.ts";
 import type { AsrDriver, LlmDriver } from "./types.ts";
 import { Vault, type VaultKv } from "../vault.ts";
+import { QUOTAS } from "../../config/quotas.ts";
+
+/**
+ * Pace at 90% of the published ceiling. The headroom is not superstition:
+ * `estimatePromptTokens` (groq.ts) is a chars/4 floor that under-reads
+ * JSON-heavy tool traffic, so the bucket is always slightly optimistic
+ * about what a request will actually cost.
+ */
+const QUOTA_SAFETY_FACTOR = 0.9;
+
+/**
+ * The one place Groq's pacing budget is decided. All three call sites — the
+ * Worker's chat/voice agent, the render pipeline, and the weekly footage
+ * agent — previously hard-coded their own pair of numbers, and all three had
+ * drifted from `QUOTAS` and from each other (28/4500 and 30/6000 against a
+ * real limit of 30/8000). Deriving them here means correcting the quota in
+ * one file corrects every limiter.
+ *
+ * Note what this can and cannot do: in the Worker each isolate gets its own
+ * bucket, so this paces a single isolate's traffic, not the account's. It
+ * reduces 429s; it cannot eliminate them, which is why http.ts must handle
+ * a 429 correctly rather than relying on never seeing one.
+ */
+export function createGroqLimiter(): TokenBucketLimiter {
+  return new TokenBucketLimiter(
+    Math.floor(QUOTAS.groq.requestsPerMinute * QUOTA_SAFETY_FACTOR),
+    Math.floor(QUOTAS.groq.tokensPerMinute * QUOTA_SAFETY_FACTOR),
+  );
+}
 
 /**
  * The one production call site of `vault.get()` (CLAUDE.md NEVER block:

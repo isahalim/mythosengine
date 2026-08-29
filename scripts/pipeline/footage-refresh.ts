@@ -5,8 +5,7 @@ import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
 import { refreshFootageSource } from "../../src/lib/footage/refresh.ts";
 import { AgenticYoutubeSearchDriver } from "../../src/lib/drivers/youtube-search-agentic.ts";
 import { AgenticYtmp3DownloadDriver } from "../../src/lib/drivers/download-agentic-ytmp3.ts";
-import { createGroqDriverFromEnv } from "../../src/lib/drivers/resolve-groq-driver.ts";
-import { TokenBucketLimiter } from "../../src/lib/drivers/rate-limiter.ts";
+import { createGroqDriverFromEnv, createGroqLimiter } from "../../src/lib/drivers/resolve-groq-driver.ts";
 import { buildPipelineEnv } from "./env.ts";
 
 /**
@@ -36,7 +35,7 @@ async function main(): Promise<void> {
   // A separate limiter instance from the daily SCRIPT/CRITIC pipeline's
   // (render.ts) — this job runs weekly and alone, never concurrently with a
   // render, so there's no cross-job budget to share.
-  const llm = createGroqDriverFromEnv(env.groqApiKey, new TokenBucketLimiter(30, 6000));
+  const llm = createGroqDriverFromEnv(env.groqApiKey, createGroqLimiter());
 
   const traceId = crypto.randomUUID();
   const drivers = {

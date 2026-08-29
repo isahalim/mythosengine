@@ -6,7 +6,21 @@ export interface RetryOptions {
   maxAttempts: number;
   baseDelayMs: number;
   fetchImpl?: typeof fetch;
+  /**
+   * Longest this will ever sleep between attempts, including a sleep a
+   * server asked for via `Retry-After`. A 429 whose `Retry-After` exceeds
+   * this is returned as `rate_limited` immediately instead of being waited
+   * out — see the comment on `retryAfterMs` for why that is not optional.
+   */
+  maxRetryDelayMs?: number;
 }
+
+/**
+ * Ceiling on any single inter-attempt sleep. A caller that hasn't thought
+ * about it gets 5s, which is short enough to stay inside a Cloudflare
+ * Workers request and inside the console's own client-side budgets.
+ */
+const DEFAULT_MAX_RETRY_DELAY_MS = 5_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -18,11 +32,26 @@ function backoffMs(attempt: number, baseDelayMs: number): number {
   return exponential + jitter;
 }
 
+/**
+ * `Retry-After`, in milliseconds, or null when absent/unparseable.
+ *
+ * **The caller must bound this before sleeping on it.** It is a value a
+ * remote server chooses, and Groq's token-per-minute 429s routinely ask for
+ * a wait measured in tens of seconds. Sleeping that long inside a
+ * request-scoped handler doesn't produce a slow response, it produces no
+ * response: on 2026-08-29 a console chat turn hit a Groq TPM 429, this
+ * function returned a delay longer than the request had left, the Worker
+ * was killed mid-sleep, and the turn died without persisting anything — so
+ * the operator saw a generic `provider_error` and an answer that never
+ * arrived, with no trace of a rate limit anywhere in the chat history.
+ * Returning `rate_limited` promptly is strictly more useful than waiting:
+ * it is true, it is fast, and it is something the UI can explain.
+ */
 function retryAfterMs(res: Response): number | null {
   const header = res.headers.get("retry-after");
   if (!header) return null;
   const seconds = Number(header);
-  return Number.isFinite(seconds) ? seconds * 1000 : null;
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1000 : null;
 }
 
 /**
@@ -35,7 +64,7 @@ export async function fetchWithRetry(
   init: RequestInit,
   options: RetryOptions,
 ): Promise<Result<Response, DriverError>> {
-  const { timeoutMs, maxAttempts, baseDelayMs, fetchImpl = fetch } = options;
+  const { timeoutMs, maxAttempts, baseDelayMs, fetchImpl = fetch, maxRetryDelayMs = DEFAULT_MAX_RETRY_DELAY_MS } = options;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const isLastAttempt = attempt === maxAttempts - 1;
@@ -47,16 +76,22 @@ export async function fetchWithRetry(
       if (res.ok || res.status === 304) return ok(res);
 
       const retryable = res.status === 429 || res.status >= 500;
-      if (!retryable || isLastAttempt) {
+      const requestedDelay = retryAfterMs(res);
+      // Waiting longer than the budget allows is not a retry, it's a hang
+      // that the runtime eventually kills — report the rate limit instead.
+      const waitTooLong = requestedDelay !== null && requestedDelay > maxRetryDelayMs;
+      if (!retryable || isLastAttempt || waitTooLong) {
         return err({
           kind: res.status === 429 ? "rate_limited" : "provider_error",
-          message: `HTTP ${res.status} from ${url}`,
+          message:
+            waitTooLong && res.status === 429
+              ? `HTTP 429 from ${url}; Retry-After ${Math.round(requestedDelay / 1000)}s exceeds the ${Math.round(maxRetryDelayMs / 1000)}s retry budget`
+              : `HTTP ${res.status} from ${url}`,
           retryable,
         });
       }
 
-      const delay = retryAfterMs(res) ?? backoffMs(attempt, baseDelayMs);
-      await sleep(delay);
+      await sleep(Math.min(requestedDelay ?? backoffMs(attempt, baseDelayMs), maxRetryDelayMs));
     } catch (cause) {
       const isAbort = cause instanceof Error && cause.name === "TimeoutError";
       if (isLastAttempt) {
@@ -66,7 +101,7 @@ export async function fetchWithRetry(
           retryable: true,
         });
       }
-      await sleep(backoffMs(attempt, baseDelayMs));
+      await sleep(Math.min(backoffMs(attempt, baseDelayMs), maxRetryDelayMs));
     }
   }
 

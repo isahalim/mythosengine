@@ -65,6 +65,68 @@ describe("fetchWithRetry", () => {
     expect(result.ok).toBe(true);
   });
 
+  // Regression: the 2026-08-29 console chat outage. A Groq
+  // tokens-per-minute 429 came back asking for a wait longer than the
+  // Worker request had left; the old code slept on it unconditionally, the
+  // request was killed mid-sleep, and the turn died without persisting
+  // anything -- the operator saw a bare `provider_error` and no answer.
+  it("refuses a Retry-After longer than the retry budget instead of sleeping on it", async () => {
+    let calls = 0;
+    handler = (_req, res) => {
+      calls++;
+      res.writeHead(429, { "retry-after": "120" }); // two minutes
+      res.end();
+    };
+
+    const startedAt = Date.now();
+    const result = await fetchWithRetry(baseUrl, {}, { timeoutMs: 1000, maxAttempts: 3, baseDelayMs: 5, maxRetryDelayMs: 200 });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.kind).toBe("rate_limited");
+      expect(result.error.message).toContain("exceeds the");
+    }
+    // Returned promptly, and without burning the remaining attempts.
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+    expect(calls).toBe(1);
+  });
+
+  it("still honors a Retry-After that fits inside the budget", async () => {
+    let calls = 0;
+    handler = (_req, res) => {
+      calls++;
+      if (calls === 1) {
+        res.writeHead(429, { "retry-after": "0.05" });
+        res.end();
+        return;
+      }
+      res.writeHead(200);
+      res.end("ok");
+    };
+    const result = await fetchWithRetry(baseUrl, {}, { timeoutMs: 1000, maxAttempts: 2, baseDelayMs: 5, maxRetryDelayMs: 1000 });
+    expect(result.ok).toBe(true);
+    expect(calls).toBe(2);
+  });
+
+  it("caps plain exponential backoff at the retry budget too", async () => {
+    let calls = 0;
+    handler = (_req, res) => {
+      calls++;
+      if (calls < 3) {
+        res.writeHead(503);
+        res.end();
+        return;
+      }
+      res.writeHead(200);
+      res.end("ok");
+    };
+    const startedAt = Date.now();
+    // baseDelayMs 10_000 would mean a 10s+ first backoff without the cap.
+    const result = await fetchWithRetry(baseUrl, {}, { timeoutMs: 1000, maxAttempts: 3, baseDelayMs: 10_000, maxRetryDelayMs: 50 });
+    expect(result.ok).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+  });
+
   it("retries a non-Error network throw and reports it via String(cause) on the last attempt", async () => {
     let calls = 0;
     const flakyFetch: typeof fetch = async () => {

@@ -97,3 +97,56 @@ describe("GroqLlmDriver tool calling", () => {
     expect(body.messages[2]).toEqual({ role: "tool", tool_call_id: "call_1", content: '{"ok":true}' });
   });
 });
+
+// Regression: Groq's free tier binds on tokens/minute, not requests/minute
+// (its dashboard on 2026-08-29 showed ~6 req/min against a limit of 30,
+// while tokens/min crossed 8K and returned rate_limit_exceeded). The
+// limiter can only pace correctly if the estimate counts everything billed
+// as input -- tool schemas included, since they are re-sent on every call
+// of a tool-calling loop and are ~960 tokens for AGENT_TOOLS.
+describe("GroqLlmDriver token accounting", () => {
+  it("charges the limiter for tool definitions, not just message content", async () => {
+    const charged: number[] = [];
+    const recordingLimiter = {
+      async acquire(estimatedTokens: number) {
+        charged.push(estimatedTokens);
+      },
+    } as unknown as TokenBucketLimiter;
+
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    const baseUrl = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}/`;
+
+    try {
+      const driver = new GroqLlmDriver({ apiKey: "test", limiter: recordingLimiter, baseUrl });
+      const messages = [{ role: "user" as const, content: "hi" }];
+
+      await driver.complete({ model: "openai/gpt-oss-120b", messages, maxTokens: 100 });
+      const withoutTools = charged[0];
+
+      await driver.complete({
+        model: "openai/gpt-oss-120b",
+        messages,
+        maxTokens: 100,
+        tools: [
+          {
+            name: "a_tool_with_a_substantial_schema",
+            description: "x".repeat(400),
+            parameters: { type: "object", properties: { field: { type: "string", description: "y".repeat(400) } } },
+          },
+        ],
+      });
+      const withTools = charged[1];
+
+      // ~800 characters of schema is ~200 tokens; the old estimate ignored
+      // it entirely and charged exactly the same for both calls.
+      expect(withTools).toBeGreaterThan(withoutTools + 150);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});

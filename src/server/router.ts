@@ -27,8 +27,7 @@ import { callMcpTool, handleMcpRequest } from "./mcp/server.ts";
 import { log } from "./log.ts";
 import type { KvLike } from "../lib/drivers/cache-kv.ts";
 import type { VaultKv } from "../lib/vault.ts";
-import { createGroqDriverFromVault, createGroqWhisperDriverFromVault } from "../lib/drivers/resolve-groq-driver.ts";
-import { TokenBucketLimiter } from "../lib/drivers/rate-limiter.ts";
+import { createGroqDriverFromVault, createGroqLimiter, createGroqWhisperDriverFromVault } from "../lib/drivers/resolve-groq-driver.ts";
 
 export interface RouterEnv {
   DB: D1Database;
@@ -44,12 +43,12 @@ export interface RouterEnv {
 // "one shared instance serializes every Groq call" reasoning
 // TokenBucketLimiter's own docstring states (src/lib/drivers/rate-limiter.ts).
 // A fresh isolate gets a fresh bucket, which is the same cold-start
-// behavior every other in-memory rate limit in a Workers app has.
-// (28 req/min, 4500 tokens/min) is a conservative placeholder, not a
-// number confirmed against Groq's current published limits for
-// openai/gpt-oss-120b — re-check console.groq.com/settings/limits
-// before this chat path sees real traffic.
-const groqLimiter = new TokenBucketLimiter(28, 4_500);
+// behavior every other in-memory rate limit in a Workers app has — and the
+// reason this cannot be the only defense against a 429 (see http.ts).
+// Budget now derives from QUOTAS.groq (src/config/quotas.ts) rather than
+// the hard-coded 28/4500 that used to sit here, which had drifted from both
+// the config and Groq's real 30/8000.
+const groqLimiter = createGroqLimiter();
 
 /** The exact slice of a KV namespace the export blob store needs, layered onto plain KvLike. */
 export type HotKvLike = KvLike & ExportBlobStore;
