@@ -45,7 +45,15 @@ async function main(): Promise<void> {
   // the convert step has to be waited out — so that leg keeps the model.
   const drivers = {
     search: new DomYoutubeSearchDriver(),
-    download: new AgenticYtmp3DownloadDriver({ llm }),
+    // ytmp3.gg gates its Convert button behind a checkbox asserting the user
+    // will not download copyrighted content. Enabled by explicit operator
+    // decision (2026-08-29): the same accepted risk profile already recorded
+    // in docs/DECISIONS.md and in every footage_sources.license_note row,
+    // which describe this material as copyrighted walkthrough footage used
+    // under heavy transformation -- "not a claim of zero risk." The driver
+    // defaults this to false precisely so the choice has to be made here,
+    // deliberately, rather than assumed by a library.
+    download: new AgenticYtmp3DownloadDriver({ llm, acceptCopyrightAttestation: true }),
   };
 
   const sources = await env.db.select().from(footageSources).all();
