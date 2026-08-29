@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Download, type Page } from "playwright";
 import { z } from "zod";
 import type { DriverError, LlmDriver, LlmMessage, ToolDefinition } from "./types.ts";
 import { err, ok, type Result } from "../result.ts";
@@ -25,11 +25,43 @@ type ClickableRole = (typeof CLICKABLE_ROLES)[number];
  * separate filter bolted on top.
  */
 class PageAgentSession {
+  // browser_click (which triggers a download) and browser_wait_for_download
+  // are two separate, sequential tool calls, not one atomic action — if the
+  // download fires between them, a bare `page.waitForEvent("download")`
+  // called only once wait_for_download runs would miss it entirely (it only
+  // sees events that fire *after* it's called). Listening from construction
+  // and buffering means no download can ever be missed regardless of how
+  // many tool-call round-trips happen in between.
+  private readonly pendingDownloads: Download[] = [];
+  private downloadWaiters: ((download: Download) => void)[] = [];
+
   constructor(
     private readonly page: Page,
     private readonly allowedOrigins: readonly string[],
     private readonly timeoutMs: number,
-  ) {}
+  ) {
+    page.on("download", (download) => {
+      const waiter = this.downloadWaiters.shift();
+      if (waiter) waiter(download);
+      else this.pendingDownloads.push(download);
+    });
+  }
+
+  private nextDownload(): Promise<Download> {
+    const already = this.pendingDownloads.shift();
+    if (already) return Promise.resolve(already);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.downloadWaiters = this.downloadWaiters.filter((w) => w !== waiter);
+        reject(new Error(`Timeout ${this.timeoutMs}ms exceeded waiting for a download.`));
+      }, this.timeoutMs);
+      const waiter = (download: Download) => {
+        clearTimeout(timer);
+        resolve(download);
+      };
+      this.downloadWaiters.push(waiter);
+    });
+  }
 
   async navigate(url: string): Promise<unknown> {
     let origin: string;
@@ -79,7 +111,7 @@ class PageAgentSession {
 
   async waitForDownload(destDir: string): Promise<unknown> {
     try {
-      const download = await this.page.waitForEvent("download", { timeout: this.timeoutMs });
+      const download = await this.nextDownload();
       const filePath = join(destDir, download.suggestedFilename() || "download.mp4");
       await download.saveAs(filePath);
       return { ok: true, filePath };
