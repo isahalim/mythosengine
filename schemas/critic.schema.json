@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "originality_score": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "policy_flags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "approved",
+        "rejected"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "originality_score",
+    "policy_flags",
+    "verdict",
+    "reason"
+  ],
+  "additionalProperties": false
+}

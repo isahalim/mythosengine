@@ -2,9 +2,9 @@ import { rm } from "node:fs/promises";
 import type { DriverError, ExportDriver } from "../drivers/types.ts";
 import type { AuditResult, FootageProvenance } from "./audit.ts";
 import { exports as exportsTable } from "../../../db/schema.ts";
-import type { createTestDb } from "../../../db/client.ts";
+import type { AppDb } from "../../../db/client.ts";
 
-type Db = ReturnType<typeof createTestDb>["db"];
+type Db = AppDb;
 
 /**
  * EXPORT (ARCHITECTURE.md §5.9/§9) — packages a finished render plus its
@@ -83,7 +83,8 @@ export async function runExport(
   const nowIso = new Date().toISOString();
   const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString();
 
-  db.insert(exportsTable)
+  await db
+    .insert(exportsTable)
     .values({
       id: exportId,
       renderId: input.renderId,

@@ -5,9 +5,9 @@ import type { DriverError } from "../drivers/types.ts";
 import { simhash64, simhashToHex } from "./simhash.ts";
 import { parseFeed } from "./feed-parser.ts";
 import { signals, sources } from "../../../db/schema.ts";
-import type { createTestDb } from "../../../db/client.ts";
+import type { AppDb } from "../../../db/client.ts";
 
-type Db = ReturnType<typeof createTestDb>["db"];
+type Db = AppDb;
 
 export interface WatchOptions {
   fetchImpl?: typeof fetch;
@@ -67,7 +67,19 @@ export async function watchSource(
   let inserted = 0;
   for (const item of parseResult.value) {
     const id = canonicalUrlHash(item.url);
-    const insertResult = db
+    // .returning().all() instead of .run()'s `.changes` — `.run()`'s result
+    // shape is dialect-specific (better-sqlite3's RunResult vs. D1's
+    // D1Result, which nests changes under `.meta` vs. sqlite-proxy's
+    // `{rows}` — none of which is a chain shape common to all three
+    // dialects, per db/client.ts's own AppDb discipline). `.returning()`
+    // is: every dialect returns the inserted row only when a row was
+    // actually inserted (empty array on the onConflictDoNothing no-op).
+    // Bare `.returning()` (not `.returning({id: ...})`) — TypeScript
+    // collapses drizzle's field-mapping overload to 0 arguments when the
+    // receiver is typed as AppDb (a union of three dialects' distinct
+    // builder classes); the full row works just as well here since only
+    // `.length` is checked.
+    const insertResult = await db
       .insert(signals)
       .values({
         id,
@@ -80,8 +92,9 @@ export async function watchSource(
         state: "observed",
       })
       .onConflictDoNothing()
-      .run();
-    if (insertResult.changes > 0) inserted++;
+      .returning()
+      .all();
+    if (insertResult.length > 0) inserted++;
   }
 
   await db
@@ -98,7 +111,7 @@ export async function watchSource(
 }
 
 export async function watchAllEnabledSources(db: Db, options: WatchOptions = {}): Promise<WatchSourceResult[]> {
-  const enabled = db.select().from(sources).where(eq(sources.enabled, 1)).all();
+  const enabled = await db.select().from(sources).where(eq(sources.enabled, 1)).all();
   const results: WatchSourceResult[] = [];
   // Serialized, not Promise.all: this is polling external sites on a
   // schedule, not a burst — no reason to hit several at once and every

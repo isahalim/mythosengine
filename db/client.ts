@@ -1,12 +1,15 @@
 import Database from "better-sqlite3";
 import { drizzle as drizzleBetterSqlite3, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { drizzle as drizzleD1, type DrizzleD1Database } from "drizzle-orm/d1";
+import type { SqliteRemoteDatabase } from "drizzle-orm/sqlite-proxy";
+import { D1HttpRawClient } from "./d1-http.ts";
 import * as schema from "./schema.ts";
 
 /**
  * Local/test client only, backed by better-sqlite3. Production reads/writes
- * go through D1 (via a Worker binding, or the D1 HTTP API from the GitHub
- * Actions runner — see ARCHITECTURE.md §0), using this same `schema.ts`.
+ * go through D1 — either a Worker binding, or (from the GitHub Actions
+ * pipeline runner, which has no Worker binding available) the D1 HTTP API
+ * via db/d1-http.ts's createD1HttpDb, using this same `schema.ts`.
  */
 export function createTestDb(path: string = ":memory:") {
   const client = new Database(path);
@@ -20,22 +23,28 @@ export function createD1Db(d1: D1Database): DrizzleD1Database<typeof schema> {
 }
 
 /**
- * Every Phase 8 service function (src/server/console/**) accepts this union
- * rather than one concrete dialect, so the same function runs against a real
- * D1 binding in production and a better-sqlite3-backed test DB in tests
- * (schema.test.ts already establishes this split; this is that same split
- * applied to query-builder code instead of raw SQL). Only chain shapes
- * common to both dialects (select/insert/update/delete, awaited) are used —
- * dialect-specific result shapes (D1Result vs. RunResult) are never
- * inspected by shared code.
+ * Every Phase 8 service function (src/server/console/**) and every pipeline
+ * stage accepts this union rather than one concrete dialect, so the same
+ * function runs against a real D1 binding in production, the D1 HTTP client
+ * from the GitHub Actions pipeline runner, and a better-sqlite3-backed test
+ * DB in tests (schema.test.ts already establishes this split; this is that
+ * same split applied to query-builder code instead of raw SQL). Only chain
+ * shapes common to all three dialects (select/insert/update/delete,
+ * awaited) are used — dialect-specific result shapes (D1Result vs.
+ * RunResult vs. sqlite-proxy's SqliteRemoteResult) are never inspected by
+ * shared code.
  */
-export type AppDb = BetterSQLite3Database<typeof schema> | DrizzleD1Database<typeof schema>;
+export type AppDb = BetterSQLite3Database<typeof schema> | DrizzleD1Database<typeof schema> | SqliteRemoteDatabase<typeof schema>;
 
 /** The underlying binding/connection beneath AppDb — needed only for execAtomic below. */
-export type RawSqlClient = D1Database | Database.Database;
+export type RawSqlClient = D1Database | Database.Database | D1HttpRawClient;
+
+function isD1HttpClient(client: RawSqlClient): client is D1HttpRawClient {
+  return client instanceof D1HttpRawClient;
+}
 
 function isD1Client(client: RawSqlClient): client is D1Database {
-  return typeof (client as D1Database).batch === "function";
+  return !isD1HttpClient(client) && typeof (client as D1Database).batch === "function";
 }
 
 /**
@@ -52,6 +61,10 @@ function isD1Client(client: RawSqlClient): client is D1Database {
  * for the same friction on a different method).
  */
 export async function execAtomic(client: RawSqlClient, statements: { sql: string; params: unknown[] }[]): Promise<void> {
+  if (isD1HttpClient(client)) {
+    await client.batch(statements);
+    return;
+  }
   if (isD1Client(client)) {
     await client.batch(statements.map((s) => client.prepare(s.sql).bind(...s.params)));
     return;

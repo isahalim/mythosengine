@@ -140,21 +140,21 @@ describe("claimNextFootageSegment", () => {
     ctx.client.close();
   });
 
-  it("rotates: two successive claims for the same game return different segments", () => {
-    const first = claimNextFootageSegment(ctx.client, "minecraft", "2026-01-02T00:00:00Z");
-    const second = claimNextFootageSegment(ctx.client, "minecraft", "2026-01-02T00:00:01Z");
+  it("rotates: two successive claims for the same game return different segments", async () => {
+    const first = await claimNextFootageSegment(ctx.db, "minecraft", "2026-01-02T00:00:00Z");
+    const second = await claimNextFootageSegment(ctx.db, "minecraft", "2026-01-02T00:00:01Z");
     expect(first).not.toBeNull();
     expect(second).not.toBeNull();
     expect(first?.id).not.toBe(second?.id);
   });
 
-  it("increments used_count on the claimed row", () => {
-    const claimed = claimNextFootageSegment(ctx.client, "minecraft", "2026-01-02T00:00:00Z");
-    expect(claimed?.used_count).toBe(1);
+  it("increments used_count on the claimed row", async () => {
+    const claimed = await claimNextFootageSegment(ctx.db, "minecraft", "2026-01-02T00:00:00Z");
+    expect(claimed?.usedCount).toBe(1);
   });
 
-  it("returns null when no segments exist for the requested game", () => {
-    const claimed = claimNextFootageSegment(ctx.client, "subway-surfers", "2026-01-02T00:00:00Z");
+  it("returns null when no segments exist for the requested game", async () => {
+    const claimed = await claimNextFootageSegment(ctx.db, "subway-surfers", "2026-01-02T00:00:00Z");
     expect(claimed).toBeNull();
   });
 });

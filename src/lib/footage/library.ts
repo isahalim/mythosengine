@@ -110,6 +110,34 @@ export async function commitClipToLibrary(
   return ok({ commitSha: shaResult.value.trim() });
 }
 
+/**
+ * Reads one committed clip's bytes straight out of the `assets-library`
+ * branch via `git show <branch>:<path>` — no worktree needed for a single
+ * read. RENDER (ARCHITECTURE.md §5.7) needs this because
+ * `claimNextFootageSegment`'s `libraryPath` is a path inside that branch,
+ * not a file that exists in the caller's actual checked-out working tree.
+ */
+export async function readClipFromLibrary(
+  repoDir: string,
+  libraryRelativePath: string,
+  branchName = "assets-library",
+  options: LibraryOptions = {},
+): Promise<Result<Buffer, DriverError>> {
+  try {
+    const { stdout } = await execFileAsync(options.gitBin ?? "git", ["show", `${branchName}:${libraryRelativePath}`], {
+      cwd: repoDir,
+      encoding: "buffer",
+      maxBuffer: 500 * 1024 * 1024,
+      signal: AbortSignal.timeout(options.timeoutMs ?? 30_000),
+    });
+    return ok(stdout);
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    const isAbort = cause instanceof Error && cause.name === "AbortError";
+    return err({ kind: isAbort ? "timeout" : "provider_error", message, retryable: isAbort });
+  }
+}
+
 /** Removes a worktree added by ensureLibraryWorktree, once the caller is done with it. */
 export async function removeLibraryWorktree(
   repoDir: string,

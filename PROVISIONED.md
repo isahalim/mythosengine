@@ -16,6 +16,7 @@ Last updated: `2026-08-28`
 | Custom domain | not registered | operator will handle |
 | Entry point | `src/index.ts` | `/healthz`, `/readyz` (probes the real D1 + KV bindings as of 2026-08-28), `/auth/*` and `/console/*` routed by `src/server/router.ts` (Phase 8), falls through to `env.ASSETS` for everything else |
 | CD | GitHub Actions (`.github/workflows/ci.yml`, `deploy` job) — push to `main`, gated on `verify` passing | See `docs/DECISIONS.md` (2026-08-27, "CD added") |
+| Pipeline runner | GitHub Actions, three workflows: `watch.yml` (hourly), `render.yml` (3x/day), `footage-refresh.yml` (weekly, the only one with `contents: write`) | Added 2026-08-28 (Phase 8.5) — see `docs/DECISIONS.md`. All three are also `workflow_dispatch`-triggerable; none has been run live yet |
 | Cloudflare "Workers Builds" (native git integration) | **disabled** by the operator, 2026-08-27 | Existed since `2026-08-27 18:31` (build token), undocumented here until found broken (`packages field missing or empty` + no build command — `dist/` was gitignored and never got built there). Fully redundant with the GitHub Actions CD above. Do not re-enable without giving it a real build command and resolving the `pnpm-workspace.yaml` finding recorded in `docs/DECISIONS.md` |
 
 ## Cloudflare resources
@@ -40,9 +41,9 @@ These are new requirements from the pivot and do not exist yet. Do not invent pl
 
 | Secret | Purpose | When needed |
 |---|---|---|
-| `YOUTUBE_API_KEY` | Read-only Data API key (Google Cloud Console → Credentials → Create API Key, restricted to the YouTube Data API v3), used only for `channels.list`/`search.list`/`videos.list` (public read-only data: resolving `@handle` → channel id, finding a channel's top videos). Used by `src/lib/drivers/youtube-search.ts` (built, contract-tested; no real key available in that session — see docs/DECISIONS.md) | Phase 5 (footage discovery), Phase 8 (provisioning) |
+| `YOUTUBE_API_KEY` | Read-only Data API key (Google Cloud Console → Credentials → Create API Key, restricted to the YouTube Data API v3), used only for `channels.list`/`search.list`/`videos.list` (public read-only data: resolving `@handle` → channel id, finding a channel's top videos). Used by `src/lib/drivers/youtube-search.ts` (built, contract-tested; no real key available in that session — see docs/DECISIONS.md) | `footage-refresh.yml` now actually reads this at runtime (Phase 8.5) and fails with a named error if it's unset — it is a hard blocker for that workflow, not just a future placeholder anymore |
 | `TWENTYFIRST_API_KEY` | dev-machine only, MCP component scaffolding — **operator has set this up already per 2026-08-27 conversation**, verify present in `.env.local` before Phase 7/9 | Phase 7 (console UI) / Phase 9 |
-| `DISCORD_WEBHOOK_URL` | Discord → target channel → Settings → Integrations → Webhooks → New Webhook, copy its URL. Optional: `src/server/alerts/discord.ts`/`rules.ts` (built, tested) fire nothing and nothing breaks if this is unset — no caller invokes them yet either way (see docs/DECISIONS.md's Phase 8 entry) | Whichever future session builds the WATCH→EXPORT runner these alerts are meant to fire from |
+| `DISCORD_WEBHOOK_URL` | Discord → target channel → Settings → Integrations → Webhooks → New Webhook, copy its URL. Optional: `src/server/alerts/discord.ts`/`rules.ts` (built, tested since Phase 8) are now actually called by `render.yml`/`watch.yml` (Phase 8.5) whenever this is set — still fires nothing and nothing breaks if it's left unset | Optional |
 
 `CONSOLE_ENROLLMENT_TOKEN` is single-use and burns after the second passkey is registered. If Phase 9 needs a fresh one, ask the operator to generate it — do not do it yourself.
 
@@ -52,7 +53,7 @@ The KV namespace provisioned in Phase 8 (Task 8.2) now also stores export blobs 
 
 `GROQ_API_KEY` · `CLOUDFLARE_API_TOKEN` · `CLOUDFLARE_ACCOUNT_ID`
 
-Will additionally need `YOUTUBE_API_KEY` (see above) once Phase 5/8 wire real footage-source discovery into a scheduled run. `CLOUDFLARE_API_TOKEN` is also what Phase 6's render job uses to write export blobs into KV. `GITHUB_TOKEN` is injected automatically per run.
+Will additionally need `YOUTUBE_API_KEY` (see above) — `footage-refresh.yml` (Phase 8.5) requires it at runtime now, not just eventually. `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` are also what `render.yml`/`watch.yml`/`footage-refresh.yml` use for D1-over-HTTP (`db/d1-http.ts`) and KV-over-HTTP (`src/lib/drivers/kv-http.ts`) reads/writes — see `docs/DECISIONS.md`'s Phase 8.5 entry for why the REST API is used directly instead of a proxy Worker. `GITHUB_TOKEN` is injected automatically per run.
 
 ## Cloudflare API token permissions
 

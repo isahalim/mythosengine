@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { commitClipToLibrary, ensureLibraryWorktree, removeLibraryWorktree } from "./library.ts";
+import { commitClipToLibrary, ensureLibraryWorktree, readClipFromLibrary, removeLibraryWorktree } from "./library.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -116,6 +116,36 @@ describe("footage library (real git, isolated scratch repo)", () => {
     if (!second.ok) expect(second.error.kind).toBe("provider_error");
 
     await rm(clipSourcePath, { force: true });
+  });
+
+  it("reads a committed clip's exact bytes straight out of the branch, no worktree needed for the read", async () => {
+    await ensureLibraryWorktree(repoDir, worktreeDir);
+
+    const clipSourcePath = join(repoDir, "..", "fake-clip-source-3.mp4");
+    const originalBytes = Buffer.from([0x00, 0x01, 0xff, 0x42, 0x99]); // real (non-UTF8-safe) binary bytes
+    await writeFile(clipSourcePath, originalBytes);
+    await commitClipToLibrary(worktreeDir, clipSourcePath, "clips/read-test/seg1.mp4", {
+      footageSourceId: "src1",
+      sourceVideoId: "v1",
+      clipStartS: 0,
+      clipEndS: 20,
+      motionScore: 1,
+      fetchedAt: "2026-08-28T00:00:00Z",
+    });
+
+    // Read from repoDir (the "real" checkout), not the worktree -- proving
+    // this doesn't need a worktree checked out to work.
+    const result = await readClipFromLibrary(repoDir, "clips/read-test/seg1.mp4");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(Buffer.compare(result.value, originalBytes)).toBe(0);
+
+    await rm(clipSourcePath, { force: true });
+  });
+
+  it("fails cleanly (not a throw) when the path was never committed", async () => {
+    await ensureLibraryWorktree(repoDir, worktreeDir);
+    const result = await readClipFromLibrary(repoDir, "clips/does/not/exist.mp4");
+    expect(result.ok).toBe(false);
   });
 
   it("fails cleanly (not a throw) when the repo/branch doesn't exist for removeLibraryWorktree", async () => {

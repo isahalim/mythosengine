@@ -7,9 +7,9 @@ import { extractClip } from "./clip.ts";
 import { commitClipToLibrary, ensureLibraryWorktree, removeLibraryWorktree } from "./library.ts";
 import { computeMotionSeries, findTopMotionWindows } from "./motion-score.ts";
 import { footageSegments, footageSources } from "../../../db/schema.ts";
-import type { createTestDb } from "../../../db/client.ts";
+import type { AppDb } from "../../../db/client.ts";
 
-type Db = ReturnType<typeof createTestDb>["db"];
+type Db = AppDb;
 type FootageSource = typeof footageSources.$inferSelect;
 
 export interface RefreshOptions {
@@ -62,7 +62,7 @@ export async function refreshFootageSource(
   }
   const video = videoResult.value;
 
-  const existing = db
+  const existing = await db
     .select()
     .from(footageSegments)
     .where(eq(footageSegments.sourceVideoId, video.videoId))
@@ -119,7 +119,7 @@ export async function refreshFootageSource(
     await rm(clipTempPath, { force: true });
     if (!commitResult.ok) continue;
 
-    db
+    await db
       .insert(footageSegments)
       .values({
         id: segmentId,

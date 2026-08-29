@@ -218,7 +218,7 @@ just fixtures) produced sane `signals` rows, verified by hand.
 
 ---
 
-### Phase 4 — Script generation (SCRIPT + CRITIC/POLICY-DRAFT-CHECK)
+### Phase 4 — Script generation (SCRIPT + CRITIC/POLICY-DRAFT-CHECK) — done (2026-08-28, night)
 
 Two prompt files, versioned, not inline strings — same reasoning as before, you'll iterate on these for months.
 
@@ -277,6 +277,8 @@ Implement stages 3-4 using these prompt files, reusing GroqLlmDriver as-is.
 ```
 
 **Gate:** the injection fixture fails safely; the critic catches the planted low-originality case.
+
+**Built:** `prompts/script.v1.md`/`critic.v1.md` verbatim as specified above; response shapes as Zod schemas (`src/lib/pipeline/script-schema.ts`) with `schemas/script.schema.json`/`critic.schema.json` generated from them via `z.toJSONSchema()` rather than maintained as separate hand-written files; `generateScript`/`critiqueScript` (`src/lib/pipeline/script.ts`/`critic.ts`) share a `requestValidatedJson` helper (`request-json.ts`) for the "validate, one repair retry, else hard fail" contract, then write atomically via `execAtomic`. **Gate met partially, stated honestly:** the mechanics (schema validation across 5 fixtures, the repair retry, hard failure, atomic state transitions, drafting/critic prompt isolation) are unit-tested against a scripted fake `LlmDriver`; the specific behavioral claims ("catches a planted low-originality script," "an injected instruction doesn't inflate the score") are live-Groq-model judgment calls a fake driver can't demonstrate — matching this repo's existing precedent of never live-calling Groq in its test suite (see `docs/DECISIONS.md`'s entry for the full reasoning, including why a `GROQ_API_KEY`-gated live test wouldn't actually run in `pnpm verify` anyway). Full detail in `docs/DECISIONS.md`.
 
 ---
 
@@ -426,7 +428,17 @@ evidence/file:line.
 
 **Gate:** hardening table complete; `wrangler deploy` green; a real end-to-end run (WATCH through EXPORT) produces a real downloadable export in the console, supervised.
 
-**Built (2026-08-28):** the full `ARCHITECTURE.md` §6 route table (`src/server/router.ts`), passkey auth + step-up reauth (`src/server/auth/**`), the encrypted key vault (`src/lib/vault.ts`), structured logging (`src/server/log.ts`, `pino/browser.js`) and Discord alert primitives (`src/server/alerts/**`, not yet wired to a caller — the runner they'd fire from doesn't exist), and the hardening table (`docs/DECISIONS.md`'s 2026-08-28 entry). Task 8.2 done for real: D1 database + `HOT`/`VAULT` KV namespaces created and migrated via the `cloudflare-bindings` MCP tools, IDs recorded in `PROVISIONED.md`. Also pulled Phase 9's login/passkey-enrollment UI forward into this session (`src/pages/console/login.astro`) — without it nothing built here was reachable by a human. **Gate not fully met, honestly:** `wrangler deploy` was not run (a separate confirmed action, or left to the existing GitHub Actions CD on push to `main`); a real end-to-end WATCH-through-EXPORT run isn't possible yet — that runner doesn't exist in this codebase. See `docs/DECISIONS.md` for the full account, including what was rejected and the known gaps (heuristic `vault.get()` lint restriction, no server-side session revocation, no Playwright pass on the new pages).
+**Built (2026-08-28):** the full `ARCHITECTURE.md` §6 route table (`src/server/router.ts`), passkey auth + step-up reauth (`src/server/auth/**`), the encrypted key vault (`src/lib/vault.ts`), structured logging (`src/server/log.ts`, `pino/browser.js`) and Discord alert primitives (`src/server/alerts/**`, not yet wired to a caller — the runner they'd fire from doesn't exist), and the hardening table (`docs/DECISIONS.md`'s 2026-08-28 entry). Task 8.2 done for real: D1 database + `HOT`/`VAULT` KV namespaces created and migrated via the `cloudflare-bindings` MCP tools, IDs recorded in `PROVISIONED.md`. Also pulled Phase 9's login/passkey-enrollment UI forward into this session (`src/pages/console/login.astro`) — without it nothing built here was reachable by a human. **Gate not fully met, honestly:** `wrangler deploy` was not run (a separate confirmed action, or left to the existing GitHub Actions CD on push to `main`); a real end-to-end WATCH-through-EXPORT run isn't possible yet — that runner doesn't exist in this codebase (Phase 8.5, below, is where that got built). See `docs/DECISIONS.md` for the full account, including what was rejected and the known gaps (heuristic `vault.get()` lint restriction, no server-side session revocation, no Playwright pass on the new pages).
+
+---
+
+### Phase 8.5 — Pipeline runner + cron (WATCH → EXPORT for real) — done (2026-08-28, night)
+
+Not originally itemized as its own phase — surfaced when a later session went to build "the thing that calls the stages in order" and found it needed three things, not one: Phase 4 didn't exist yet (see above), nothing outside a Worker could talk to D1, and the orchestrator itself didn't exist. Full account, including the D1-over-HTTP design and two real CI-only bugs caught before they shipped (Node's TypeScript stripping can't run this codebase's driver classes; a fresh checkout has no local `assets-library` branch ref), is in `docs/DECISIONS.md`'s entry for this session — this section is the short version.
+
+**Built:** `db/d1-http.ts` (D1 over Cloudflare's REST API via `drizzle-orm/sqlite-proxy`) and `src/lib/drivers/kv-http.ts`, giving `AppDb`/`KvLike` a third arm GitHub Actions can actually use — a Worker binding was never reachable from there. Fixed the dialect bug in `watch.ts`/`score.ts`/`refresh.ts`/`export.ts`/`db/footage-select.ts` (typed against the test-only better-sqlite3 dialect, would have silently broken against real D1). Three new entrypoints, `scripts/pipeline/{watch,render,footage-refresh}.ts`, run by three new cron workflows (`.github/workflows/{watch,render,footage-refresh}.yml`) via `npx tsx` (not plain `node` — see `docs/DECISIONS.md` for why). Every stage now writes real `runs` rows (`db/runs.ts`), finally giving `src/server/alerts/rules.ts`'s Discord alerts (built in Phase 8, never called) a real caller.
+
+**Gate:** a full pipeline run for 3 signals produces 3 KV-stored exports with complete audit packages (`AGENT_PLAYBOOK.md`'s original Phase 6 gate) — **not yet exercised live**, deliberately: this session proved every script imports and runs to its first real failure via `npx tsx` with no credentials, but a genuine end-to-end run against the provisioned D1 database is a real production write this session wasn't asked to make. `workflow_dispatch` is wired on all three workflows for the operator to trigger one by hand first.
 
 ---
 

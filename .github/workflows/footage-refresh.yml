@@ -1,0 +1,73 @@
+name: FOOTAGE REFRESH
+
+# Weekly (ARCHITECTURE.md §5.0) — the only stage that touches third-party
+# video. Isolating this to one low-volume job is the mitigation this
+# project chose for the yt-dlp/YouTube ToS risk (see CLAUDE.md NEVER block
+# and ARCHITECTURE.md §5.0's "known risk, stated plainly" note) — never run
+# this more often, and never call it from the daily render job.
+on:
+  schedule:
+    - cron: "0 3 * * 0" # Sunday 03:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # the only pipeline workflow that pushes — to assets-library, never to main
+
+concurrency:
+  group: pipeline-footage-refresh
+  cancel-in-progress: false
+
+jobs:
+  footage-refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Fetch the existing assets-library branch (absent only on the very first run)
+        run: git fetch origin assets-library:assets-library || echo "assets-library branch doesn't exist remotely yet — this run will create it"
+
+      - name: Configure git identity for the assets-library commits
+        run: |
+          git config user.name "mythosengine-bot"
+          git config user.email "actions@users.noreply.github.com"
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Pinned + checksum-verified (ARCHITECTURE.md §3: yt-dlp is a
+      # non-npm binary dependency, same supply-chain discipline as a pinned
+      # npm package applies). Checksum confirmed against yt-dlp's own
+      # published SHA2-256SUMS for this release, not guessed.
+      - name: Install yt-dlp (pinned 2026.08.19, checksum-verified)
+        run: |
+          curl -sSL -o yt-dlp https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp
+          echo "1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6  yt-dlp" | sha256sum -c -
+          chmod +x yt-dlp
+          sudo mv yt-dlp /usr/local/bin/yt-dlp
+
+      - name: Verify ffmpeg is available
+        run: ffmpeg -version && ffprobe -version
+
+      - name: Run FOOTAGE REFRESH
+        run: npx tsx scripts/pipeline/footage-refresh.ts
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+      - name: Push new clips to assets-library
+        run: git push origin assets-library

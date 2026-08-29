@@ -2,9 +2,9 @@ import { eq, gte } from "drizzle-orm";
 import { assertSignalTransition } from "../state.ts";
 import { hexToSimhash, isNearDuplicate } from "./simhash.ts";
 import { signals } from "../../../db/schema.ts";
-import type { createTestDb } from "../../../db/client.ts";
+import type { AppDb } from "../../../db/client.ts";
 
-type Db = ReturnType<typeof createTestDb>["db"];
+type Db = AppDb;
 type Signal = typeof signals.$inferSelect;
 
 const TRAILING_WINDOW_DAYS = 7;
@@ -40,17 +40,17 @@ function clusterByNearDuplicate(items: Signal[]): Signal[][] {
  * against near-duplicates already in the trailing window from earlier
  * runs), and rejects the rest of the cluster as duplicates.
  */
-export function scoreObservedSignals(db: Db, now: Date = new Date()): ScoreResult {
+export async function scoreObservedSignals(db: Db, now: Date = new Date()): Promise<ScoreResult> {
   const windowStart = new Date(now.getTime() - TRAILING_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  const observed = db.select().from(signals).where(eq(signals.state, "observed")).all();
-  const windowSignals = db.select().from(signals).where(gte(signals.observedAt, windowStart)).all();
+  const observed = await db.select().from(signals).where(eq(signals.state, "observed")).all();
+  const windowSignals = await db.select().from(signals).where(gte(signals.observedAt, windowStart)).all();
 
   const result: ScoreResult = { scored: 0, rejectedAsDuplicate: 0, rejectedAsFuture: 0 };
 
   const future = observed.filter((s) => Date.parse(s.observedAt) > now.getTime());
   for (const signal of future) {
     assertSignalTransition("observed", "rejected");
-    db.update(signals).set({ state: "rejected" }).where(eq(signals.id, signal.id)).run();
+    await db.update(signals).set({ state: "rejected" }).where(eq(signals.id, signal.id)).run();
     result.rejectedAsFuture++;
   }
 
@@ -65,7 +65,7 @@ export function scoreObservedSignals(db: Db, now: Date = new Date()): ScoreResul
     const bonus = (cluster.length - 1 + priorCorroborators) * CORROBORATION_BONUS;
 
     assertSignalTransition("observed", "scored");
-    db
+    await db
       .update(signals)
       .set({ state: "scored", engagementScore: winner.engagementScore + bonus })
       .where(eq(signals.id, winner.id))
@@ -75,7 +75,7 @@ export function scoreObservedSignals(db: Db, now: Date = new Date()): ScoreResul
     for (const signal of cluster) {
       if (signal.id === winner.id) continue;
       assertSignalTransition("observed", "rejected");
-      db.update(signals).set({ state: "rejected" }).where(eq(signals.id, signal.id)).run();
+      await db.update(signals).set({ state: "rejected" }).where(eq(signals.id, signal.id)).run();
       result.rejectedAsDuplicate++;
     }
   }
