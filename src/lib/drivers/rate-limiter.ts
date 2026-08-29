@@ -46,16 +46,39 @@ export class TokenBucketLimiter {
     return Math.max(msForRequest, msForTokens);
   }
 
-  /** Resolves once a request slot and `estimatedTokens` of budget are free, and consumes them. */
+  /**
+   * Resolves once a request slot and `estimatedTokens` of budget are free,
+   * and consumes them.
+   *
+   * A demand larger than the entire per-minute budget is clamped to the
+   * budget: it waits for a full bucket, then consumes all of it. **Waiting
+   * cannot satisfy it otherwise** — `refill()` caps `tokenBudget` at
+   * `tokenCapacity`, so `tokenBudget >= estimatedTokens` never becomes true
+   * and the loop below spins forever, silently. That is not theoretical: on
+   * 2026-08-29 the weekly FOOTAGE REFRESH job deadlocked here. Its browser
+   * agent (`browser-agent-core.ts`) accumulates page snapshots and link
+   * lists into its prompt, crossed ~20k characters — `(6000 - 1024) * 4`,
+   * the exact point where `estimatePromptTokens` in groq.ts tips past this
+   * limiter's 6000/min capacity — and the job then sat with an idle
+   * Chromium open, emitting nothing at all, until the 30-minute GitHub
+   * Actions timeout killed it. Every weekly run had failed this way.
+   *
+   * Clamping is the honest behavior for a local pacing primitive: a bucket
+   * cannot know a provider's real per-request ceiling, so it should throttle
+   * hard and let Groq's own 429/413 be authoritative, never hang the caller
+   * waiting for a condition it has already made unreachable.
+   */
   async acquire(estimatedTokens: number): Promise<void> {
+    const requested = Number.isFinite(estimatedTokens) ? Math.max(0, estimatedTokens) : 0;
+    const demand = Math.min(requested, this.tokenCapacity);
     const run = async () => {
-      let waitMs = this.msUntilAvailable(estimatedTokens);
+      let waitMs = this.msUntilAvailable(demand);
       while (waitMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, waitMs));
-        waitMs = this.msUntilAvailable(estimatedTokens);
+        waitMs = this.msUntilAvailable(demand);
       }
       this.requestTokens -= 1;
-      this.tokenBudget -= estimatedTokens;
+      this.tokenBudget -= demand;
     };
     const next = this.tail.then(run, run);
     /* v8 ignore next 4 -- run() never rejects; this only guards this.tail against ever

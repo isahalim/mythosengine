@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { launchBrowserSession, runBrowserAgentTask } from "./browser-agent-core.ts";
-import type { DriverError, LlmDriver, LlmRequest, LlmResponse, ToolCall } from "./types.ts";
+import { launchBrowserSession, runBrowserAgentTask, trimAgentHistory } from "./browser-agent-core.ts";
+import type { DriverError, LlmDriver, LlmMessage, LlmRequest, LlmResponse, ToolCall } from "./types.ts";
 import { ok, type Result } from "../result.ts";
 
 const PAGE_HTML = `<!doctype html>
@@ -194,6 +194,61 @@ describe("browser-agent-core", () => {
     } finally {
       await session.close();
     }
+  });
+});
+
+// Regression: the 2026-08-29 FOOTAGE REFRESH hang. This agent's prompt grows
+// every iteration (a page snapshot or link list per action, nothing ever
+// dropped), and groq.ts prices a request at maxTokens + promptChars/4
+// against a 6000-tokens/min bucket — so an untrimmed history first cost a
+// full bucket per call, and then (before rate-limiter.ts was fixed)
+// deadlocked outright.
+describe("trimAgentHistory", () => {
+  function history(toolResultChars: number, pairs: number): LlmMessage[] {
+    const messages: LlmMessage[] = [
+      { role: "system", content: "system prompt" },
+      { role: "user", content: "the goal" },
+    ];
+    for (let i = 0; i < pairs; i++) {
+      messages.push({ role: "assistant", content: "", toolCalls: [{ id: `c${i}`, name: "browser_snapshot", argumentsJson: "{}" }] });
+      messages.push({ role: "tool", content: "x".repeat(toolResultChars), toolCallId: `c${i}` });
+    }
+    return messages;
+  }
+
+  const totalChars = (messages: LlmMessage[]): number => messages.reduce((sum, m) => sum + m.content.length, 0);
+
+  it("leaves a conversation already within budget untouched", () => {
+    const messages = history(100, 3);
+    const before = messages.map((m) => m.content);
+    trimAgentHistory(messages, 14_000);
+    expect(messages.map((m) => m.content)).toEqual(before);
+  });
+
+  it("brings an oversized conversation back under the budget", () => {
+    const messages = history(5_000, 8);
+    expect(totalChars(messages)).toBeGreaterThan(14_000);
+    trimAgentHistory(messages, 14_000);
+    expect(totalChars(messages)).toBeLessThanOrEqual(14_000);
+  });
+
+  it("never drops a message, so every tool_call keeps its matching tool reply", () => {
+    const messages = history(5_000, 8);
+    const rolesBefore = messages.map((m) => m.role);
+    const idsBefore = messages.map((m) => m.toolCallId ?? m.toolCalls?.[0]?.id);
+    trimAgentHistory(messages, 1_000);
+    // Dropping either half of a pair is a 400 from Groq, so structure is
+    // preserved and only content is released.
+    expect(messages.map((m) => m.role)).toEqual(rolesBefore);
+    expect(messages.map((m) => m.toolCallId ?? m.toolCalls?.[0]?.id)).toEqual(idsBefore);
+  });
+
+  it("preserves the system prompt, the goal, and the most recent exchange", () => {
+    const messages = history(5_000, 8);
+    trimAgentHistory(messages, 500);
+    expect(messages[0].content).toBe("system prompt");
+    expect(messages[1].content).toBe("the goal");
+    expect(messages[messages.length - 1].content).toBe("x".repeat(5_000));
   });
 });
 

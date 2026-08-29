@@ -10,7 +10,7 @@
 
 | Service | Permanent free? | Card-free? | Role |
 |---|---|---|---|
-| **Groq Cloud** (Llama 3.3 70B / 3.1 8B) | Yes — rate-limited, no credit system. ~30 req/min, ~6k tokens/min, ~14.4k req/day, enforced per organization | **Yes** | Script generation, critique, title/description/hashtag generation |
+| **Groq Cloud** (`openai/gpt-oss-120b` / `openai/gpt-oss-20b`) | Yes — rate-limited, no credit system. ~30 req/min, ~6k tokens/min, ~14.4k req/day, enforced per organization | **Yes** | Script generation, critique, title/description/hashtag generation, the console chat/voice agent, and the footage-acquisition browser agent (§5.0). Groq deprecated `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` on 2026-06-17; the OpenAI open-weight models replaced them everywhere in `src/**` |
 | **Microsoft Edge "Read Aloud" TTS**, via the `edge_tts` Python library (LGPL-3.0, `rany2/edge-tts`), invoked as a subprocess | Yes, but **not an official product** — no SLA, can break without notice | **Yes** | Narration voice synthesis + word-level timestamps for captions |
 | **Cloudflare Workers static assets** | Yes | **Yes** | Hosts the operator console and its API |
 | **Cloudflare D1** | 5 GB, 5M row-reads/day | **Yes** | Pipeline state, scripts, footage/segment/render/upload records, audit log |
@@ -74,7 +74,7 @@
                                      ▼                   ▼                  ▼
                            ┌──────────────┐    ┌──────────────────┐  ┌──────────────┐
                            │  GROQ API    │    │  EDGE TTS         │  │ FFmpeg (local │
-                           │ llama-3.3-70b│    │ (unofficial, free)│  │  to the runner)│
+                           │ gpt-oss-120b │    │ (unofficial, free)│  │  to the runner)│
                            └──────────────┘    └───────────────────┘  └──────┬────────┘
                                                                               │ finished .mp4
                                                                               ▼
@@ -294,6 +294,37 @@ CREATE UNIQUE INDEX idx_directive_active ON directives(status) WHERE status = 'a
 
 Same rationale as before: natural-key `UNIQUE` gives idempotency for free, `CHECK` makes illegal states unrepresentable, `audit_log` is append-only, `footage_segments.used_count`/`last_used_at` is what lets FOOTAGE SELECT (§5.5) rotate clips instead of reusing the same 15 seconds every day, and `renders.created_at`/`scripts.created_at` are what let the diversity logic (§5.3/§5.5/§5.6) know what's already run today without a separate tracking table.
 
+The block above is the pipeline's core; the console added more tables as it
+was built — `chat_sessions`/`chat_messages` (§8), `mcp_tokens` (§6's
+`POST /console/mcp`), `reauth_nonces`, `webauthn_challenges`,
+`recovery_codes`. **`db/schema.ts` is the source of truth, not this
+document.** Read it, not this section, before writing a query.
+
+### How a migration reaches production
+
+`db/schema.ts` → `drizzle-kit generate` → a numbered file in
+`db/migrations/` → **`wrangler d1 migrations apply mythosengine --remote`,
+run by `.github/workflows/ci.yml`'s `deploy` job, before `wrangler deploy`.**
+
+That ordering is the contract: a Worker is never deployed ahead of the
+schema its code expects. Two properties make it safe to leave on —
+`wrangler` skips anything already recorded in the `d1_migrations` ledger, so
+a push with no new migration is a no-op, and `wrangler.toml`'s
+`migrations_dir = "db/migrations"` uses the default `<dir>/*.sql` pattern,
+which matches Drizzle's flat filenames and ignores its `meta/`
+subdirectory. The two tools agree on one file set.
+
+**Why this is automated rather than a runbook step:** migrations used to be
+applied by hand with `wrangler d1 execute`, and on 2026-08-29
+`0007_mcp_tokens.sql` was missed. The Worker shipped code that selected from
+`mcp_tokens`; D1 didn't have it. `getConsoleSummary()` fans out with
+`Promise.all`, so that one dead query rejected the whole call, the router's
+catch-all turned it into a 500, and **every** card on the dashboard fell to
+"Unavailable" under a "Console API not reachable" banner — a total console
+outage from a missing `CREATE TABLE`. The chat agent's `get_summary` tool
+failed the same way (§8). A schema that only production can disagree with is
+a schema that will.
+
 ---
 
 ## 5. Pipeline stages — contracts
@@ -334,6 +365,32 @@ fix; this replaces the mechanism rather than patching it further.
    `footage_segments` rows. The full downloaded source is deleted after
    clipping — the library holds only the trimmed, transformed segments,
    never the source video itself.
+
+**Context budget — why this job's prompt is trimmed** (added 2026-08-29,
+after every weekly run had silently failed): the agent's prompt grows
+monotonically — each iteration appends a page snapshot or a link list, and
+nothing was ever dropped. `GroqDriver` prices a request at
+`maxTokens + promptChars / 4` against `TokenBucketLimiter`'s
+6,000-tokens/minute bucket, so crossing ~20,000 characters (`(6000 - 1024) * 4`)
+made every call cost a full bucket. Worse, `acquire()` waited for a budget
+`refill()` caps out of reach, so it **never resolved** — the job sat with an
+idle Chromium emitting nothing for 30 minutes until the Actions timeout
+killed it, every time. Three fixes, all load-bearing:
+
+- `TokenBucketLimiter.acquire()` clamps a demand larger than the whole
+  per-minute budget instead of deadlocking on it. A local pacing bucket
+  cannot know a provider's real per-request ceiling; it should throttle hard
+  and let Groq's own 429/413 be authoritative, never hang.
+- `browser-agent-core.ts` caps what it feeds back — 40 links (was 80) of 100
+  characters (was 200), 3,000-character snapshots — and `trimAgentHistory()`
+  elides the *content* of the oldest tool results once the conversation
+  passes 14,000 characters. It never deletes a message: the tool-calling wire
+  format requires every assistant `tool_call` to keep its matching `tool`
+  reply, so dropping either half is a 400 from Groq.
+- Both the agent loop and `scripts/pipeline/footage-refresh.ts` log per
+  action and per source. This job's only evidence is CI stdout, and it
+  previously produced none at all — a hang and slow progress were
+  indistinguishable.
 
 **Guardrails on the browser agent itself** (ytmp3.gg is a third-party,
 ad-monetized converter site): navigation is restricted to two allowed
@@ -446,6 +503,31 @@ Edge TTS needs no key at all — that's the entire appeal and the entire risk (�
 ## 8. Console frontend
 
 Astro island(s) mounted only on `/console/*`, same `tokens.css` token discipline as before — the wet-slate palette's ground tone moved to true black (`--ink: #000000`, `--slate: #0a0a0c`) on 2026-08-28 specifically so WebGL/canvas elements (the Liquid Metal shader, the Siri Wave) read as native to the page rather than sitting in a visibly separate box. One `@astrojs/react` island (`PromptInputBox.tsx`, `/console/chat` only) is the sole framework exception — everything else, including the radial nav's full-screen/compact states, is plain Astro + vanilla TS. There is no public marketing hero to build here; skip straight to the dashboard. Full spec in `CONSOLE_SPEC.md`.
+
+### The chat/voice agent's turn budget
+
+`/console/chat` and `/console/voice` both run `runAgentTurn`
+(`src/server/agent/loop.ts`): up to `MAX_TOOL_ITERATIONS` Groq round trips
+against the `AGENT_TOOLS` allowlist, with D1 reads between them. Three
+bounds keep one turn from becoming an outage, and all three exist because
+the 2026-08-29 incident (§4) tripped every one of them at once:
+
+- **A failing tool runs at most once per turn.** A repeated call signature
+  (`name` + exact arguments) is short-circuited with an
+  `already_failed_this_turn` result carrying the original error, so the
+  model has something to report instead of a retry loop. Without this, a
+  broken `get_summary` — ~12 D1 queries a call — exhausted the Worker's
+  subrequest budget within three iterations and the request 500'd before any
+  assistant message was written. The operator saw the question vanish.
+- **The client allows 90s for an agent turn**, not the 10s every other
+  mutation gets (`src/console/lib/api.ts`). A turn that needed even one tool
+  call was being aborted browser-side and reported as an unreachable API.
+- **A turn in flight is visible.** The thread renders an animated indicator
+  until the turn resolves, and a failed turn says so inline rather than only
+  raising the top-of-page banner. "Slow" and "dropped" must not look alike.
+
+The system prompt also states the model's own identity (`openai/gpt-oss-120b`,
+served by Groq) — asked unprompted, it otherwise claimed to be GPT-4.
 
 ---
 

@@ -14,6 +14,14 @@ binding = "ASSETS"
 binding = "DB"
 database_name = "mythosengine"
 database_id = "77a0969e-2fb8-460e-9e52-f2606b2fa2fa"
+# Drizzle writes flat `NNNN_name.sql` files here plus a `meta/` subdirectory;
+# wrangler's default pattern is `<dir>/*.sql`, top-level only, so `meta/` is
+# ignored and the two tools agree on the same file set. This is what lets
+# `wrangler d1 migrations apply` be the single path a migration reaches
+# production (see .github/workflows/ci.yml's deploy job) — applying them by
+# hand is how 0007_mcp_tokens.sql got missed and took the whole console's
+# GET /console/summary down with a 500.
+migrations_dir = "db/migrations"
 
 [[kv_namespaces]]
 binding = "HOT"

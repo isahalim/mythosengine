@@ -124,9 +124,49 @@ function buildMessageBubble(message: ChatMessage): HTMLLIElement {
   return li;
 }
 
+const THINKING_ID = "chat-thinking";
+
+/**
+ * "Working…" indicator, appended to the thread for exactly as long as an
+ * agent turn is in flight. An agent turn can be several Groq round trips
+ * with tool calls between them (src/server/agent/loop.ts), so without this
+ * a slow answer and a dropped one looked identical from the composer — the
+ * failure mode that made the chat feel like it silently ignored harder
+ * questions. `aria-live` so it is announced, not just seen.
+ */
+function buildThinkingBubble(): HTMLLIElement {
+  const li = el("li", "flex items-center gap-1.5 py-1");
+  li.id = THINKING_ID;
+  li.setAttribute("aria-live", "polite");
+  li.setAttribute("aria-label", "Assistant is thinking");
+  for (let i = 0; i < 3; i++) li.appendChild(el("span", "thinking-dot h-1.5 w-1.5 rounded-full bg-mercury/70"));
+  return li;
+}
+
+function showThinking(): void {
+  const thread = threadEl();
+  if (!thread || document.getElementById(THINKING_ID)) return;
+  thread.appendChild(buildThinkingBubble());
+  thread.scrollTop = thread.scrollHeight;
+}
+
+function hideThinking(): void {
+  document.getElementById(THINKING_ID)?.remove();
+}
+
+/** A turn that failed says so in the thread itself — the banner alone left the operator's question sitting there with no visible outcome. */
+function showTurnFailure(message: string): void {
+  const thread = threadEl();
+  if (!thread) return;
+  thread.appendChild(el("li", "mx-auto w-fit max-w-[85%] rounded-xl border border-rose/25 bg-rose/10 px-3 py-2 text-center font-body text-xs text-rose", message));
+  thread.scrollTop = thread.scrollHeight;
+}
+
 function renderThread(messages: ChatMessage[]): void {
   const thread = threadEl();
   if (!thread) return;
+  // replaceChildren() drops the thinking bubble too; every caller that
+  // re-renders mid-turn re-adds it via showThinking() below.
   thread.replaceChildren();
   if (messages.length === 0) {
     thread.appendChild(
@@ -183,12 +223,20 @@ export async function sendComposerMessage(content: string, onBusyChange?: (busy:
   if (existing.ok) {
     renderThread([...existing.value, { id: "pending", role: "user", content: trimmed, toolName: null, toolArgsJson: null, toolResultJson: null, createdAt: new Date().toISOString() }]);
   }
+  showThinking();
 
   const result = await sendChatMessage(sessionId, trimmed);
+  hideThinking();
   onBusyChange?.(false);
   if (!result.ok) {
     if (redirectIfUnauthorized(result.error)) return;
     errorBannerEl()?.classList.remove("hidden");
+    // The turn may well have been persisted server-side before the failure
+    // (the user message is written first — src/server/agent/loop.ts), so
+    // re-read rather than assuming the thread is still accurate.
+    const afterFailure = await getChatMessages(sessionId);
+    if (afterFailure.ok) renderThread(afterFailure.value);
+    showTurnFailure(`That turn didn't complete (${result.error.kind}). Nothing was lost — send it again, or check the dashboard.`);
     return;
   }
   errorBannerEl()?.classList.add("hidden");

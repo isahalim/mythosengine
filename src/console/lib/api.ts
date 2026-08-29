@@ -26,6 +26,13 @@ import type {
 
 const READ_TIMEOUT_MS = 8_000;
 const WRITE_TIMEOUT_MS = 10_000;
+// An agent turn is not a normal write: it can run up to MAX_TOOL_ITERATIONS
+// (src/server/agent/loop.ts) round trips to Groq, each with its own D1 reads
+// between them, before it has anything to say. At the 10s write budget a
+// question that needed even one tool call was routinely aborted client-side,
+// which the operator saw as the composer going quiet and the "Console API not
+// reachable" banner appearing — indistinguishable from the API being down.
+const AGENT_TURN_TIMEOUT_MS = 90_000;
 
 async function readJson<T>(res: Response): Promise<Result<T, DriverError>> {
   try {
@@ -57,7 +64,7 @@ async function get<T>(path: string): Promise<Result<T, DriverError>> {
 // Mutations never retry on their own — a retried POST could double-fire a
 // side effect (mark-reviewed, discard, killswitch). One attempt, hard
 // timeout, the caller decides whether to let the operator retry manually.
-async function send<T>(path: string, method: "POST" | "PUT" | "DELETE", body?: unknown): Promise<Result<T, DriverError>> {
+async function send<T>(path: string, method: "POST" | "PUT" | "DELETE", body?: unknown, timeoutMs: number = WRITE_TIMEOUT_MS): Promise<Result<T, DriverError>> {
   const res = await fetchWithRetry(
     path,
     {
@@ -66,7 +73,7 @@ async function send<T>(path: string, method: "POST" | "PUT" | "DELETE", body?: u
       headers: body === undefined ? {} : { "content-type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
     },
-    { timeoutMs: WRITE_TIMEOUT_MS, maxAttempts: 1, baseDelayMs: 0 },
+    { timeoutMs, maxAttempts: 1, baseDelayMs: 0 },
   );
   if (!res.ok) return res;
   return readJson<T>(res.value);
@@ -138,7 +145,7 @@ export function getChatMessages(sessionId: string): Promise<Result<ChatMessage[]
 }
 
 export function sendChatMessage(sessionId: string, content: string): Promise<Result<AgentTurnResult, DriverError>> {
-  return send<AgentTurnResult>(`/console/chat/sessions/${encodeURIComponent(sessionId)}/message`, "POST", { content });
+  return send<AgentTurnResult>(`/console/chat/sessions/${encodeURIComponent(sessionId)}/message`, "POST", { content }, AGENT_TURN_TIMEOUT_MS);
 }
 
 // Voice control (separate section from /console/chat — docs/DECISIONS.md's
@@ -157,8 +164,10 @@ export async function transcribeVoice(audio: Blob): Promise<Result<{ transcript:
   return readJson(res.value);
 }
 
+// Same agent loop as the text chat, so the same budget — the only extra
+// work is the MCP dispatch layer in between (src/server/mcp/server.ts).
 export function sendVoiceTurn(transcript: string, sessionId?: string): Promise<Result<VoiceTurnResult, DriverError>> {
-  return send<VoiceTurnResult>("/console/voice/turn", "POST", { transcript, sessionId });
+  return send<VoiceTurnResult>("/console/voice/turn", "POST", { transcript, sessionId }, AGENT_TURN_TIMEOUT_MS);
 }
 
 // MCP access tokens for external clients (Claude Desktop, Claude Code) —

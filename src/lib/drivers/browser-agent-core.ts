@@ -8,6 +8,20 @@ const MODEL = "openai/gpt-oss-120b";
 const DEFAULT_MAX_ITERATIONS = 8;
 const DEFAULT_ACTION_TIMEOUT_MS = 15_000;
 
+// Context budget. Every one of these numbers exists because this agent's
+// prompt grows monotonically — each iteration appends a page snapshot or a
+// link list and nothing is ever dropped — and groq.ts prices a request at
+// `maxTokens + promptChars/4` against a 6000-tokens/minute bucket. Crossing
+// ~20k characters therefore costs a full bucket per call (and, before
+// rate-limiter.ts was fixed, hung forever). 80 links x 200 characters was
+// on its own enough to blow past that on a YouTube results page.
+const MAX_LINKS = 40;
+const MAX_LINK_TEXT_CHARS = 100;
+const MAX_SNAPSHOT_CHARS = 3_000;
+/** Total characters of message content allowed before older tool results are elided (below). */
+const MAX_HISTORY_CHARS = 14_000;
+const ELIDED_TOOL_RESULT = '{"elided":"older tool result dropped to stay within the context budget; re-run the tool if you still need it"}';
+
 // The only ARIA roles this agent is allowed to click/fill by name — a small,
 // deliberate allowlist (not the full ARIA role set Playwright supports) so a
 // confused model can't, say, target a "region" or "generic" node and hit
@@ -84,7 +98,7 @@ class PageAgentSession {
   async snapshot(): Promise<unknown> {
     try {
       const yaml = await this.page.locator("body").ariaSnapshot({ timeout: this.timeoutMs });
-      const truncated = yaml.length > 4000 ? `${yaml.slice(0, 4000)}\n... (truncated)` : yaml;
+      const truncated = yaml.length > MAX_SNAPSHOT_CHARS ? `${yaml.slice(0, MAX_SNAPSHOT_CHARS)}\n... (truncated)` : yaml;
       return { url: this.page.url(), snapshot: truncated };
     } catch (cause) {
       return { error: describeError(cause) };
@@ -131,10 +145,10 @@ class PageAgentSession {
     try {
       const links = await this.page.locator("a").evaluateAll((elements) =>
         elements
-          .map((el) => ({ text: (el.textContent ?? "").trim().slice(0, 200), href: el.getAttribute("href") ?? "" }))
+          .map((el) => ({ text: (el.textContent ?? "").trim().slice(0, MAX_LINK_TEXT_CHARS), href: el.getAttribute("href") ?? "" }))
           .filter((l) => l.href.length > 0 && l.text.length > 0),
       );
-      return { url: this.page.url(), links: links.slice(0, 80) };
+      return { url: this.page.url(), links: links.slice(0, MAX_LINKS) };
     } catch (cause) {
       return { error: describeError(cause) };
     }
@@ -241,6 +255,32 @@ function buildActionTools(session: PageAgentSession, downloadsDir: string): Acti
   ];
 }
 
+/**
+ * Caps the prompt by replacing the *content* of the oldest tool results with
+ * a short marker, oldest first, until the whole conversation fits in
+ * `maxChars`. Deliberately never deletes a message: the OpenAI tool-calling
+ * wire format requires every assistant `tool_call` to be answered by a
+ * matching `tool` message, so dropping either half of a pair produces a 400
+ * from Groq. Eliding content keeps the structure intact and the pairing
+ * valid while releasing almost all of the bytes.
+ *
+ * The system prompt and the user's goal (indices 0 and 1) are never touched
+ * — they are what the agent is *for* — and the most recent exchange is left
+ * whole so the model can always still see the page it just looked at.
+ */
+export function trimAgentHistory(messages: LlmMessage[], maxChars: number = MAX_HISTORY_CHARS): void {
+  const total = () => messages.reduce((sum, m) => sum + m.content.length, 0);
+  if (total() <= maxChars) return;
+
+  const KEEP_RECENT = 2; // the last assistant/tool pair
+  for (let i = 2; i < messages.length - KEEP_RECENT; i++) {
+    if (total() <= maxChars) return;
+    const message = messages[i];
+    if (message.role !== "tool" || message.content === ELIDED_TOOL_RESULT) continue;
+    message.content = ELIDED_TOOL_RESULT;
+  }
+}
+
 export interface FinishToolSpec<TResult> {
   name: string;
   description: string;
@@ -285,6 +325,7 @@ export async function runBrowserAgentTask<TResult>(
   ];
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
+    trimAgentHistory(messages);
     const completion = await options.llm.complete({
       model: MODEL,
       messages,
@@ -324,8 +365,16 @@ export async function runBrowserAgentTask<TResult>(
     }
 
     const matched = actionTools.find((t) => t.definition.name === call.name);
+    const startedAt = Date.now();
     const toolResult = matched ? await matched.run(args) : { error: "unknown_tool" };
-    messages.push({ role: "tool", content: JSON.stringify(toolResult), toolCallId: call.id });
+    const serialized = JSON.stringify(toolResult);
+    // This job runs unattended in CI, where the only evidence of what
+    // happened is stdout. Before this line, a stalled agent printed nothing
+    // whatsoever for 30 minutes and then died to the job timeout, leaving no
+    // way to tell a hang from slow progress. One line per action is cheap
+    // and makes the next failure diagnosable from the run log alone.
+    console.warn(`[browser-agent] ${iteration + 1}/${maxIterations} ${call.name} -> ${serialized.length}b in ${Date.now() - startedAt}ms`);
+    messages.push({ role: "tool", content: serialized, toolCallId: call.id });
   }
 
   return err({

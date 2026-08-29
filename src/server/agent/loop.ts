@@ -11,6 +11,9 @@ const SYSTEM_PROMPT = `You are the Mythos Engine operator console's assistant. Y
 pipeline's status and change its settings on the operator's behalf using
 tools — you have no other way to affect anything.
 
+You are ${MODEL}, served by Groq. If asked what model you are, say exactly
+that — never guess, and never name a model or vendor you aren't.
+
 Rules you must follow, not just prefer:
 - You cannot rotate a provider key and you cannot touch the killswitch. No
   tool exists for either, on purpose — those require the operator's own
@@ -22,6 +25,9 @@ Rules you must follow, not just prefer:
 - There is no tool that uploads or publishes anything to YouTube, ever —
   this system never does that automatically, by design. Do not imply
   otherwise.
+- When a tool returns an error, do not call it again with the same
+  arguments. Tell the operator plainly which tool failed and what it said —
+  a reported failure is useful to them, a silent retry loop is not.
 - Be concise. State what you did or found, not what you're about to do.`;
 
 function toWireHistory(rows: ChatMessageRow[]): LlmMessage[] {
@@ -89,6 +95,18 @@ export async function runAgentTurn(
 
   const toolCallsMade: string[] = [];
 
+  // A tool that has already failed with these exact arguments is never
+  // invoked a second time in the same turn. The SYSTEM_PROMPT asks the model
+  // not to retry, but an ask is not a bound: on 2026-08-29, get_summary
+  // failed (its `mcp_tokens` table was missing from D1) and the model
+  // re-called it every iteration. Each get_summary is ~12 D1 queries, so the
+  // turn blew the Worker's subrequest budget and died before writing any
+  // assistant message — the operator saw a chat that swallowed the question
+  // whole. Short-circuiting here keeps a failing tool's cost O(1) per turn
+  // and guarantees the model gets a chance to actually report the failure.
+  const failedCalls = new Map<string, unknown>();
+  const signatureOf = (name: string, argumentsJson: string): string => `${name}:${argumentsJson}`;
+
   for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
     const history = await getChatMessages(db, sessionId);
     const messages = toWireHistory(history);
@@ -120,15 +138,31 @@ export async function runAgentTurn(
       args = {};
     }
 
-    const execResult = await invoker.invoke(ctx, sessionId, call.name, args, now);
-    toolCallsMade.push(call.name);
+    const signature = signatureOf(call.name, call.argumentsJson);
+    const priorFailure = failedCalls.get(signature);
+    let resultData: unknown;
+    if (priorFailure !== undefined) {
+      // Not re-run, and the transcript says so rather than replaying the
+      // original error as though the tool had been called again — the
+      // operator reading this thread has to be able to tell the difference.
+      resultData = {
+        error: "already_failed_this_turn",
+        message: `${call.name} was already called with these arguments this turn and failed. It was not run again. Report the failure below to the operator instead of retrying.`,
+        originalError: priorFailure,
+      };
+    } else {
+      const execResult = await invoker.invoke(ctx, sessionId, call.name, args, now);
+      resultData = execResult.data;
+      if (!execResult.ok) failedCalls.set(signature, execResult.data);
+      toolCallsMade.push(call.name);
+    }
 
     await appendChatMessage(
       db,
       sessionId,
       "tool",
       `ran ${call.name}`,
-      { toolName: call.name, toolArgsJson: call.argumentsJson, toolResultJson: JSON.stringify(execResult.data) },
+      { toolName: call.name, toolArgsJson: call.argumentsJson, toolResultJson: JSON.stringify(resultData) },
       now,
     );
   }

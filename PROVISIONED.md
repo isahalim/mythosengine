@@ -2,7 +2,7 @@
 
 Read before running any provisioning command. Everything here was created by the operator by hand, or by an earlier agent session under the operator's approval. **Do not recreate, rename, or regenerate any of it.**
 
-Last updated: `2026-08-28`
+Last updated: `2026-08-29`
 
 > This infrastructure was originally provisioned for "MythosEngine" and carries over unchanged into the Mythos Engine pivot (same Worker, same secrets, same Turnstile widget) — only the product built on top of it changed. Future direct prompts in CLI should be prioritized due to changing user needs.
 
@@ -16,6 +16,7 @@ Last updated: `2026-08-28`
 | Custom domain | not registered | operator will handle |
 | Entry point | `src/index.ts` | `/healthz`, `/readyz` (probes the real D1 + KV bindings as of 2026-08-28), `/auth/*` and `/console/*` routed by `src/server/router.ts` (Phase 8), falls through to `env.ASSETS` for everything else |
 | CD | GitHub Actions (`.github/workflows/ci.yml`, `deploy` job) — push to `main`, gated on `verify` passing | Added 2026-08-27 |
+| D1 migrations | `wrangler d1 migrations apply mythosengine --remote`, run by the `deploy` job **before** `wrangler deploy` (`wrangler.toml` sets `migrations_dir = "db/migrations"`) | Added 2026-08-29. Idempotent — skips whatever the `d1_migrations` ledger already records. **Do not apply a migration by hand**; that is how `0007_mcp_tokens.sql` was missed, which 500'd every `GET /console/summary` and blacked out the whole console (ARCHITECTURE.md §4). The ledger was backfilled with `0000`–`0007` on 2026-08-29, so the first automated run is a no-op |
 | Pipeline runner | GitHub Actions, three workflows: `watch.yml` (hourly), `render.yml` (3x/day), `footage-refresh.yml` (weekly, the only one with `contents: write`) | Added 2026-08-28 (Phase 8.5). All three are also `workflow_dispatch`-triggerable; none has been run live yet |
 | Cloudflare "Workers Builds" (native git integration) | **disabled** by the operator, 2026-08-27 | Existed since `2026-08-27 18:31` (build token), undocumented here until found broken (`packages field missing or empty` + no build command — `dist/` was gitignored and never got built there). Fully redundant with the GitHub Actions CD above. Do not re-enable without giving it a real build command and resolving the `pnpm-workspace.yaml` finding |
 
@@ -24,7 +25,7 @@ Last updated: `2026-08-28`
 | Resource | Status |
 |---|---|
 | Turnstile widget `mythosengine` | **created**, mode `managed`, hostnames: the workers.dev host + `localhost`. Site key `0x4AAAAAAEee0w7vUlvWpXFF` is wired into `wrangler.toml [vars]` |
-| D1 database `mythosengine` | **created** 2026-08-28, `database_id = 77a0969e-2fb8-460e-9e52-f2606b2fa2fa`, region `WNAM`. All 7 committed migrations (`db/migrations/0000`–`0006`) applied via `wrangler d1 execute --remote` — 16 tables live. Bound in `wrangler.toml` as `DB`. Renaming/deleting this database orphans everything Phase 8 built |
+| D1 database `mythosengine` | **created** 2026-08-28, `database_id = 77a0969e-2fb8-460e-9e52-f2606b2fa2fa`, region `WNAM`. All 8 committed migrations (`db/migrations/0000`–`0007`) applied — 17 tables live. Bound in `wrangler.toml` as `DB`. Renaming/deleting this database orphans everything Phase 8 built. **Migrations are no longer applied by hand** — see the row below |
 | KV namespace `HOT` | **created** 2026-08-28, `id = e1a2adff832742ae8953cab9905a7aa6`. Rate-limit counters, the killswitch flag, and export blobs (3-day TTL) all live here — no separate namespace, per the original Task 8.2 plan. Bound as `HOT` |
 | KV namespace `VAULT` | **created** 2026-08-28, `id = 84b02470f3ca4e65807ba09c53cbe426`. Encrypted provider-key vault (`src/lib/vault.ts`) only. Bound as `VAULT` |
 | Queues / Durable Objects / R2 | not used, not needed — the footage clip library lives on a Git orphan branch, not object storage |

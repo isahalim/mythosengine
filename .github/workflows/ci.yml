@@ -94,6 +94,20 @@ jobs:
       - name: Build
         run: pnpm build
 
+      # Migrations run BEFORE the deploy, never after: a Worker whose code
+      # expects a table the database doesn't have yet is exactly the outage
+      # this step exists to prevent. 0007_mcp_tokens.sql was applied by hand
+      # and missed, so every GET /console/summary 500'd on `select ... from
+      # "mcp_tokens"` and the console showed "Console API not reachable" on
+      # every page (2026-08-29). This is idempotent -- wrangler skips
+      # anything already recorded in the `d1_migrations` ledger -- so a push
+      # that adds no migration is a no-op.
+      - name: Apply D1 migrations
+        run: pnpm exec wrangler d1 migrations apply mythosengine --remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Deploy to Cloudflare Workers
         run: pnpm exec wrangler deploy
         env:

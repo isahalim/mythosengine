@@ -5,7 +5,7 @@ import { createChatSession, getChatMessages } from "../console/chat.ts";
 import { ok, type Result } from "../../lib/result.ts";
 import type { DriverError, LlmDriver, LlmRequest, LlmResponse } from "../../lib/drivers/types.ts";
 import type { ToolContext } from "./tools.ts";
-import { runAgentTurn } from "./loop.ts";
+import { runAgentTurn, type ToolInvoker } from "./loop.ts";
 
 class ScriptedLlm implements LlmDriver {
   private call = 0;
@@ -97,6 +97,70 @@ describe("runAgentTurn", () => {
     const messages = await getChatMessages(db.db, session.id);
     expect(JSON.parse(messages[1].toolResultJson ?? "{}")).toEqual({ error: "unknown_tool" });
     expect(result.finalMessage).toContain("dashboard");
+  });
+
+  // Regression: the 2026-08-29 console outage. `mcp_tokens` was missing from
+  // production D1, so get_summary failed, and the model re-called it every
+  // iteration. Each get_summary is ~12 D1 queries, so the turn exhausted the
+  // Worker's subrequest budget and 500'd before writing any assistant
+  // message — the operator's question just vanished. The loop now refuses to
+  // re-run a call signature that already failed this turn.
+  it("runs a failing tool at most once per turn, so a broken tool cannot burn the whole budget", async () => {
+    const session = await createChatSession(db.db);
+    let invocations = 0;
+    const failingInvoker: ToolInvoker = {
+      async invoke() {
+        invocations++;
+        return { ok: false, data: { error: 'Failed query: select ... from "mcp_tokens"' } };
+      },
+    };
+    const retryForever: LlmResponse = {
+      content: "",
+      finishReason: "tool_calls",
+      quotaRemaining: null,
+      tokensUsed: null,
+      toolCalls: [{ id: "call_x", name: "get_summary", argumentsJson: "{}" }],
+    };
+    const llm = new ScriptedLlm(Array(10).fill(retryForever));
+
+    const result = await runAgentTurn(llm, db.db, ctx, session.id, "status of pipeline", Date.now, failingInvoker);
+
+    expect(invocations).toBe(1);
+    expect(result.toolCallsMade).toEqual(["get_summary"]);
+
+    const messages = await getChatMessages(db.db, session.id);
+    const toolRows = messages.filter((m) => m.role === "tool");
+    expect(JSON.parse(toolRows[0].toolResultJson ?? "{}")).toMatchObject({ error: expect.stringContaining("mcp_tokens") });
+    // Every later attempt is recorded honestly as "not re-run", carrying the
+    // original error so the model can actually report it.
+    for (const row of toolRows.slice(1)) {
+      expect(JSON.parse(row.toolResultJson ?? "{}")).toMatchObject({
+        error: "already_failed_this_turn",
+        originalError: { error: expect.stringContaining("mcp_tokens") },
+      });
+    }
+  });
+
+  it("still re-runs a tool that succeeded, since only failures are latched", async () => {
+    const session = await createChatSession(db.db);
+    let invocations = 0;
+    const okInvoker: ToolInvoker = {
+      async invoke() {
+        invocations++;
+        return { ok: true, data: { kind: "queued" } };
+      },
+    };
+    const callAgain: LlmResponse = {
+      content: "",
+      finishReason: "tool_calls",
+      quotaRemaining: null,
+      tokensUsed: null,
+      toolCalls: [{ id: "call_x", name: "dispatch_run", argumentsJson: "{}" }],
+    };
+    const llm = new ScriptedLlm([callAgain, callAgain, { content: "Queued two runs.", finishReason: "stop", quotaRemaining: null, tokensUsed: null }]);
+
+    await runAgentTurn(llm, db.db, ctx, session.id, "run it twice", Date.now, okInvoker);
+    expect(invocations).toBe(2);
   });
 
   it("terminates after MAX_TOOL_ITERATIONS even if the model never stops calling tools", async () => {

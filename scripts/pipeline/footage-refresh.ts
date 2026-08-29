@@ -47,13 +47,20 @@ async function main(): Promise<void> {
   const sources = await env.db.select().from(footageSources).all();
   let anyFailed = false;
 
+  console.warn(`FOOTAGE REFRESH: ${sources.length} source(s) to process.`);
+
   for (const source of sources) {
     const runId = await startRun(env.db, "footage_refresh", traceId);
+    const startedAt = Date.now();
+    // Announced before the work, not only after it: a source that hangs used
+    // to produce no output at all, so the run log could not even say which
+    // source it died on (2026-08-29).
+    console.warn(`FOOTAGE REFRESH [${source.id}]: starting (${source.game}, ${source.channelUrl}).`);
     try {
       const result = await refreshFootageSource(env.db, source, drivers);
       await finishRun(env.db, runId, result.status === "failed" ? "failed" : "succeeded", result.error?.message);
       const detail = result.error ? ` (${result.error.kind}: ${result.error.message})` : "";
-      console.warn(`FOOTAGE REFRESH [${source.id}]: ${result.status}, ${result.newSegments} new segments.${detail}`);
+      console.warn(`FOOTAGE REFRESH [${source.id}]: ${result.status}, ${result.newSegments} new segments in ${Math.round((Date.now() - startedAt) / 1000)}s.${detail}`);
       if (result.status === "failed") anyFailed = true;
     } catch (cause) {
       await finishRun(env.db, runId, "failed", cause instanceof Error ? cause.message : String(cause));

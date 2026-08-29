@@ -156,6 +156,43 @@ Grid of cards, one `GET /console/summary` round-trip, poll every 30s.
 
 Interaction: click a node while expanded → the ring shrinks to the header position, then navigates (a real page load, `COLLAPSE_TRANSITION_MS` after the CSS transition starts) — landing on the destination page already collapsed is what makes this read as "the nav bar shrinks and goes to the top," across a real multi-page-load Astro app that has no client-side router to animate through. Click a node while already collapsed → an ordinary `<a href>` navigation, no JS involved. Click the center shader while collapsed → expands back to full-viewport in place, no navigation. Click empty backdrop space while expanded → collapses without navigating (the escape hatch out of a full-viewport menu).
 
+### Failure rendering — one dead query must not black out the page
+
+`GET /console/summary` is a single `Promise.all` fan-out, which means **any**
+one rejecting query takes the whole dashboard down to the "Console API not
+reachable" banner with every card reading "Unavailable." That is the honest
+rendering — CLAUDE.md forbids fabricating a fallback number, and a stuck
+"Loading…" reads as broken — but it is also indistinguishable from a real
+outage, so it deserves naming: on 2026-08-29 the cause was a single missing
+table (`mcp_tokens`, migration `0007` never applied to production D1), not
+the API being down. When every card is unavailable at once, suspect one
+query, not the Worker. `wrangler tail` names the failing statement, and
+ARCHITECTURE.md §4 covers the migration contract that now prevents it.
+
+---
+
+## 4b. Chat console (`/console/chat`)
+
+A ChatGPT-pattern thread over the same `AGENT_TOOLS` allowlist §6's voice
+surface uses — session sidebar, message thread, and the one React island in
+this project (`PromptInputBox.tsx`). Tool calls are rendered in-thread as
+"Ran `<tool>`" chips: CONSOLE_SPEC's "nothing hides an action from the
+reviewer" guarantee applies to the agent's own actions too.
+
+**A turn is slow, and the UI must say so.** `runAgentTurn` can take several
+Groq round trips with D1 reads between them. The thread therefore shows an
+animated indicator from send until the turn resolves, the client allows 90s
+for an agent turn (every other mutation gets 10s), and a turn that fails
+renders an explicit inline notice rather than only raising the top-of-page
+banner. All three came out of the 2026-08-29 incident, where a broken
+`get_summary` made hard questions look like they were being silently
+ignored while easy ones — needing no tool — answered fine.
+
+**What it can't do:** identical to the voice surface (§6) — no key rotation,
+no killswitch, no upload of any kind, because no tool exists for any of
+them. It also states its real identity (`openai/gpt-oss-120b`, served by
+Groq) when asked; unprompted, it claimed to be GPT-4.
+
 ---
 
 ## 5. Component sourcing (21st.dev)
