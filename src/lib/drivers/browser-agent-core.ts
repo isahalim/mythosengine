@@ -320,7 +320,14 @@ export interface BrowserSessionHandle {
  * are what keep the agent from ever acting on them.
  */
 export async function launchBrowserSession(allowedOrigins: readonly string[]): Promise<BrowserSessionHandle> {
-  const browser = await chromium.launch({ headless: true });
+  // channel: "chromium" opts into Playwright's "new headless mode" (full
+  // Chromium binary) instead of the default chrome-headless-shell, which
+  // handles anchor-triggered (<a download>) file downloads unreliably --
+  // confirmed live: a download that always landed locally intermittently
+  // never fired on a GitHub Actions runner using the default shell. This
+  // also makes the agent's real behavior against ytmp3.gg closer to an
+  // actual browser, not just a test fix.
+  const browser = await chromium.launch({ headless: true, channel: "chromium" });
   const context = await browser.newContext();
 
   // Only gate top-level document navigations (the frame has no parent) —
