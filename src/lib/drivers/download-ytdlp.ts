@@ -15,7 +15,17 @@ const execFileAsync = promisify(execFile);
 // documented, cookie-free mitigation, but confirmed live (same date) not
 // to reliably clear the check on its own — kept only as the no-cookies
 // fallback in authArgs() below, never combined with cookies (see there).
-const YOUTUBE_PLAYER_CLIENT_ARGS = "youtube:player_client=tv,web_safari";
+const NO_COOKIES_PLAYER_CLIENT_ARGS = "youtube:player_client=tv,web_safari";
+
+// yt-dlp defaults to the tv_downgraded player client whenever cookies are
+// present, which is currently broken for many users — "ERROR: The page
+// needs to be reloaded." (confirmed live, 2026-08-29, every candidate of
+// every source, right after cookie auth started working). Current
+// maintainer guidance and a confirmed-working report from another user
+// hitting the identical error: yt-dlp/yt-dlp#17389
+// (https://github.com/yt-dlp/yt-dlp/issues/17389) — this is that fix, not
+// a guess.
+const COOKIES_PLAYER_CLIENT_ARGS = "youtube:player_client=default,web_embedded";
 
 interface YtDlpMetadata {
   id?: string;
@@ -52,12 +62,14 @@ export class YtDlpDownloadDriver implements DownloadDriver {
 
   // Cookies from a signed-in account are the fix that actually clears
   // YouTube's bot-check (confirmed against yt-dlp's own current maintainer
-  // guidance, 2026-08-29 — PO tokens no longer reliably help). Never
-  // combined with the player_client override: the tv client authenticates
-  // differently and mixing it with cookies tends to invalidate the
-  // session, per the same guidance.
+  // guidance, 2026-08-29 — PO tokens no longer reliably help), but need
+  // their own player-client override (COOKIES_PLAYER_CLIENT_ARGS) — the
+  // tv/web_safari combo used without cookies actively breaks once cookies
+  // are added (see that constant's comment), so the two are never mixed.
   private authArgs(): string[] {
-    return this.cookiesFile ? ["--cookies", this.cookiesFile] : ["--extractor-args", YOUTUBE_PLAYER_CLIENT_ARGS];
+    return this.cookiesFile
+      ? ["--cookies", this.cookiesFile, "--extractor-args", COOKIES_PLAYER_CLIENT_ARGS]
+      : ["--extractor-args", NO_COOKIES_PLAYER_CLIENT_ARGS];
   }
 
   async fetchVideo(req: DownloadRequest): Promise<Result<DownloadResponse, DriverError>> {
