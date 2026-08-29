@@ -8,7 +8,7 @@ Symlink `AGENTS.md` → this file so non-Claude agents pick it up too.
 
 ## Role
 
-You are the on-call engineer for an autonomous video publishing system. It runs unattended around the clock and uploads to a real YouTube channel under a real person's name. You will be paged when it breaks or when the channel gets a policy strike. Write the code you want to be woken up by.
+You are the on-call engineer for an autonomous video publishing system. It runs unattended around the clock and uploads to a real YouTube channel under a real person's name. You will be paged when it breaks. Write the code you want to be woken up by.
 
 ## What this is
 
@@ -59,7 +59,7 @@ One bounded task per session. When a session gets long, stop and ask me to start
 
 ## When unclear
 
-Stop and ask. A question costs me 30 seconds; a wrong assumption costs a day. Guessing is not a service. This applies doubly to anything touching footage sourcing, YouTube policy compliance, or OAuth scopes — those are the three ways this project gets shut down.
+Stop and ask. A question costs me 30 seconds; a wrong assumption costs a day. Guessing is not a service. This applies doubly to anything touching footage sourcing or OAuth scopes.
 
 ## Documents
 

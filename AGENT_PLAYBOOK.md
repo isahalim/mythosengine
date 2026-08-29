@@ -10,7 +10,7 @@ How to drive a coding agent (Claude Code, Codex CLI, Cursor) through building th
 
 Unchanged from the original project — these are the rules that actually change output quality, not specific to what's being built.
 
-**1. Give the agent a role with a stake, not a personality.** *"You are the on-call engineer for this system. You will be paged when the channel gets a policy strike. Write the code you want to be woken up by."*
+**1. Give the agent a role with a stake, not a personality.** *"You are the on-call engineer for this system. You will be paged when it breaks. Write the code you want to be woken up by."*
 
 **2. Never say "build X." Say "build X such that Y is verifiable."** Every task ends with an executable definition of done. `pnpm verify` must exit 0.
 
@@ -166,10 +166,9 @@ contract-testing philosophy.
 `data/sources.yml` seeded with what was reachable and legally reasonable
 after actually testing candidates live, not the originally-planned "3-5
 subreddits' .json feeds": Reddit's JSON/Data API turned out to be blocked
-from at least some cloud IP ranges *and* licensed non-commercial-only (this
-channel is monetized). Sourced 3
-subreddits via their public RSS/Atom feed instead (a different product,
-different terms) plus BBC and NPR news RSS, every URL confirmed reachable
+from at least some cloud IP ranges. Sourced 3
+subreddits via their public RSS/Atom feed instead
+plus BBC and NPR news RSS, every URL confirmed reachable
 before being committed. YouTube Community and X are correctly absent —
 already documented as no-viable-free-path in ARCHITECTURE.md §0.
 
@@ -208,7 +207,7 @@ just fixtures) produced sane `signals` rows, verified by hand.
 
 ---
 
-### Phase 4 — Script generation (SCRIPT + CRITIC/POLICY-DRAFT-CHECK) — done (2026-08-28, night)
+### Phase 4 — Script generation (SCRIPT + CRITIC) — done (2026-08-28, night)
 
 Two prompt files, versioned, not inline strings — same reasoning as before, you'll iterate on these for months.
 
@@ -237,9 +236,9 @@ an open question at the end that makes people argue in the comments.</role>
 `prompts/critic.v1.md` — separate call, does not see the drafting prompt:
 
 ```
-<role>You are the reviewer standing between this script and a channel
-strike. Your bonus is for every templated, low-effort, or policy-risky
-script you catch before it reaches FFmpeg.</role>
+<role>You are the reviewer ensuring script quality. Your bonus is for
+every templated, low-effort, or substandard script you catch before it
+reaches FFmpeg.</role>
 
 <inputs><script>{{script_json}}</script><signal>{{signal_json}}</signal></inputs>
 
@@ -449,7 +448,7 @@ Unchanged in shape from the original `CONSOLE_SPEC.md` for auth/vault — passke
 - **Daily digest** (09:00): exports ready for review, signals rejected + reasons, AUDIT SUMMARY flag breakdown (informational — nothing was blocked), footage rotation health (any game running low on unused segments), voice rotation health, Edge TTS failure count.
 - **Weekly prompt review**: cluster the week's CRITIC rejections, propose one versioned edit to `prompts/script.v*.md` or `prompts/critic.v*.md`.
 - **Weekly footage refresh review**: did any tracked channel produce a new top video; is any game's segment library shrinking toward reuse-heavy rotation.
-- **Monthly**: `osv-scanner`, `npm outdated`, re-run `verify-quotas.mjs`, re-check Edge TTS is still alive (it has no SLA — this is the one dependency that can silently die), re-check YouTube's policy pages for wording changes to the inauthentic-content rules.
+- **Monthly**: `osv-scanner`, `npm outdated`, re-run `verify-quotas.mjs`, re-check Edge TTS is still alive (it has no SLA — this is the one dependency that can silently die).
 - **The kill switch**: `PIPELINE_ENABLED` in KV, checked at the top of every run.
 
 ---

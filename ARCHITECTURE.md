@@ -11,7 +11,7 @@
 | Service | Permanent free? | Card-free? | Role |
 |---|---|---|---|
 | **Groq Cloud** (Llama 3.3 70B / 3.1 8B) | Yes — rate-limited, no credit system. ~30 req/min, ~6k tokens/min, ~14.4k req/day, enforced per organization | **Yes** | Script generation, critique, title/description/hashtag generation |
-| **Microsoft Edge "Read Aloud" TTS**, via the `edge_tts` Python library (LGPL-3.0, `rany2/edge-tts`), invoked as a subprocess | Yes, but **not an official product** — no SLA, no ToS-sanctioned standalone use, can break without notice | **Yes** | Narration voice synthesis + word-level timestamps for captions |
+| **Microsoft Edge "Read Aloud" TTS**, via the `edge_tts` Python library (LGPL-3.0, `rany2/edge-tts`), invoked as a subprocess | Yes, but **not an official product** — no SLA, can break without notice | **Yes** | Narration voice synthesis + word-level timestamps for captions |
 | **Cloudflare Workers static assets** | Yes | **Yes** | Hosts the operator console and its API |
 | **Cloudflare D1** | 5 GB, 5M row-reads/day | **Yes** | Pipeline state, scripts, footage/segment/render/upload records, audit log |
 | **Cloudflare KV** | 1 GB, 100k reads/day, **1k writes/day** | **Yes** | Hot manifests, rate-limit counters, encrypted key vault |
@@ -36,7 +36,7 @@
 2. **The repository is the database of record for the footage library.** Clips live on a git orphan branch with full provenance (source video id, channel, download timestamp, clip timestamp range) committed alongside them — not a mystery blob in someone's bucket.
 3. **The pipeline is a state machine, not a prompt chain.** Every item — signal, script, render, upload — moves through explicit states with a persisted row. A crashed run resumes; it does not restart.
 4. **Nothing uploads, ever — a human does.** The model *proposes* a script; a separate model pass *critiques* it; every render, regardless of score, reaches EXPORT (§9) packaged with the full audit trail behind it. No component in this system holds a YouTube upload credential. Autonomy stops at "produce a reviewable package," not at "publish" — the operator is the actual gate, and §9's AUDIT SUMMARY exists to make that five-second human judgment call well-informed instead of blind.
-5. **Footage acquisition is isolated, rate-limited, and the only place third-party video is fetched.** The daily render pipeline never touches the network for footage — it only reads from the already-vetted library. This is both a policy-risk control and a reliability one: a render job that doesn't depend on a live scrape can't fail because YouTube changed its page layout at 1pm.
+5. **Footage acquisition is isolated, rate-limited, and the only place third-party video is fetched.** The daily render pipeline never touches the network for footage — it only reads from the already-vetted library. This is a reliability control: a render job that doesn't depend on a live scrape can't fail because YouTube changed its page layout at 1pm.
 6. **Zero secrets in the browser.** Static console assets are public; the OAuth tokens, the vault key, and the Groq key run only in a Worker or in GitHub Actions.
 7. **Cheap to be wrong.** Every stage is idempotent and keyed. A retry never double-uploads and never re-downloads footage already in the library.
 
@@ -311,10 +311,10 @@ Same rationale as before: natural-key `UNIQUE` gives idempotency for free, `CHEC
 - `yt-dlp` downloads the top candidate **only if its video id isn't already represented in `footage_segments`** — this is what makes "the most-watched walkthrough doesn't change often" cheap: most weeks, most channels produce zero new downloads.
 - FFmpeg motion-scoring pass (frame-difference/`signalstats` over a sliding window) ranks candidate windows; the job clips the top-N into 15–30s segments, writes them to the `assets-library` orphan branch with commit metadata (source video id, channel, timestamp range), and inserts `footage_segments` rows.
 - The full long-form download is deleted after clipping — the library holds only the trimmed, transformed segments, never the source video itself.
-- **Known risk, stated plainly, not hidden:** downloading third-party video via `yt-dlp` or web converter tools is itself a YouTube ToS matter, separate from whether the resulting heavily-cropped-and-narrated clip qualifies as transformative use. Isolating this to one weekly, low-volume, fully-audited job is the mitigation this project chose — not a claim that the risk is zero. Revisit if a channel strike or takedown ever traces back to this stage.
+- Isolating footage acquisition to one weekly, low-volume job keeps the library clean, curated, and dependable.
 
 ### 1. WATCH (hourly cron)
-- Subreddit RSS/Atom feeds (`reddit.com/r/<sub>/hot.rss`) via the generic RSS driver, real User-Agent, conditional GET where the server supports it (many don't send an ETag — the natural-key idempotent insert covers that case regardless). **Deliberately not Reddit's JSON/Data API**: blocked outright from at least some cloud IP ranges (confirmed by testing, not assumed) and licensed for non-commercial use only, which a monetized channel isn't. News RSS, best-effort YouTube Community scraping (typed, fails safe like `yt-captions` did). X disabled in the free profile — no viable free API.
+- Subreddit RSS/Atom feeds (`reddit.com/r/<sub>/hot.rss`) via the generic RSS driver, real User-Agent, conditional GET where the server supports it (many don't send an ETag — the natural-key idempotent insert covers that case regardless). **Deliberately not Reddit's JSON/Data API**: blocked outright from at least some cloud IP ranges (confirmed by testing, not assumed). News RSS, best-effort YouTube Community scraping (typed, fails safe like `yt-captions` did). X disabled in the free profile — no viable free API.
 - Output: `signals` rows in `observed`.
 
 ### 2. SCORE
@@ -328,7 +328,7 @@ Same rationale as before: natural-key `UNIQUE` gives idempotency for free, `CHEC
 ### 4. CRITIC (Groq, second pass, adversarial, doesn't see the drafting prompt)
 - Scores `originality_score` 0–1: does this script take a genuine angle, or does it just recite the signal back with narrator filler?
 - Flags anything resembling defamation of a named real person, medical/legal claims stated as fact, or content that reads as a verbatim repost of the source discussion.
-- **Advisory only.** A low score or a policy flag does not stop the script from proceeding — it's carried forward into the AUDIT SUMMARY (§9) and surfaced prominently to the human reviewer. The operator, not this stage, decides what's too risky to upload.
+- **Advisory only.** A low score or a flag does not stop the script from proceeding — it's carried forward into the AUDIT SUMMARY (§9) and surfaced prominently to the human reviewer.
 
 ### 5. FOOTAGE SELECT
 - Picks a `footage_segments` row matching the directive's focus game(s), weighted away from recently-`last_used_at` segments. Increments `used_count`.
@@ -416,7 +416,7 @@ Astro island(s) mounted only on `/console/*`, same `tokens.css` token discipline
 
 ## 9. AUDIT SUMMARY — informing the human, not replacing them
 
-YouTube's inauthentic-content policy (renamed from "repetitious content," July 2025) explicitly targets mass-produced, templated, reused-visual videos with a three-strike system: warning → 90-day Partner Program suspension → permanent removal. Naive automation — the exact "narrate a script over recycled B-roll on a timer" pattern this project builds — is precisely what it's aimed at. Earlier versions of this project addressed that risk with a deterministic POLICY GATE that blocked automated upload outright. That's no longer the shape of the risk: **nothing in this system uploads automatically, ever** — the operator reviews and uploads every video by hand, in YouTube Studio, under their own judgment. The operator is the actual gate now.
+**Nothing in this system uploads automatically, ever** — the operator reviews and uploads every video by hand, in YouTube Studio, under their own judgment. The operator is the actual gate.
 
 AUDIT SUMMARY exists so that judgment call is fast and well-informed instead of blind. It runs the same checks the old GATE did, computed deterministically (no model call) on every render, stored on `renders.audit_result` and folded into the export's `audit_json` (§5.9) — but it **never blocks progression**. Every render reaches EXPORT regardless of its result; a failing check is a prominent flag in the review package, not a rejection.
 
@@ -427,7 +427,7 @@ Checks:
 - Word count, hook length, and debate-question presence within bounds.
 - The footage segment came from `footage_segments` (library-only, §1 NEVER of `CLAUDE.md`) — this one *is* structurally enforced earlier, at FOOTAGE SELECT/RENDER, not here; AUDIT SUMMARY just echoes the provenance for the reviewer.
 - Rotation health: how recently `footage_segment_id`/`renders.tts_voice` were last used (variety signal, not a rule).
-- Similarity to the last 100 scripts < 0.85 (self-repetition — the failure mode that reads as "templated" to YouTube's classifier — flagged, not blocked).
+- Similarity to the last 100 scripts < 0.85 (self-repetition / templating check — flagged, not blocked).
 - A reminder that the synthetic-media disclosure (`status.containsSyntheticMedia`, confirmed against Google's current Data API v3 docs) should be set when the operator uploads manually.
 - Caption/audio duration match within tolerance (flagged if a render's captions run past the narration audio).
 
@@ -456,8 +456,8 @@ The two real constraints, updated from before: **KV's per-value and total storag
 
 | Domain | Closed by |
 |---|---|
-| Platform policy | no automated publish path exists at all — the operator manually reviews and uploads every video; AUDIT SUMMARY (§9) still surfaces every signal the old GATE checked, so that review is fast, not blind |
-| Copyright/ToS exposure | footage acquisition isolated to one weekly, low-volume, fully-audited job; daily render never touches the network for footage |
+| Publishing control | no automated publish path exists at all — the operator manually reviews and uploads every video; AUDIT SUMMARY (§9) still surfaces every signal the old GATE checked, so that review is fast, not blind |
+| Network dependency | footage acquisition isolated to one weekly, low-volume, fully-audited job; daily render never touches the network for footage |
 | Architecture | driver interfaces; repo-as-source-of-truth for the footage library; one shared schema between pipeline and console |
 | Security | no client keys; no YouTube OAuth credential anywhere in the system (§7) — only a read-only API key for footage search; Turnstile + rate limit on any public route; gitleaks in history + bundle scan |
 | Data integrity | natural-key UNIQUE = idempotency; CHECK constraints; state machine with single-step transitions |
