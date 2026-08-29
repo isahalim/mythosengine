@@ -38,8 +38,9 @@ async function main(): Promise<void> {
     const runId = await startRun(env.db, "footage_refresh", traceId);
     try {
       const result = await refreshFootageSource(env.db, source, drivers);
-      await finishRun(env.db, runId, result.status === "failed" ? "failed" : "succeeded");
-      console.warn(`FOOTAGE REFRESH [${source.id}]: ${result.status}, ${result.newSegments} new segments.`);
+      await finishRun(env.db, runId, result.status === "failed" ? "failed" : "succeeded", result.error?.message);
+      const detail = result.error ? ` (${result.error.kind}: ${result.error.message})` : "";
+      console.warn(`FOOTAGE REFRESH [${source.id}]: ${result.status}, ${result.newSegments} new segments.${detail}`);
       if (result.status === "failed") anyFailed = true;
     } catch (cause) {
       await finishRun(env.db, runId, "failed", cause instanceof Error ? cause.message : String(cause));
