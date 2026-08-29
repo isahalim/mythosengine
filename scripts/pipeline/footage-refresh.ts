@@ -5,7 +5,7 @@ import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
 import { refreshFootageSource } from "../../src/lib/footage/refresh.ts";
 import { YoutubeDataApiSearchDriver } from "../../src/lib/drivers/youtube-search.ts";
 import { YtDlpDownloadDriver } from "../../src/lib/drivers/download-ytdlp.ts";
-import { buildPipelineEnv, requireEnv } from "./env.ts";
+import { buildPipelineEnv, optionalEnv, requireEnv } from "./env.ts";
 
 /**
  * FOOTAGE REFRESH (ARCHITECTURE.md §5.0), weekly cron
@@ -25,10 +25,17 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Written by footage-refresh.yml from the YOUTUBE_COOKIES secret (a
+  // throwaway account's exported cookies, never the operator's own) to a
+  // runner-temp file right before this script runs — never a tracked file,
+  // never logged. Absent locally/in dev, where the unauthenticated
+  // best-effort fallback in download-ytdlp.ts's authArgs() applies instead.
+  const cookiesFile = optionalEnv("YOUTUBE_COOKIES_FILE");
+
   const traceId = crypto.randomUUID();
   const drivers = {
     search: new YoutubeDataApiSearchDriver({ apiKey: youtubeApiKey }),
-    download: new YtDlpDownloadDriver(),
+    download: new YtDlpDownloadDriver({ cookiesFile }),
   };
 
   const sources = await env.db.select().from(footageSources).all();

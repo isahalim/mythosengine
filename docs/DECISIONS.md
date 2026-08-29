@@ -4,6 +4,16 @@ Never edit or delete an entry. Append a new one if a decision changes.
 
 ---
 
+## 2026-08-29 (later still, once more) — YOUTUBE_COOKIES wired in (throwaway account), the actual fix for the bot-check
+
+**Context: the operator's first proposal for this was rejected, with reasons given, not just declined.** Asked to replace the YouTube search step with a Groq-driven agent scraping Google results, and replace yt-dlp with automating a third-party ad-supported "YouTube to MP4" ripping site (`ytmp3.gg`) in headless CI. Explained why in the conversation rather than in this log (no code changed from that proposal): the search step wasn't broken (YouTube Data API discovery already works, confirmed live); scraping Google search results has the same bot-detection problem against a second company; and automating a monetized ripping site is a *worse* ToS/security position than yt-dlp, not a fix for the actual blocker — those sites hit the same YouTube-side bot-check on their own backend, have no API (built for a human clicking through ads), and change their DOM specifically to defeat this kind of automation. The operator accepted the reasoning and provided a throwaway YouTube account instead, matching the option recommended: cookies from an account that was never the operator's own, scoped to only this one weekly job.
+
+**Implemented:** `download-ytdlp.ts` gained a `cookiesFile` option and an `authArgs()` method — `--cookies <path>` when configured, otherwise the previous `player_client=tv,web_safari` fallback (never both together: yt-dlp community guidance is explicit that mixing the tv client with cookies tends to invalidate the session). `footage-refresh.yml` writes the new `YOUTUBE_COOKIES` secret to a `$RUNNER_TEMP` file (never a tracked file, never logged, wiped when the job ends) and passes its path to the script only if the secret is actually set, so the driver's unauthenticated fallback still applies cleanly if it's ever removed. `scripts/pipeline/footage-refresh.ts` reads `YOUTUBE_COOKIES_FILE` via the existing `optionalEnv()` helper — no new required-env pattern needed. New contract test (`fake-ytdlp-requires-cookies.py`) asserts the driver actually passes `--cookies` when configured and doesn't otherwise.
+
+**Verification:** `pnpm verify` full gate — 362 tests (up one), typecheck/lint clean, build clean, bundle unchanged. Not yet verified live at the time of this commit — the actual re-trigger and its outcome, once known, get their own entry above this one rather than a guess recorded here ahead of time.
+
+---
+
 ## 2026-08-29 (later still, again) — footage-refresh now runs end-to-end, but YouTube blocks the download step from GitHub's IPs — a real stop-and-ask, not a code bug
 
 **After seeding `footage_sources`, the live run got further but still failed** — this time inside `refreshFootageSource` itself, not before it: YouTube search discovery worked (each channel's current top video was found in ~2s), but `yt-dlp`'s metadata fetch for every single video failed with YouTube's own bot-detection challenge: `Sign in to confirm you're not a bot` for `mkiceandfire-gta`/`gtaseriesvideos-gta`, `Sign in to confirm your age` for `hollowpoiint-gta`'s current top video. (Only visible at all because of this session's earlier fix to actually log `result.error` instead of just "failed" — confirms that fix's value immediately.)

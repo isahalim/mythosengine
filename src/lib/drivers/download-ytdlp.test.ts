@@ -65,6 +65,17 @@ describe("YtDlpDownloadDriver", () => {
     }
   });
 
+  it("passes --cookies when cookiesFile is configured, and omits it otherwise", async () => {
+    const bin = fixture("fake-ytdlp-requires-cookies.py");
+    const withCookies = new YtDlpDownloadDriver({ ytDlpBin: bin, cookiesFile: "/tmp/fake-cookies.txt" });
+    const resultWithCookies = await withCookies.fetchVideo({ url: "https://example.com/watch?v=abc123" });
+    expect(resultWithCookies.ok).toBe(true);
+
+    const withoutCookies = new YtDlpDownloadDriver({ ytDlpBin: bin });
+    const resultWithoutCookies = await withoutCookies.fetchVideo({ url: "https://example.com/watch?v=abc123" });
+    expect(resultWithoutCookies.ok).toBe(false);
+  });
+
   it("fails with a non-retryable provider_error when yt-dlp itself can't be found", async () => {
     const driver = new YtDlpDownloadDriver({ ytDlpBin: "definitely-not-a-real-binary-xyz" });
     const result = await driver.fetchVideo({ url: "https://example.com/watch?v=x" });

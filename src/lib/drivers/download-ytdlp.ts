@@ -9,12 +9,12 @@ import { err, ok, type Result } from "../result.ts";
 const execFileAsync = promisify(execFile);
 
 // YouTube's bot-detection challenge ("Sign in to confirm you're not a bot")
-// hits yt-dlp's default player client hard from datacenter IPs like GitHub
-// Actions runners (confirmed live, 2026-08-29 — every FOOTAGE REFRESH
-// source failed on this before the flag was added). Requesting the tv/
-// web_safari player clients instead is yt-dlp's own documented, cookie-free
-// mitigation — no credential, no account, nothing that touches this
-// project's "never give this system a YouTube credential" rule.
+// hits yt-dlp hard from datacenter IPs like GitHub Actions runners
+// (confirmed live, 2026-08-29 — every FOOTAGE REFRESH source failed on
+// this). Requesting the tv/web_safari player clients is yt-dlp's
+// documented, cookie-free mitigation, but confirmed live (same date) not
+// to reliably clear the check on its own — kept only as the no-cookies
+// fallback in authArgs() below, never combined with cookies (see there).
 const YOUTUBE_PLAYER_CLIENT_ARGS = "youtube:player_client=tv,web_safari";
 
 interface YtDlpMetadata {
@@ -36,15 +36,28 @@ function isYtDlpMetadata(value: unknown): value is YtDlpMetadata {
 export interface YtDlpDownloadDriverOptions {
   ytDlpBin?: string; // defaults to "yt-dlp"; contract tests point this at a fixture script
   timeoutMs?: number;
+  cookiesFile?: string; // path to a Netscape-format cookies file exported from a signed-in account; omit for the unauthenticated fallback
 }
 
 export class YtDlpDownloadDriver implements DownloadDriver {
   private readonly ytDlpBin: string;
   private readonly timeoutMs: number;
+  private readonly cookiesFile: string | undefined;
 
   constructor(options: YtDlpDownloadDriverOptions = {}) {
     this.ytDlpBin = options.ytDlpBin ?? "yt-dlp";
     this.timeoutMs = options.timeoutMs ?? 120_000; // metadata + download can both be slow
+    this.cookiesFile = options.cookiesFile;
+  }
+
+  // Cookies from a signed-in account are the fix that actually clears
+  // YouTube's bot-check (confirmed against yt-dlp's own current maintainer
+  // guidance, 2026-08-29 — PO tokens no longer reliably help). Never
+  // combined with the player_client override: the tv client authenticates
+  // differently and mixing it with cookies tends to invalidate the
+  // session, per the same guidance.
+  private authArgs(): string[] {
+    return this.cookiesFile ? ["--cookies", this.cookiesFile] : ["--extractor-args", YOUTUBE_PLAYER_CLIENT_ARGS];
   }
 
   async fetchVideo(req: DownloadRequest): Promise<Result<DownloadResponse, DriverError>> {
@@ -67,8 +80,7 @@ export class YtDlpDownloadDriver implements DownloadDriver {
         [
           "--no-playlist",
           "--no-warnings",
-          "--extractor-args",
-          YOUTUBE_PLAYER_CLIENT_ARGS,
+          ...this.authArgs(),
           "-f",
           "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
           "--merge-output-format",
@@ -103,7 +115,7 @@ export class YtDlpDownloadDriver implements DownloadDriver {
     try {
       const result = await execFileAsync(
         this.ytDlpBin,
-        ["--dump-json", "--no-warnings", "--skip-download", "--no-playlist", "--extractor-args", YOUTUBE_PLAYER_CLIENT_ARGS, url],
+        ["--dump-json", "--no-warnings", "--skip-download", "--no-playlist", ...this.authArgs(), url],
         { signal: AbortSignal.timeout(this.timeoutMs) },
       );
       stdout = result.stdout;
