@@ -8,6 +8,15 @@ const MODEL = "openai/gpt-oss-120b";
 const DEFAULT_MAX_ITERATIONS = 8;
 const DEFAULT_ACTION_TIMEOUT_MS = 15_000;
 
+/**
+ * Output reserve per call. Groq bills a request against the token quota
+ * using `max_tokens` as the output allowance, so this is charged whether or
+ * not it is used — and this agent's replies are a single tool call with a
+ * handful of short arguments, never prose. 1024 reserved roughly 4x what
+ * the model has ever emitted here, on every call of every iteration.
+ */
+const MAX_OUTPUT_TOKENS = 384;
+
 // Context budget. Every one of these numbers exists because this agent's
 // prompt grows monotonically — each iteration appends a page snapshot or a
 // link list and nothing is ever dropped — and groq.ts prices a request at
@@ -18,8 +27,18 @@ const DEFAULT_ACTION_TIMEOUT_MS = 15_000;
 const MAX_LINKS = 40;
 const MAX_LINK_TEXT_CHARS = 100;
 const MAX_SNAPSHOT_CHARS = 3_000;
-/** Total characters of message content allowed before older tool results are elided (below). */
-const MAX_HISTORY_CHARS = 14_000;
+/**
+ * Total characters of message content allowed before older tool results are
+ * elided (below). Tightened from 14,000 on 2026-08-29 after measuring the
+ * real cost: ~614 tokens of tool schemas + 3,500 of history + 1,024 of
+ * output reserve came to ~5,100 tokens *per call*, and a full 3-source
+ * weekly run at the iteration cap worked out to ~185,000 tokens — enough to
+ * exhaust a free-tier daily token allowance in a single run, which is
+ * exactly what happened. These tasks are short and linear (navigate, fill,
+ * select a format, convert, download); they do not need to keep a dozen
+ * stale page snapshots in view to finish.
+ */
+const MAX_HISTORY_CHARS = 6_000;
 const ELIDED_TOOL_RESULT = '{"elided":"older tool result dropped to stay within the context budget; re-run the tool if you still need it"}';
 
 // The only ARIA roles this agent is allowed to click/fill by name — a small,
@@ -331,7 +350,7 @@ export async function runBrowserAgentTask<TResult>(
       messages,
       tools: allToolDefinitions,
       toolChoice: "auto",
-      maxTokens: 1024,
+      maxTokens: MAX_OUTPUT_TOKENS,
     });
     if (!completion.ok) return err(completion.error);
 

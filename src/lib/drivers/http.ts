@@ -47,6 +47,25 @@ function backoffMs(attempt: number, baseDelayMs: number): number {
  * Returning `rate_limited` promptly is strictly more useful than waiting:
  * it is true, it is fast, and it is something the UI can explain.
  */
+/**
+ * Providers report *which* limit a 429 hit, and how much of it is left, in
+ * `x-ratelimit-*` response headers — Groq sends separate request- and
+ * token-scoped ones with their own reset intervals. Discarding them turns
+ * every throttle into an indistinguishable "rate_limited", which on
+ * 2026-08-29 cost real time: a per-minute token limit and a per-day token
+ * limit produce identical errors, respond to completely different fixes
+ * (wait a minute vs. cut the payload or wait hours), and were told apart
+ * only by inference from `Retry-After` values. Folding the headers into the
+ * error message makes the next occurrence self-diagnosing.
+ */
+function describeRateLimitHeaders(res: Response): string {
+  const parts: string[] = [];
+  res.headers.forEach((value, name) => {
+    if (name.toLowerCase().startsWith("x-ratelimit-")) parts.push(`${name}=${value}`);
+  });
+  return parts.length > 0 ? ` [${parts.sort().join(", ")}]` : "";
+}
+
 function retryAfterMs(res: Response): number | null {
   const header = res.headers.get("retry-after");
   if (!header) return null;
@@ -81,12 +100,13 @@ export async function fetchWithRetry(
       // that the runtime eventually kills — report the rate limit instead.
       const waitTooLong = requestedDelay !== null && requestedDelay > maxRetryDelayMs;
       if (!retryable || isLastAttempt || waitTooLong) {
+        const limitDetail = res.status === 429 ? describeRateLimitHeaders(res) : "";
         return err({
           kind: res.status === 429 ? "rate_limited" : "provider_error",
           message:
             waitTooLong && res.status === 429
-              ? `HTTP 429 from ${url}; Retry-After ${Math.round(requestedDelay / 1000)}s exceeds the ${Math.round(maxRetryDelayMs / 1000)}s retry budget`
-              : `HTTP ${res.status} from ${url}`,
+              ? `HTTP 429 from ${url}; Retry-After ${Math.round(requestedDelay / 1000)}s exceeds the ${Math.round(maxRetryDelayMs / 1000)}s retry budget${limitDetail}`
+              : `HTTP ${res.status} from ${url}${limitDetail}`,
           retryable,
         });
       }

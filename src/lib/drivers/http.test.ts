@@ -91,6 +91,33 @@ describe("fetchWithRetry", () => {
     expect(calls).toBe(1);
   });
 
+  it("names which quota was hit by folding the provider's x-ratelimit-* headers into the error", async () => {
+    handler = (_req, res) => {
+      res.writeHead(429, {
+        "retry-after": "300",
+        "x-ratelimit-limit-tokens": "8000",
+        "x-ratelimit-remaining-tokens": "0",
+        "x-ratelimit-reset-tokens": "5m0s",
+        "x-ratelimit-remaining-requests": "998",
+        "content-type": "text/plain",
+      });
+      res.end();
+    };
+
+    const result = await fetchWithRetry(baseUrl, {}, { timeoutMs: 1000, maxAttempts: 2, baseDelayMs: 5, maxRetryDelayMs: 100 });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    // Tokens exhausted while requests are plentiful: the distinction that
+    // separates "wait a minute" from "cut the payload", and which a bare
+    // "rate_limited" hides completely.
+    expect(result.error.message).toContain("x-ratelimit-remaining-tokens=0");
+    expect(result.error.message).toContain("x-ratelimit-remaining-requests=998");
+    expect(result.error.message).toContain("x-ratelimit-reset-tokens=5m0s");
+    // Non-rate-limit headers stay out of it.
+    expect(result.error.message).not.toContain("content-type");
+  });
+
   it("still honors a Retry-After that fits inside the budget", async () => {
     let calls = 0;
     handler = (_req, res) => {

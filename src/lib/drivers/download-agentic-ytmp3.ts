@@ -12,7 +12,12 @@ import { err, ok, type Result } from "../result.ts";
 const execFileAsync = promisify(execFile);
 
 const YTMP3_TOOL_URL = "https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy";
-const DEFAULT_MAX_ITERATIONS = 12;
+// 12 while the flow was being discovered by trial and error; the controls
+// are now named explicitly in buildUserGoal, so the happy path is
+// navigate -> fill -> MP4 -> confirm -> Convert -> snapshot -> download ->
+// wait -> report. 8 leaves slack for one retry without paying for four more
+// full-context calls against the token quota on every failure.
+const DEFAULT_MAX_ITERATIONS = 8;
 
 const ResultSchema = z.object({ filePath: z.string() });
 
