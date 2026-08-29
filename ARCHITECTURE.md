@@ -407,6 +407,15 @@ library clean, curated, and dependable — same rationale as before this
 change, unaffected by which acquisition mechanism runs inside that job.
 
 ### 1. WATCH (hourly cron)
+- **Seeds `sources` from `data/sources.yml` first, every run** (idempotent).
+  That file is the committed source of truth for what WATCH monitors, so the
+  table follows the file rather than depending on someone having run a
+  seeding command once. Until 2026-08-29 nothing called `seedSourcesFromYaml`
+  at all — it was written and unit-tested in Phase 3 and never wired up — so
+  production's `sources` table was empty, WATCH polled nothing, and it
+  reported no failure because there was genuinely nothing to poll. A stage
+  that does nothing successfully is the worst kind of broken: the console
+  showed an honest zero and there was no error anywhere to chase.
 - Subreddit RSS/Atom feeds (`reddit.com/r/<sub>/hot.rss`) via the generic RSS driver, real User-Agent, conditional GET where the server supports it (many don't send an ETag — the natural-key idempotent insert covers that case regardless). **Deliberately not Reddit's JSON/Data API**: blocked outright from at least some cloud IP ranges (confirmed by testing, not assumed). News RSS, best-effort YouTube Community scraping (typed, fails safe like `yt-captions` did). X disabled in the free profile — no viable free API.
 - Output: `signals` rows in `observed`.
 

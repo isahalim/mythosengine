@@ -1,9 +1,14 @@
 #!/usr/bin/env node
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { finishRun, startRun } from "../../db/runs.ts";
 import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
 import { watchAllEnabledSources } from "../../src/lib/ingest/watch.ts";
 import { scoreObservedSignals } from "../../src/lib/ingest/score.ts";
+import { seedSourcesFromYaml } from "../../src/lib/ingest/seed-sources.ts";
 import { buildPipelineEnv } from "./env.ts";
+
+const SOURCES_YAML_PATH = join(import.meta.dirname, "..", "..", "data", "sources.yml");
 
 /**
  * WATCH + SCORE (ARCHITECTURE.md §5.1/§5.2), hourly cron
@@ -19,6 +24,17 @@ async function main(): Promise<void> {
     console.warn("Pipeline killswitch is off — skipping this WATCH run.");
     return;
   }
+
+  // Seed before polling, every run. data/sources.yml is the committed source
+  // of truth for what WATCH monitors; this makes the table follow the file
+  // instead of depending on someone having run a seeding command once.
+  // Production's `sources` table was empty until 2026-08-29 for exactly that
+  // reason — seedSourcesFromYaml existed and was unit-tested, but nothing
+  // ever called it, so WATCH polled zero sources and reported no error
+  // because there was genuinely nothing to poll. Idempotent, so a run with
+  // nothing to add is a single read.
+  const seeded = await seedSourcesFromYaml(env.db, env.rawClient, await readFile(SOURCES_YAML_PATH, "utf8"));
+  if (seeded.inserted > 0) console.warn(`SEED: ${seeded.inserted} new source(s) added from data/sources.yml.`);
 
   const traceId = crypto.randomUUID();
 
