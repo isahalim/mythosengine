@@ -282,7 +282,9 @@ one agentic mechanism: a bounded Groq tool-calling loop drives a real
 headless Chromium (`src/lib/drivers/browser-agent-core.ts`) to (1) search
 youtube.com directly for `"<game name>" walkthrough "<channel name>"
 youtube` and read the top results off the page
-(`youtube-search-agentic.ts`), then (2) convert+download the chosen video
+(`youtube-search-dom.ts` — deterministic, no model call; the original
+`youtube-search-agentic.ts` was deleted 2026-08-29 after live logs showed it
+reading an empty page), then (2) convert+download the chosen video
 via `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy`
 (`download-agentic-ytmp3.ts`). Motivation: the `yt-dlp` driver's last six
 commits were all fighting YouTube's bot-check with no durable fix.
@@ -302,7 +304,7 @@ confirmed real). Built:
 
 - ~~`src/lib/drivers/youtube-search.ts` + `iso8601-duration.ts`~~ — resolved a
   channel handle via a **read-only** `YOUTUBE_API_KEY`. Deleted 2026-08-28;
-  replaced by `youtube-search-agentic.ts` above.
+  replaced by `youtube-search-dom.ts` above.
 - `src/lib/footage/motion-score.ts` — `computeMotionSeries` runs `ffmpeg`
   with `signalstats`+`metadata=print` (verified the output format against
   real ffmpeg before writing the parser, not guessed) and

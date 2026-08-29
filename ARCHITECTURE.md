@@ -331,23 +331,40 @@ a schema that will.
 
 ### 0. FOOTAGE REFRESH (weekly cron — the only stage that touches third-party video)
 
-**Agentic video acquisition** — built, not proposed. Both the search and the
-download leg are driven by a bounded Groq tool-calling loop against a real
-headless Chromium (`src/lib/drivers/browser-agent-core.ts`; the two thin
-adapters are `youtube-search-agentic.ts` and `download-agentic-ytmp3.ts`),
-replacing the YouTube Data API v3 search and `yt-dlp` — both removed, along
-with `YOUTUBE_API_KEY` and `YOUTUBE_COOKIES`. The prior `yt-dlp` driver's
-last several commits were all fighting YouTube's bot-check with no durable
-fix; this replaces the mechanism rather than patching it further.
+**Browser-driven video acquisition** — built, not proposed. A real headless
+Chromium (`src/lib/drivers/browser-agent-core.ts`) replaces the YouTube Data
+API v3 search and `yt-dlp` — both removed, along with `YOUTUBE_API_KEY` and
+`YOUTUBE_COOKIES`. The prior `yt-dlp` driver's last several commits were all
+fighting YouTube's bot-check with no durable fix; this replaces the
+mechanism rather than patching it further.
 
-1. For each `footage_sources` row, `AgenticYoutubeSearchDriver` navigates to
+**The two legs are split on whether the work is actually ambiguous** (revised
+2026-08-29, operator directive). Reading a results page has exactly one right
+answer, so it is plain code. Driving a third-party converter genuinely varies
+— shifting layout, ad interstitials, a conversion to wait out — so it keeps
+the model. The model is spent only where judgment is required.
+
+This split was not a cost optimization; it fixed the leg outright. Per-action
+logging showed the agentic searcher calling `browser_list_links` and getting
+**340 bytes — an empty list** — because navigation waited for
+`domcontentloaded` while YouTube renders results client-side *after* it. It
+was spending four Groq calls per source, each carrying a page snapshot and
+~960 tokens of tool schemas against the tokens-per-minute quota that is this
+tier's binding constraint (§10), to look at a page with nothing on it. Search
+now costs **zero tokens** and reports a real failure instead of a guess.
+
+1. For each `footage_sources` row, `DomYoutubeSearchDriver`
+   (`youtube-search-dom.ts`) navigates to
    `youtube.com/results?search_query=...` for
-   `"<game>" walkthrough "<channel>" youtube` and has the model read up to 3
-   distinct top results off the page (`browser_snapshot` + `browser_list_links`
-   — `ariaSnapshot` alone doesn't carry hrefs). Every reported URL is
-   independently verified against `extractYoutubeVideoId` before being
-   trusted — a candidate that isn't a real `youtube.com`/`youtu.be` watch
-   link is dropped, never passed downstream.
+   `"<game>" walkthrough "<channel>" youtube`, **waits for a real watch link
+   to exist**, then reads YouTube's own embedded `ytInitialData` for up to 3
+   candidates with structured duration and view count (falling back to plain
+   anchors if that blob is absent). The tree-walk is a pure function
+   (`collectVideoRenderers`) over data the page hands back, not logic running
+   inside `page.evaluate` — browser-context code is invisible to coverage and
+   awkward to test. No model call, no API key, no cookies. Every id is still
+   verified against `extractYoutubeVideoId` before being trusted: scraped
+   page data is untrusted input exactly as model output was.
 2. `AgenticYtmp3DownloadDriver` skips a candidate whose video id is already
    in `footage_segments` (unchanged behavior), otherwise navigates to
    `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy`, has the

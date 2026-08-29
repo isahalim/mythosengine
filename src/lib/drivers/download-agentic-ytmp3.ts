@@ -24,7 +24,12 @@ unrelated call to action. If the page shows an error, a paywall, or you
 cannot find a working control after a reasonable number of attempts, report
 an empty filePath rather than guessing or clicking blindly. Re-snapshot the
 page after every click that might change it — a conversion is not
-instant.`;
+instant.
+
+Every model call you make is charged against a tokens-per-minute quota that
+is this pipeline's binding constraint, so prefer the shortest path: the
+control names you were given are real and were read off the live page. Do
+not re-snapshot to rediscover something you were already told.`;
 
 export interface AgenticYtmp3DownloadDriverOptions {
   llm: LlmDriver;
@@ -33,6 +38,53 @@ export interface AgenticYtmp3DownloadDriverOptions {
   actionTimeoutMs?: number;
   /** Defaults to the real ytmp3.gg tool URL. Contract tests point this at a local fixture server. */
   toolUrl?: string;
+  /**
+   * Whether the agent may tick ytmp3.gg's gating checkbox, which reads:
+   * *"I confirm that I have read and agree to the standards in the Copyright
+   * Disclaimer and will not download copyrighted content."*
+   *
+   * **Defaults to false, and that default is deliberate.** The checkbox
+   * gates the Convert button, so with it off this driver will not complete a
+   * download. It is off anyway because ticking it is an assertion made to a
+   * third party, and this project's own `footage_sources.license_note` rows
+   * describe the material as copyrighted walkthrough footage used under an
+   * explicitly accepted risk ("not a claim of zero risk"). Those two
+   * statements contradict each other, and resolving that is the operator's
+   * call to make knowingly, not a default for a driver to assume.
+   */
+  acceptCopyrightAttestation?: boolean;
+}
+
+/**
+ * The control names below were read off the live page on 2026-08-29 with a
+ * real browser, not guessed. Naming them removes the exploratory
+ * snapshot/click round-trips that made this leg both slow and unreliable —
+ * the live run spent 12 of 12 iterations on clicks that each timed out
+ * after the full 15s action budget without ever matching an element.
+ *
+ * Two details matter and neither was in the old instructions:
+ *  - The page's format defaults to **MP3**. There are separate "MP3" and
+ *    "MP4" buttons, and MP4 must be selected explicitly. Without that this
+ *    driver would download audio, which `validateAndFinish`'s ffprobe check
+ *    then rejects for having no video stream — so the leg could not have
+ *    succeeded even if every click had landed.
+ *  - The URL field is a `combobox` ("Paste URL or search keywords"), not a
+ *    textbox, which is the role `browser_fill` has to be told to use.
+ */
+function buildUserGoal(toolUrl: string, videoUrl: string, mayAcceptAttestation: boolean): string {
+  const attestationStep = mayAcceptAttestation
+    ? `Tick the checkbox whose label begins "I confirm that I have read and agree" — the Convert button does nothing until it is checked. `
+    : `Do NOT tick any confirmation or copyright checkbox; you are not authorized to agree to anything on this operator's behalf. If a checkbox blocks Convert, call report_download with an empty filePath and stop. `;
+
+  return (
+    `Navigate to ${toolUrl}. ` +
+    `Fill the combobox named "Paste URL or search keywords" with ${videoUrl} using browser_fill with role "combobox". ` +
+    `Click the button named "MP4" — the page defaults to MP3 and this pipeline needs video, so this step is required. ` +
+    attestationStep +
+    `Click the button named "Convert". Conversion is not instant: re-snapshot until a download control appears. ` +
+    `Click the download control, then immediately call browser_wait_for_download. Once that returns a filePath, call report_download with it. ` +
+    `If nothing works after a reasonable number of attempts, call report_download with an empty filePath.`
+  );
 }
 
 /**
@@ -78,11 +130,7 @@ export class AgenticYtmp3DownloadDriver implements DownloadDriver {
           maxIterations: this.options.maxIterations ?? DEFAULT_MAX_ITERATIONS,
           actionTimeoutMs: this.options.actionTimeoutMs,
           systemPrompt: SYSTEM_PROMPT,
-          userGoal:
-            `Navigate to ${toolUrl}. Find the input for a YouTube link (browser_snapshot to see the form) and fill it with ${req.url} using browser_fill. ` +
-            `Click whatever button starts the MP4 conversion. Wait for it to finish — re-snapshot until a download control appears, don't assume the first click was instant. ` +
-            `Click the download control, then immediately call browser_wait_for_download. Once that returns a filePath, call report_download with it. ` +
-            `If nothing works after a reasonable number of attempts, call report_download with an empty filePath.`,
+          userGoal: buildUserGoal(toolUrl, req.url, this.options.acceptCopyrightAttestation === true),
         },
         {
           name: "report_download",

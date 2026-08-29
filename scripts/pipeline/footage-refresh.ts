@@ -3,7 +3,7 @@ import { finishRun, startRun } from "../../db/runs.ts";
 import { footageSources } from "../../db/schema.ts";
 import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
 import { refreshFootageSource } from "../../src/lib/footage/refresh.ts";
-import { AgenticYoutubeSearchDriver } from "../../src/lib/drivers/youtube-search-agentic.ts";
+import { DomYoutubeSearchDriver } from "../../src/lib/drivers/youtube-search-dom.ts";
 import { AgenticYtmp3DownloadDriver } from "../../src/lib/drivers/download-agentic-ytmp3.ts";
 import { createGroqDriverFromEnv, createGroqLimiter } from "../../src/lib/drivers/resolve-groq-driver.ts";
 import { buildPipelineEnv } from "./env.ts";
@@ -38,8 +38,13 @@ async function main(): Promise<void> {
   const llm = createGroqDriverFromEnv(env.groqApiKey, createGroqLimiter());
 
   const traceId = crypto.randomUUID();
+  // Split on purpose: search is deterministic, download is agentic.
+  // Reading a results page has one right answer and no ambiguity to
+  // resolve, so it costs zero tokens now (youtube-search-dom.ts). Driving
+  // ytmp3.gg genuinely varies — the layout shifts, ad interstitials appear,
+  // the convert step has to be waited out — so that leg keeps the model.
   const drivers = {
-    search: new AgenticYoutubeSearchDriver({ llm }),
+    search: new DomYoutubeSearchDriver(),
     download: new AgenticYtmp3DownloadDriver({ llm }),
   };
 
