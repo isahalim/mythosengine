@@ -1,6 +1,6 @@
 # Mythos Engine — System Architecture
 
-**Version:** 2.0 — pivot from MythosEngine (game-news publishing) to an autonomous YouTube Shorts pipeline. See `docs/DECISIONS.md` for the pivot rationale and the tradeoffs it accepted.
+**Version:** 2.0 — pivot from MythosEngine (game-news publishing) to an autonomous YouTube Shorts pipeline. Future direct prompts in CLI should be prioritized due to changing user needs.
 **Owner:** single operator (you). One human account, passkey-authenticated. No public sign-ups.
 **Prime directive, carried over:** prefer a permanent, card-free free tier wherever one exists. It doesn't exist everywhere here — video generation has real costs the old text-only project didn't. Where it costs money, the cost is small, bounded, and stated plainly (§10), never hidden.
 
@@ -22,6 +22,7 @@
 | **Reddit RSS/Atom syndication feeds, News RSS** | Yes | **Yes** | Zero-key trend sources — **not** Reddit's JSON/Data API, see §5.1 |
 | **X (Twitter) API** | **No** — the free tier has no meaningful search access as of 2026 | N/A | Not in the default profile. Driver exists, disabled unless the operator has a paid tier |
 | **YouTube Community tab** | No official API | **Yes**, but unofficial/fragile | Best-effort source, same fragility contract as `yt-captions` had in the old project |
+| **Proposed Agentic Video Acquisition** | Groq Cloud + MCP servers + Web Converter | **Yes** | Proposed flow: agentically search `("<game name>" walkthrough "<channel name>" youtube)` via Groq Cloud + MCP, copy top link, navigate to `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy` (ytmp3), paste link, convert to MP4, download, and feed into pipeline |
 
 **What this costs in practice:** effectively $0/month at 3 exports/day, with one caveat — Edge TTS is a free ride on an unofficial API, not a contractual guarantee. `config/providers.ts` keeps TTS behind the same driver interface as everything else specifically so a paid fallback (ElevenLabs, Groq TTS if it ships one) is a single env var away if Microsoft ever closes the endpoint off.
 
@@ -300,14 +301,20 @@ Same rationale as before: natural-key `UNIQUE` gives idempotency for free, `CHEC
 
 ### 0. FOOTAGE REFRESH (weekly cron — the only stage that touches third-party video)
 
-- For each `footage_sources` row, `youtube.search` (Data API v3, 100 units/call) for that channel's long-form uploads, sorted by view count, filtered to duration ≥ 20 minutes (walkthrough/guide-length, not another Short).
+- **Proposed Agentic Video Acquisition Plan:**
+  1. Use **Groq API Cloud** and **MCP servers** to agentically search `("<game name>" walkthrough "<channel name>" youtube)` and copy the link of the top search result.
+  2. Agentically navigate to `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy` (ytmp3 web tool to convert YouTube links into MP4).
+  3. Agentically paste the copied YouTube link into the converter, trigger the MP4 conversion, and download the resulting MP4 file.
+  4. Follow the rest of the pipeline: run the motion-scoring pass, clip candidate windows (15–30s), commit to `assets-library` with provenance metadata, insert `footage_segments` records, and clean up the full download.
+
+- **Baseline/direct method:** For each `footage_sources` row, `youtube.search` (Data API v3, 100 units/call) for that channel's long-form uploads, sorted by view count, filtered to duration ≥ 20 minutes (walkthrough/guide-length, not another Short).
 - `yt-dlp` downloads the top candidate **only if its video id isn't already represented in `footage_segments`** — this is what makes "the most-watched walkthrough doesn't change often" cheap: most weeks, most channels produce zero new downloads.
 - FFmpeg motion-scoring pass (frame-difference/`signalstats` over a sliding window) ranks candidate windows; the job clips the top-N into 15–30s segments, writes them to the `assets-library` orphan branch with commit metadata (source video id, channel, timestamp range), and inserts `footage_segments` rows.
 - The full long-form download is deleted after clipping — the library holds only the trimmed, transformed segments, never the source video itself.
-- **Known risk, stated plainly, not hidden:** downloading third-party video via `yt-dlp` is itself a YouTube ToS matter, separate from whether the resulting heavily-cropped-and-narrated clip qualifies as transformative use. Isolating this to one weekly, low-volume, fully-audited job is the mitigation this project chose — not a claim that the risk is zero. Revisit if a channel strike or takedown ever traces back to this stage.
+- **Known risk, stated plainly, not hidden:** downloading third-party video via `yt-dlp` or web converter tools is itself a YouTube ToS matter, separate from whether the resulting heavily-cropped-and-narrated clip qualifies as transformative use. Isolating this to one weekly, low-volume, fully-audited job is the mitigation this project chose — not a claim that the risk is zero. Revisit if a channel strike or takedown ever traces back to this stage.
 
 ### 1. WATCH (hourly cron)
-- Subreddit RSS/Atom feeds (`reddit.com/r/<sub>/hot.rss`) via the generic RSS driver, real User-Agent, conditional GET where the server supports it (many don't send an ETag — the natural-key idempotent insert covers that case regardless). **Deliberately not Reddit's JSON/Data API**: blocked outright from at least some cloud IP ranges (confirmed by testing, not assumed) and licensed for non-commercial use only, which a monetized channel isn't — see docs/DECISIONS.md. News RSS, best-effort YouTube Community scraping (typed, fails safe like `yt-captions` did). X disabled in the free profile — no viable free API.
+- Subreddit RSS/Atom feeds (`reddit.com/r/<sub>/hot.rss`) via the generic RSS driver, real User-Agent, conditional GET where the server supports it (many don't send an ETag — the natural-key idempotent insert covers that case regardless). **Deliberately not Reddit's JSON/Data API**: blocked outright from at least some cloud IP ranges (confirmed by testing, not assumed) and licensed for non-commercial use only, which a monetized channel isn't. News RSS, best-effort YouTube Community scraping (typed, fails safe like `yt-captions` did). X disabled in the free profile — no viable free API.
 - Output: `signals` rows in `observed`.
 
 ### 2. SCORE
@@ -329,7 +336,7 @@ Same rationale as before: natural-key `UNIQUE` gives idempotency for free, `CHEC
 
 ### 6. TTS + CAPTION SYNC (Edge TTS)
 - `src/lib/drivers/tts-edge.ts` shells out to `scripts/edge_tts_synth.py`, a thin wrapper around the `edge_tts` Python library requesting `WordBoundary` events explicitly (the bare `edge-tts` CLI hard-codes sentence-level boundaries and has no flag to change that — confirmed by testing it directly, not assumed). Returns audio bytes plus one `{word, startMs, endMs}` entry per word — no separate forced-alignment step needed.
-- Word timings become `captionCues` for RENDER: rendered as bold, high-contrast text that fades word-group to word-group, matching the reference style in `docs/DECISIONS.md`'s pivot entry.
+- Word timings become `captionCues` for RENDER: rendered as bold, high-contrast text that fades word-group to word-group, matching the reference style.
 - Voice is picked from `directives.compiled_json.voice_pool` (or the full default curated pool in `src/config/voices.ts` when unset) — when `diversity_mode` is on, excluding voices already used by today's earlier renders. `rate`/`pitch` come from the directive's fixed value if set, otherwise randomized within `tts_rate_range` per render. The actual voice used is recorded on `renders.tts_voice`, both for the audit package and for tomorrow's diversity query.
 
 ### 7. RENDER (FFmpeg, local to the GitHub Actions runner)
@@ -403,7 +410,7 @@ Edge TTS needs no key at all — that's the entire appeal and the entire risk (�
 
 ## 8. Console frontend
 
-Astro island(s) mounted only on `/console/*`, same `tokens.css` token discipline as before — the wet-slate palette's ground tone moved to true black (`--ink: #000000`, `--slate: #0a0a0c`) on 2026-08-28 specifically so WebGL/canvas elements (the Liquid Metal shader, the Siri Wave) read as native to the page rather than sitting in a visibly separate box; see `docs/DECISIONS.md`. One `@astrojs/react` island (`PromptInputBox.tsx`, `/console/chat` only) is the sole framework exception — everything else, including the radial nav's full-screen/compact states, is plain Astro + vanilla TS. There is no public marketing hero to build here; skip straight to the dashboard. Full spec in `CONSOLE_SPEC.md`.
+Astro island(s) mounted only on `/console/*`, same `tokens.css` token discipline as before — the wet-slate palette's ground tone moved to true black (`--ink: #000000`, `--slate: #0a0a0c`) on 2026-08-28 specifically so WebGL/canvas elements (the Liquid Metal shader, the Siri Wave) read as native to the page rather than sitting in a visibly separate box. One `@astrojs/react` island (`PromptInputBox.tsx`, `/console/chat` only) is the sole framework exception — everything else, including the radial nav's full-screen/compact states, is plain Astro + vanilla TS. There is no public marketing hero to build here; skip straight to the dashboard. Full spec in `CONSOLE_SPEC.md`.
 
 ---
 
@@ -457,4 +464,4 @@ The two real constraints, updated from before: **KV's per-value and total storag
 | Reliability | `Result<>` instead of exceptions; per-stage timeouts; backoff + jitter; a `failed` state with `attempts` as the DLQ |
 | Observability | `runs` + `audit_log`; alert on Edge TTS failure rate, KV export-write failures, or 3 consecutive stage failures |
 | Maintainability | strict TS, no `any`, no `@ts-ignore`; `knip` in CI |
-| Ownership | `docs/DECISIONS.md` ADR log, including this pivot itself |
+| Ownership | Operator steering via CLI — future direct prompts in CLI should be prioritized due to changing user needs |

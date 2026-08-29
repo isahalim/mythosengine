@@ -1,10 +1,8 @@
 # CLAUDE.md — Mythos Engine
 
-Read this file at the start of every session. Also read `docs/DECISIONS.md` before proposing anything structural, and `PROVISIONED.md` before touching infrastructure.
+Read this file at the start of every session. and `PROVISIONED.md` before touching infrastructure.
 
 Symlink `AGENTS.md` → this file so non-Claude agents pick it up too.
-
-> **Pivot notice (2026-08-27):** this repo previously built "MythosEngine," a game-news publishing site. It pivoted to Mythos Engine on this date — same repo, same underlying Cloudflare Worker and driver patterns where they carry over, entirely different product. `docs/DECISIONS.md` has the full rationale. Do not resurrect MythosEngine-specific concepts (claim citation verification, franchise canon files, provenance strips) without checking whether the analogous Mythos Engine concept (policy-safety gate, footage library provenance) already covers the same need.
 
 ---
 
@@ -18,7 +16,7 @@ A single-operator platform that monitors trending, polarizing discourse across R
 
 ## Stack
 
-- **Astro** + TypeScript (strict) + Tailwind consuming tokens from `tokens.css` — the operator console only. There is no public-facing content site; the Worker's public surface is a status/marketing page at most. One `@astrojs/react` island (`src/console/components/PromptInputBox.tsx`, `/console/chat` only, `docs/DECISIONS.md` 2026-08-28) is the sole exception to "no framework beyond Astro" — everything else, including every other console page, stays plain Astro + vanilla TS.
+- **Astro** + TypeScript (strict) + Tailwind consuming tokens from `tokens.css` — the operator console only. There is no public-facing content site; the Worker's public surface is a status/marketing page at most. One `@astrojs/react` island (`src/console/components/PromptInputBox.tsx`, `/console/chat` only) is the sole exception to "no framework beyond Astro" — everything else, including every other console page, stays plain Astro + vanilla TS.
 - **One Cloudflare Worker with static assets** — serves the console and the API. **Not Pages.**
 - **D1** (Drizzle) for state, **KV** for hot JSON and the encrypted key vault
 - **Groq** (`openai/gpt-oss-120b`, `openai/gpt-oss-20b` — replacing `llama-3.3-70b-versatile`/`llama-3.1-8b-instant`, both deprecated by Groq 2026-06-17) for script generation, critique, and metadata (title/description/hashtags)
@@ -26,9 +24,10 @@ A single-operator platform that monitors trending, polarizing discourse across R
 - **yt-dlp + FFmpeg + Python 3** (for `edge_tts`), run in **GitHub Actions** (Cloudflare Workers cannot run FFmpeg or spawn subprocesses — no native binary execution, hard CPU-time ceiling) for the weekly footage-refresh job and the per-render video pipeline
 - **YouTube Data API v3** (read-only API key only) for the weekly footage-source discovery search. No upload/OAuth scope exists anywhere in this system — publishing is manual, done by the operator in YouTube Studio
 - **GitHub Actions** as the pipeline runner and scheduler for everything compute-heavy; a Git orphan branch (`assets-library`) as the footage clip store — no R2, no paid object storage
+- **Proposed Agentic Video Acquisition**: Use Groq API Cloud and MCP servers to agentically search `("<game name>" walkthrough "<channel name>" youtube)` and copy the link of the top search result. Then agentically navigate to `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy` (ytmp3 to make YouTube links into MP4), paste the link, convert it to MP4, download it, and follow the rest of the pipeline.
 - Node 22, pnpm
 
-No framework, service, or provider may be added without an ADR appended to `docs/DECISIONS.md`.
+Future direct prompts in the CLI should be prioritized due to changing user needs over static ADR requirements. No framework, service, or provider may be added without explicit operator instruction via CLI prompts.
 
 ## NEVER
 
@@ -54,7 +53,7 @@ Re-read this block before writing any file that touches secrets, auth, the datab
 1. **Plan.** Numbered steps, exact file paths, stated blast radius. Wait for approval.
 2. **Implement.** Match existing patterns — point at the reference file you're matching (the Phase 1 drivers in `src/lib/drivers/**` are the reference for every new driver: `Result<T,E>`, typed `DriverError`, `fetchWithRetry`, contract tests against a local mock server).
 3. **Verify.** Run `pnpm verify`. Paste the output.
-4. **Record.** Append to `docs/DECISIONS.md`: what changed, why, what you rejected.
+4. **Prioritize CLI directives.** Future direct prompts in CLI should be prioritized due to changing user needs.
 
 One bounded task per session. When a session gets long, stop and ask me to start a fresh one rather than continuing with a degraded picture of the codebase.
 
@@ -71,4 +70,3 @@ Stop and ask. A question costs me 30 seconds; a wrong assumption costs a day. Gu
 | `CONSOLE_SPEC.md` | operator console: auth, key vault, directives, dashboard |
 | `PROVISIONED.md` | what already exists in Cloudflare. Read before provisioning anything |
 | `docs/HARDENING.md` | the pre-launch security checklist |
-| `docs/DECISIONS.md` | append-only ADR log |
