@@ -3,9 +3,11 @@ import { finishRun, startRun } from "../../db/runs.ts";
 import { footageSources } from "../../db/schema.ts";
 import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
 import { refreshFootageSource } from "../../src/lib/footage/refresh.ts";
-import { YoutubeDataApiSearchDriver } from "../../src/lib/drivers/youtube-search.ts";
-import { YtDlpDownloadDriver } from "../../src/lib/drivers/download-ytdlp.ts";
-import { buildPipelineEnv, optionalEnv, requireEnv } from "./env.ts";
+import { AgenticYoutubeSearchDriver } from "../../src/lib/drivers/youtube-search-agentic.ts";
+import { AgenticYtmp3DownloadDriver } from "../../src/lib/drivers/download-agentic-ytmp3.ts";
+import { createGroqDriverFromEnv } from "../../src/lib/drivers/resolve-groq-driver.ts";
+import { TokenBucketLimiter } from "../../src/lib/drivers/rate-limiter.ts";
+import { buildPipelineEnv } from "./env.ts";
 
 /**
  * FOOTAGE REFRESH (ARCHITECTURE.md §5.0), weekly cron
@@ -15,27 +17,31 @@ import { buildPipelineEnv, optionalEnv, requireEnv } from "./env.ts";
  * `commitClipToLibrary` deliberately doesn't push); the workflow itself
  * runs `git push origin assets-library` once every source has been
  * processed.
+ *
+ * Acquisition is agentic (ARCHITECTURE.md §5.0, operator directive): search
+ * and download both drive a real headless browser via a bounded Groq
+ * tool-calling loop (src/lib/drivers/browser-agent-core.ts) instead of the
+ * YouTube Data API + yt-dlp this replaced — see that module and the two
+ * driver files for the guardrails (origin allowlisting, ffprobe validation
+ * of anything downloaded).
  */
 async function main(): Promise<void> {
   const env = buildPipelineEnv();
-  const youtubeApiKey = requireEnv("YOUTUBE_API_KEY");
 
   if (!(await isPipelineEnabled(env.hotKv))) {
     console.warn("Pipeline killswitch is off — skipping this FOOTAGE REFRESH run.");
     return;
   }
 
-  // Written by footage-refresh.yml from the YOUTUBE_COOKIES secret (a
-  // throwaway account's exported cookies, never the operator's own) to a
-  // runner-temp file right before this script runs — never a tracked file,
-  // never logged. Absent locally/in dev, where the unauthenticated
-  // best-effort fallback in download-ytdlp.ts's authArgs() applies instead.
-  const cookiesFile = optionalEnv("YOUTUBE_COOKIES_FILE");
+  // A separate limiter instance from the daily SCRIPT/CRITIC pipeline's
+  // (render.ts) — this job runs weekly and alone, never concurrently with a
+  // render, so there's no cross-job budget to share.
+  const llm = createGroqDriverFromEnv(env.groqApiKey, new TokenBucketLimiter(30, 6000));
 
   const traceId = crypto.randomUUID();
   const drivers = {
-    search: new YoutubeDataApiSearchDriver({ apiKey: youtubeApiKey }),
-    download: new YtDlpDownloadDriver({ cookiesFile }),
+    search: new AgenticYoutubeSearchDriver({ llm }),
+    download: new AgenticYtmp3DownloadDriver({ llm }),
   };
 
   const sources = await env.db.select().from(footageSources).all();

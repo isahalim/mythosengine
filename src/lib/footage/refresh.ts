@@ -56,6 +56,7 @@ export async function refreshFootageSource(
   const videosResult = await drivers.search.findTopLongFormVideos({
     channelHandle: extractHandle(footageSource.channelUrl),
     minDurationS: minSourceDurationS,
+    game: footageSource.game,
   });
   if (!videosResult.ok) {
     return { footageSourceId: footageSource.id, status: "failed", newSegments: 0, error: videosResult.error };

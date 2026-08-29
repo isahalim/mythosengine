@@ -16,13 +16,12 @@
 | **Cloudflare D1** | 5 GB, 5M row-reads/day | **Yes** | Pipeline state, scripts, footage/segment/render/upload records, audit log |
 | **Cloudflare KV** | 1 GB, 100k reads/day, **1k writes/day** | **Yes** | Hot manifests, rate-limit counters, encrypted key vault |
 | **Cloudflare Turnstile** | Yes | **Yes** | Bot protection on any public POST route |
-| **GitHub Actions** | 2,000 min/mo private, unlimited public | **Yes** | Weekly footage refresh, daily render pipeline, scheduler. FFmpeg and yt-dlp both run here — Workers cannot execute native binaries or sustain multi-minute CPU jobs |
+| **GitHub Actions** | 2,000 min/mo private, unlimited public | **Yes** | Weekly footage refresh, daily render pipeline, scheduler. FFmpeg and headless Chromium (Playwright) both run here — Workers cannot execute native binaries, launch a browser, or sustain multi-minute CPU jobs |
 | **GitHub repo (orphan branch)** | Yes, subject to repo size sanity | **Yes** | The footage clip library. Not R2 — R2's free tier requires a card to activate at all; a rotating library of short trimmed clips fits comfortably in a git branch |
-| **YouTube Data API v3** | Yes — 10,000 units/day default quota | **Yes** (Google account, no billing needed for this quota tier) | Read-only (`search.list`/`videos.list`/`channels.list`) for the weekly footage-source discovery search only. No upload/OAuth scope exists in this system — see §9 |
 | **Reddit RSS/Atom syndication feeds, News RSS** | Yes | **Yes** | Zero-key trend sources — **not** Reddit's JSON/Data API, see §5.1 |
 | **X (Twitter) API** | **No** — the free tier has no meaningful search access as of 2026 | N/A | Not in the default profile. Driver exists, disabled unless the operator has a paid tier |
 | **YouTube Community tab** | No official API | **Yes**, but unofficial/fragile | Best-effort source, same fragility contract as `yt-captions` had in the old project |
-| **Proposed Agentic Video Acquisition** | Groq Cloud + MCP servers + Web Converter | **Yes** | Proposed flow: agentically search `("<game name>" walkthrough "<channel name>" youtube)` via Groq Cloud + MCP, copy top link, navigate to `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy` (ytmp3), paste link, convert to MP4, download, and feed into pipeline |
+| **Agentic footage acquisition** (Groq Cloud + headless Chromium) | Yes | **Yes** | Weekly footage-source discovery *and* download (§5.0): a bounded Groq tool-calling loop drives Playwright to search youtube.com for `"<game name>" walkthrough "<channel name>" youtube`, then convert+download the top result via `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy` (ytmp3). Replaces the YouTube Data API v3 search and yt-dlp — both removed |
 
 **What this costs in practice:** effectively $0/month at 3 exports/day, with one caveat — Edge TTS is a free ride on an unofficial API, not a contractual guarantee. `config/providers.ts` keeps TTS behind the same driver interface as everything else specifically so a paid fallback (ElevenLabs, Groq TTS if it ships one) is a single env var away if Microsoft ever closes the endpoint off.
 
@@ -81,8 +80,8 @@
                                                                               ▼
    ┌─────────────────┐  weekly           ┌──────────────────────┐   ┌───────────────────┐
    │ WALKTHROUGH      │ ─────────────►   │ FOOTAGE REFRESH job   │   │  EXPORT: KV blob   │
-   │ CREATORS         │  yt-dlp download │  scene/motion scoring │   │  (mp4 + audit_json,│
-   │ (long-form guides)│  (rate-limited)  │  → clip candidates    │   │  3-day TTL)        │
+   │ CREATORS         │  agentic search  │  scene/motion scoring │   │  (mp4 + audit_json,│
+   │ (long-form guides)│  + ytmp3 download│  → clip candidates    │   │  3-day TTL)        │
    └──────────────────┘                  └──────────┬────────────┘   └─────────┬──────────┘
                                                       ▼                          ▼
                                         ┌─────────────────────────┐   console review queue
@@ -92,7 +91,7 @@
                                         └─────────────────────────┘
 ```
 
-**Why GitHub Actions is the runner and not a Worker:** unchanged reasoning from MythosEngine, stronger here — FFmpeg rendering and yt-dlp downloads need a real filesystem, real CPU minutes, and the ability to execute a native binary, none of which Workers offer.
+**Why GitHub Actions is the runner and not a Worker:** unchanged reasoning from MythosEngine, stronger here — FFmpeg rendering and the headless-Chromium footage-acquisition agent need a real filesystem, real CPU minutes, and the ability to execute a native binary/launch a browser, none of which Workers offer.
 
 ---
 
@@ -103,7 +102,7 @@
 ```ts
 export const LLM_DRIVERS      = ['groq', 'workers-ai', 'openai-compat'] as const;
 export const TTS_DRIVERS      = ['edge-tts', 'elevenlabs', 'none'] as const;
-export const DOWNLOAD_DRIVERS = ['yt-dlp'] as const;
+export const DOWNLOAD_DRIVERS = ['ytmp3-agentic'] as const;
 export const RENDER_DRIVERS   = ['ffmpeg-local'] as const;
 export const EXPORT_DRIVERS   = ['kv-blob'] as const;
 export const CACHE_DRIVERS    = ['kv', 'memory'] as const;
@@ -114,7 +113,7 @@ export const CACHE_DRIVERS    = ['kv', 'memory'] as const;
 ```
 LLM_DRIVER=groq
 TTS_DRIVER=edge-tts
-DOWNLOAD_DRIVER=yt-dlp
+DOWNLOAD_DRIVER=ytmp3-agentic
 RENDER_DRIVER=ffmpeg-local
 EXPORT_DRIVER=kv-blob
 CACHE_DRIVER=kv
@@ -163,7 +162,7 @@ export interface ExportStoreResponse {
 
 No `UploadDriver` exists in this system. There is no automated publish path — see §9.
 
-`DownloadDriver` and `RenderDriver` shell out to `yt-dlp` and `ffmpeg` respectively via `node:child_process` — neither is an npm package, so the "run `npm view`" rule doesn't apply, but the equivalent applies: pin `yt-dlp`'s version explicitly in the GitHub Actions workflow and verify its release checksum, the same supply-chain discipline for a non-npm binary dependency.
+`RenderDriver` shells out to `ffmpeg` via `node:child_process` — not an npm package, so the "run `npm view`" rule doesn't apply, but the equivalent applies: pin `ffmpeg`'s version explicitly in the GitHub Actions workflow, the same supply-chain discipline for a non-npm binary dependency. `DownloadDriver` (`src/lib/drivers/download-agentic-ytmp3.ts`) is a Playwright-driven agent instead — `playwright` is a real npm dependency (verified per the import rule: created 2015-01-23, maintained by the Playwright/Microsoft team), pinned in `package.json` like every other dependency; Playwright ties the downloaded Chromium build 1:1 to the installed npm package version, so there's no separate binary checksum to pin the way `yt-dlp` needed.
 
 ---
 
@@ -301,17 +300,54 @@ Same rationale as before: natural-key `UNIQUE` gives idempotency for free, `CHEC
 
 ### 0. FOOTAGE REFRESH (weekly cron — the only stage that touches third-party video)
 
-- **Proposed Agentic Video Acquisition Plan:**
-  1. Use **Groq API Cloud** and **MCP servers** to agentically search `("<game name>" walkthrough "<channel name>" youtube)` and copy the link of the top search result.
-  2. Agentically navigate to `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy` (ytmp3 web tool to convert YouTube links into MP4).
-  3. Agentically paste the copied YouTube link into the converter, trigger the MP4 conversion, and download the resulting MP4 file.
-  4. Follow the rest of the pipeline: run the motion-scoring pass, clip candidate windows (15–30s), commit to `assets-library` with provenance metadata, insert `footage_segments` records, and clean up the full download.
+**Agentic video acquisition** — built, not proposed. Both the search and the
+download leg are driven by a bounded Groq tool-calling loop against a real
+headless Chromium (`src/lib/drivers/browser-agent-core.ts`; the two thin
+adapters are `youtube-search-agentic.ts` and `download-agentic-ytmp3.ts`),
+replacing the YouTube Data API v3 search and `yt-dlp` — both removed, along
+with `YOUTUBE_API_KEY` and `YOUTUBE_COOKIES`. The prior `yt-dlp` driver's
+last several commits were all fighting YouTube's bot-check with no durable
+fix; this replaces the mechanism rather than patching it further.
 
-- **Baseline/direct method:** For each `footage_sources` row, `youtube.search` (Data API v3, 100 units/call) for that channel's long-form uploads, sorted by view count, filtered to duration ≥ 20 minutes (walkthrough/guide-length, not another Short).
-- `yt-dlp` downloads the top candidate **only if its video id isn't already represented in `footage_segments`** — this is what makes "the most-watched walkthrough doesn't change often" cheap: most weeks, most channels produce zero new downloads.
-- FFmpeg motion-scoring pass (frame-difference/`signalstats` over a sliding window) ranks candidate windows; the job clips the top-N into 15–30s segments, writes them to the `assets-library` orphan branch with commit metadata (source video id, channel, timestamp range), and inserts `footage_segments` rows.
-- The full long-form download is deleted after clipping — the library holds only the trimmed, transformed segments, never the source video itself.
-- Isolating footage acquisition to one weekly, low-volume job keeps the library clean, curated, and dependable.
+1. For each `footage_sources` row, `AgenticYoutubeSearchDriver` navigates to
+   `youtube.com/results?search_query=...` for
+   `"<game>" walkthrough "<channel>" youtube` and has the model read up to 3
+   distinct top results off the page (`browser_snapshot` + `browser_list_links`
+   — `ariaSnapshot` alone doesn't carry hrefs). Every reported URL is
+   independently verified against `extractYoutubeVideoId` before being
+   trusted — a candidate that isn't a real `youtube.com`/`youtu.be` watch
+   link is dropped, never passed downstream.
+2. `AgenticYtmp3DownloadDriver` skips a candidate whose video id is already
+   in `footage_segments` (unchanged behavior), otherwise navigates to
+   `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy`, has the
+   model fill the YouTube URL, click convert, wait for the conversion, click
+   download, and save the file.
+3. The downloaded file is validated with `ffprobe` before it's trusted at
+   all — must have a real video stream and a finite duration — and
+   `maxDurationS` is enforced against that measured duration (unlike
+   `yt-dlp`'s `--dump-json` pre-flight check, ytmp3.gg gives no metadata
+   call to check before downloading, so the check moved after).
+4. FFmpeg motion-scoring pass (frame-difference/`signalstats` over a sliding
+   window) ranks candidate windows; the job clips the top-N into 15–30s
+   segments, writes them to the `assets-library` orphan branch with commit
+   metadata (source video id, channel, timestamp range), and inserts
+   `footage_segments` rows. The full downloaded source is deleted after
+   clipping — the library holds only the trimmed, transformed segments,
+   never the source video itself.
+
+**Guardrails on the browser agent itself** (ytmp3.gg is a third-party,
+ad-monetized converter site): navigation is restricted to two allowed
+origins (youtube.com for search, media.ytmp3.gg for conversion) — any
+top-level navigation elsewhere (an ad redirect, a popup) is aborted before
+it loads; element targeting is by accessibility role + name via
+Playwright's `getByRole`/`ariaSnapshot`, which only ever see the main
+frame's own DOM, never a 3rd-party iframe's content; the tool-call loop is
+bounded (`maxIterations`) so a confused agent or a changed page layout
+fails typed and fast rather than hanging the job.
+
+Isolating footage acquisition to one weekly, low-volume job keeps the
+library clean, curated, and dependable — same rationale as before this
+change, unaffected by which acquisition mechanism runs inside that job.
 
 ### 1. WATCH (hourly cron)
 - Subreddit RSS/Atom feeds (`reddit.com/r/<sub>/hot.rss`) via the generic RSS driver, real User-Agent, conditional GET where the server supports it (many don't send an ETag — the natural-key idempotent insert covers that case regardless). **Deliberately not Reddit's JSON/Data API**: blocked outright from at least some cloud IP ranges (confirmed by testing, not assumed). News RSS, best-effort YouTube Community scraping (typed, fails safe like `yt-captions` did). X disabled in the free profile — no viable free API.
@@ -396,8 +432,7 @@ Full console design: **`CONSOLE_SPEC.md`**.
 
 | Key | Where you get it | Scope |
 |---|---|---|
-| `GROQ_API_KEY` | console.groq.com | default |
-| `YOUTUBE_API_KEY` | Google Cloud Console → Credentials → API Key, restricted to YouTube Data API v3 | read-only (`channels.list`/`search.list`/`videos.list`) — footage discovery only. There is no YouTube OAuth credential anywhere in this system; upload is manual, by the operator, in YouTube Studio |
+| `GROQ_API_KEY` | console.groq.com | default. Also drives the FOOTAGE REFRESH job's agentic search/download loop (§5.0) — no separate key needed for that |
 | `CLOUDFLARE_API_TOKEN` | dash.cloudflare.com | Workers/KV/D1/Turnstile edit, no `Zone:Edit`. Also what the GitHub Actions render job uses to write export blobs to KV via the REST API (§9) |
 | `VAULT_MASTER_KEY` / `SESSION_SIGNING_KEY` | `openssl rand -base64 32` | Worker secret only |
 | `TWENTYFIRST_API_KEY` | 21st.dev | dev machine only, never CI/Workers |
@@ -441,14 +476,13 @@ Assume 3 exports/day.
 
 | Resource | Per-day consumption | Free ceiling | Headroom |
 |---|---|---|---|
-| Groq requests | ~24 score-passes + 3 scripts + 3 critics + 3 metadata-gens ≈ 33 | ~14,400/day | huge |
-| YouTube Data API units | weekly footage-source search only ≈ 100–500/day amortized | 10,000/day | huge — no upload calls exist anymore, this dropped by two orders of magnitude from the earlier upload-based design |
-| GitHub Actions minutes | hourly WATCH × 24 (~1 min each) + 3 render jobs × ~5 min (FFmpeg is the expensive part) + weekly footage job (~15 min) ≈ ~40 min/day | 2,000 min/mo private | fine — public repo removes the ceiling entirely |
+| Groq requests | ~24 score-passes + 3 scripts + 3 critics + 3 metadata-gens + weekly footage-refresh's search/download agent turns (bounded by `maxIterations`, amortized over the week) ≈ 33/day + a small weekly bump | ~14,400/day | huge |
+| GitHub Actions minutes | hourly WATCH × 24 (~1 min each) + 3 render jobs × ~5 min (FFmpeg is the expensive part) + weekly footage job (~15–20 min — a headless Chromium launch per candidate adds a little over the old yt-dlp job) ≈ ~40 min/day amortized | 2,000 min/mo private | fine — public repo removes the ceiling entirely |
 | KV writes | batch manifest + rate-limit counters + 3 export blobs ≈ well under 50 | 1,000/day | fine |
 | KV storage | 3 exports/day × 3-day TTL ≈ ~9 exports resident at once × (MP4 size, TBD — see §3's `ExportDriver` note) | 1GB total | needs the real render-size check before this is a settled "fine," not before |
 | Edge TTS | 3 × ~150 words ≈ 450 words/day | no formal quota — it's not a real product | **the actual risk isn't quota, it's the endpoint disappearing.** Alert loudly on TTS driver failure, don't silently fall back to a paid provider without telling the operator |
 
-The two real constraints, updated from before: **KV's per-value and total storage caps** (settled once Phase 6 measures a real rendered file against them, per the open item in §3) and **Edge TTS's unofficial status** (this is a reliability risk, not a cost one — budget for it with retries and a loud alert, not with money). YouTube API quota is no longer a meaningful constraint now that nothing here uploads.
+The two real constraints, updated from before: **KV's per-value and total storage caps** (settled once Phase 6 measures a real rendered file against them, per the open item in §3) and **Edge TTS's unofficial status** (this is a reliability risk, not a cost one — budget for it with retries and a loud alert, not with money). YouTube API quota is no longer tracked at all — there's no YouTube API key left in the system (§5.0, §7).
 
 ---
 

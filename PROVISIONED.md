@@ -39,11 +39,10 @@ Verify with `npx wrangler secret list`. If one is missing, name it and stop.
 
 These are new requirements from the pivot and do not exist yet. Do not invent placeholder values — ask the operator when the phase that needs them is reached. **There is no YouTube OAuth app in this project's plans** — the manual-review pivot removed the automated upload path entirely, so no `YOUTUBE_OAUTH_CLIENT_ID`/`_SECRET`/`_REFRESH_TOKEN` is ever needed:
 
-- **Proposed Agentic Video Acquisition Plan:** Uses Groq API Cloud and MCP servers to search `("<game name>" walkthrough "<channel name>" youtube)`, copy top search link, navigate to `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy` (ytmp3), paste link, convert to MP4, download, and feed into the pipeline.
+**Agentic video acquisition (2026-08-28, per operator directive):** the weekly footage-refresh job now searches youtube.com and converts+downloads via `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy` through a Groq tool-calling loop driving a real headless Chromium (`ARCHITECTURE.md` §5.0) — no separate API key, no OAuth, needs only the `GROQ_API_KEY` already provisioned below. This replaced the YouTube Data API v3 search, so `YOUTUBE_API_KEY` and the `YOUTUBE_COOKIES` GitHub Actions secret (Phase 1's `yt-dlp` cookie workaround) are no longer read by anything in this codebase — **operator action needed:** revoke/delete both from GitHub Actions repo secrets and the `YOUTUBE_API_KEY` from Google Cloud Console when convenient; nothing here does that automatically.
 
 | Secret | Purpose | When needed |
 |---|---|---|
-| `YOUTUBE_API_KEY` | Read-only Data API key (Google Cloud Console → Credentials → Create API Key, restricted to the YouTube Data API v3), used only for `channels.list`/`search.list`/`videos.list` (public read-only data: resolving `@handle` → channel id, finding a channel's top videos). Used by `src/lib/drivers/youtube-search.ts` (built, contract-tested; no real key available in that session) | `footage-refresh.yml` now actually reads this at runtime (Phase 8.5) and fails with a named error if it's unset — it is a hard blocker for that workflow, not just a future placeholder anymore |
 | `TWENTYFIRST_API_KEY` | dev-machine only, MCP component scaffolding — **operator has set this up already per 2026-08-27 conversation**, verify present in `.env.local` before Phase 7/9 | Phase 7 (console UI) / Phase 9 |
 | `DISCORD_WEBHOOK_URL` | Discord → target channel → Settings → Integrations → Webhooks → New Webhook, copy its URL. Optional: `src/server/alerts/discord.ts`/`rules.ts` (built, tested since Phase 8) are now actually called by `render.yml`/`watch.yml` (Phase 8.5) whenever this is set — still fires nothing and nothing breaks if it's left unset | Optional |
 
@@ -55,7 +54,7 @@ The KV namespace provisioned in Phase 8 (Task 8.2) now also stores export blobs 
 
 `GROQ_API_KEY` · `CLOUDFLARE_API_TOKEN` · `CLOUDFLARE_ACCOUNT_ID`
 
-Will additionally need `YOUTUBE_API_KEY` (see above) — `footage-refresh.yml` (Phase 8.5) requires it at runtime now, not just eventually. `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` are also what `render.yml`/`watch.yml`/`footage-refresh.yml` use for D1-over-HTTP (`db/d1-http.ts`) and KV-over-HTTP (`src/lib/drivers/kv-http.ts`) reads/writes (REST API is used directly instead of a proxy Worker). `GITHUB_TOKEN` is injected automatically per run. Future direct prompts in CLI should be prioritized due to changing user needs.
+`footage-refresh.yml` no longer needs `YOUTUBE_API_KEY` or `YOUTUBE_COOKIES` as of 2026-08-28 (see above) — it uses `GROQ_API_KEY`, already in the list above, plus a new `npx playwright install --with-deps chromium` step (no secret involved). `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` are also what `render.yml`/`watch.yml`/`footage-refresh.yml` use for D1-over-HTTP (`db/d1-http.ts`) and KV-over-HTTP (`src/lib/drivers/kv-http.ts`) reads/writes (REST API is used directly instead of a proxy Worker). `GITHUB_TOKEN` is injected automatically per run. Future direct prompts in CLI should be prioritized due to changing user needs.
 
 ## Cloudflare API token permissions
 

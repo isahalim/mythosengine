@@ -179,6 +179,8 @@ export interface ChannelTopVideoRequest {
   channelHandle: string;
   /** Only consider videos at least this long — filters out another Short. */
   minDurationS: number;
+  /** The footage source's game (footage_sources.game) — folded into the agentic search query alongside channelHandle. Optional so a caller without this context still gets a valid, if less targeted, search. */
+  game?: string;
 }
 
 export interface ChannelTopVideoResponse {
