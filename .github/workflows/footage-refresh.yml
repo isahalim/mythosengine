@@ -48,12 +48,20 @@ jobs:
 
       # Pinned + checksum-verified (ARCHITECTURE.md §3: yt-dlp is a
       # non-npm binary dependency, same supply-chain discipline as a pinned
-      # npm package applies). Checksum confirmed against yt-dlp's own
-      # published SHA2-256SUMS for this release, not guessed.
-      - name: Install yt-dlp (pinned 2026.08.19, checksum-verified)
+      # npm package applies) -- from yt-dlp-nightly-builds, not the stable
+      # yt-dlp/yt-dlp releases used before. Deliberate, not a slip: stable
+      # 2026.08.19 hits "The page needs to be reloaded" on every candidate
+      # once cookies are added (confirmed live, 2026-08-29); the open
+      # upstream issue (yt-dlp/yt-dlp#17389) is maintainer-acknowledged as
+      # needing extractor changes only shipping in nightly/master so far,
+      # not yet in a stable release. Revisit pinning back to stable once
+      # that issue's fix reaches one. Checksum confirmed against yt-dlp's
+      # own published SHA2-256SUMS for this exact nightly build, not
+      # guessed.
+      - name: Install yt-dlp (pinned nightly 2026.08.27.231323, checksum-verified)
         run: |
-          curl -sSL -o yt-dlp https://github.com/yt-dlp/yt-dlp/releases/download/2026.08.19/yt-dlp
-          echo "1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6  yt-dlp" | sha256sum -c -
+          curl -sSL -o yt-dlp https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/download/2026.08.27.231323/yt-dlp
+          echo "4543ba905474a62edbf27af57a79068daae8f70812adec2d69a6052e4efb72f9  yt-dlp" | sha256sum -c -
           chmod +x yt-dlp
           sudo mv yt-dlp /usr/local/bin/yt-dlp
 
