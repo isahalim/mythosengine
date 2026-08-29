@@ -4,6 +4,21 @@ Never edit or delete an entry. Append a new one if a decision changes.
 
 ---
 
+## 2026-08-29 (later still, again) — footage-refresh now runs end-to-end, but YouTube blocks the download step from GitHub's IPs — a real stop-and-ask, not a code bug
+
+**After seeding `footage_sources`, the live run got further but still failed** — this time inside `refreshFootageSource` itself, not before it: YouTube search discovery worked (each channel's current top video was found in ~2s), but `yt-dlp`'s metadata fetch for every single video failed with YouTube's own bot-detection challenge: `Sign in to confirm you're not a bot` for `mkiceandfire-gta`/`gtaseriesvideos-gta`, `Sign in to confirm your age` for `hollowpoiint-gta`'s current top video. (Only visible at all because of this session's earlier fix to actually log `result.error` instead of just "failed" — confirms that fix's value immediately.)
+
+**Tried one legitimate, credential-free mitigation before escalating:** yt-dlp's own documented fix for the "not a bot" challenge is requesting the `tv`/`web_safari` player client instead of the default (`--extractor-args youtube:player_client=tv,web_safari`) — no cookies, no account, nothing that touches this project's no-YouTube-credential rule. Added to both yt-dlp calls in `download-ytdlp.ts`, re-triggered live. **Did not fix it** — identical errors, same two failure modes, confirming this specific yt-dlp version/runner combination needs more than a client-string change.
+
+**Stopping here rather than iterating further, deliberately:** the search evidence assembled before trying the client-switch fix was explicit that datacenter IPs (GitHub Actions runners included) get YouTube's strictest bot-detection treatment, and that no yt-dlp flag reliably defeats it — only real authentication (cookies from a signed-in account) or a non-datacenter egress IP does. Both of those are real decisions with real tradeoffs this session shouldn't make unilaterally:
+- **Cookies from a real YouTube account** is the most likely fix to actually work, but means handing the automated weekly job a real Google account's session (stored as a refreshed secret) — a materially different trust posture than the current public, read-only `YOUTUBE_API_KEY`, and real risk to whatever account it's tied to (automated bulk access is exactly what these accounts get flagged for).
+- **A residential/non-datacenter proxy** avoids the credential risk but is a new paid provider requiring its own `docs/DECISIONS.md` ADR per `CLAUDE.md`.
+- **A self-hosted runner** on a non-datacenter connection avoids both, but is real new infrastructure to stand up and keep alive, a philosophy shift from "GitHub Actions does all compute."
+
+`CLAUDE.md`'s own instructions call footage sourcing and YouTube policy compliance out by name as the two things to stop and ask about rather than guess — this is exactly that. Recorded here, not resolved: the operator needs to pick one of the above (or accept the current state) before FOOTAGE REFRESH can produce anything real. WATCH (RSS/Reddit) is unaffected — it doesn't touch YouTube or yt-dlp at all — and the `sources` table gap noted in the entry above is still separately open too.
+
+---
+
 ## 2026-08-29 (later still) — Two more footage_sources seeded (operator-named channels), direct D1 insert
 
 **Operator named three channels to seed `footage_sources` with: MKIceAndFire, GTA Series Videos, "Hollow."** "Hollow" resolved to the existing `hollowpoiint-gta` row already documented in `data/footage_sources.yml` (seeded there 2026-08-28 but, per the immediately preceding entry, never actually inserted into the real database — the YAML file has no loader, unlike `data/sources.yml`'s `seedSourcesFromYaml`). The other two were verified live before inserting anything, not assumed: `@MKIceAndFire` (4.67M subscribers, confirmed real GTA V "no-commentary full-game 4K" walkthrough content among its broader new-release-walkthrough catalog) and `@gtaseriesvideos` (4.1M subscribers, a Rockstar/GTA-dedicated fan channel — story-mode walkthroughs and official trailers, run by two named individuals per its own about page). Both tagged `game: gta-v`, matching the existing `hollowpoiint-gta` row and the operator's own GTA-themed grouping.
