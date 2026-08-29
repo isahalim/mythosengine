@@ -4,6 +4,20 @@ Never edit or delete an entry. Append a new one if a decision changes.
 
 ---
 
+## 2026-08-29 (yet later still) — Stopping here: footage-refresh is blocked on an open, unresolved yt-dlp bug, not anything in this codebase
+
+**Tried, in order, each a citable fix for a specific confirmed cause, not a guess:** the maintainer-documented `default,web_embedded` player-client override (still hit "The page needs to be reloaded" on every candidate of every source); re-pinning `yt-dlp` from stable 2026.08.19 to the latest checksummed nightly build (2026.08.27.231323) on the theory that the fix had shipped there but not to stable yet — same result, identical error, on the exact same three video IDs.
+
+**Read the actual upstream issue thread (`yt-dlp/yt-dlp#17389`) directly rather than continuing to guess from search summaries:** still open as of this session. A yt-dlp maintainer (`bashonly`) states plainly that the client-arg workaround was only ever "to buy us some time... the actual solution... demands some major changes to the Youtube extractor and EJS" — not shipped anywhere yet, nightly included. Another comment in the same thread, dated within days of this session: "this error has spread to regular tv client too." This is a real, currently-unresolved bug in yt-dlp's YouTube cookie-auth path itself, acknowledged by its own maintainers as needing work that hasn't landed — not a configuration problem in this repo, and not something further flag-guessing will fix.
+
+**Stopping here rather than continuing to iterate blindly:** every remaining avenue (more player-client combinations, PO token providers, alternative extractors) would be guessing without the kind of citable, confirmed basis every fix in this session so far has had, and would keep spending the operator's real GitHub Actions minutes and YouTube API quota on attempts with no principled reason to expect success. What's actually proven working, confirmed live, not assumed: cookie authentication itself (the bot-check and Netscape-format errors are both genuinely gone), the ranked-candidate fallback (tries multiple videos per channel, confirmed by the longer per-source run times), ffmpeg/yt-dlp installation, and the full WATCH → orchestration path up to the exact point yt-dlp's own extractor fails. The entire pipeline this session built and fixed is sound; this one external dependency is not, right now.
+
+**What's next, for the operator to decide, not guessed here:** wait for yt-dlp to ship the real fix (this is an actively-worked, acknowledged bug, not an abandoned one — re-running `footage-refresh.yml` periodically, or just letting its Sunday cron try, costs nothing and will start working the moment it lands upstream), or accept that FOOTAGE REFRESH stays blocked until then. Nothing about WATCH, SCRIPT, CRITIC, TTS, or RENDER depends on this — only the footage library's ability to grow, and it already holds zero segments, so nothing regresses by waiting.
+
+**Verification:** no code changed in this entry (research and diagnosis only, on top of the previous entry's already-verified changes). Confirmed via three separate live `footage-refresh.yml` runs, not assumed: identical failure on stable+workaround-args, and again on nightly+workaround-args.
+
+---
+
 ## 2026-08-29 (yet later) — Cookie auth confirmed working live; candidate fallback added for the next failure mode it exposed
 
 **The Netscape-format cookies fix worked.** Re-triggered after the operator corrected the secret's format (a browser cookie-export extension had produced JSON, not the Netscape `cookies.txt` format yt-dlp requires): the `Cookies file must be Netscape formatted` and `Sign in to confirm you're not a bot` errors are both gone. This is the actual proof the cookie-auth mechanism itself works, not an assumption.
