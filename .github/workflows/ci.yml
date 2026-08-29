@@ -44,6 +44,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Not preinstalled on ubuntu-latest (same finding as footage-refresh.yml).
+      # Without it, every ffmpeg-gated test (clip/motion-score/render-ffmpeg/
+      # refresh/download-agentic-ytmp3 -- all use the hasFfmpeg()+skipIf
+      # pattern) silently skips here, which is how src/lib/drivers/**'s branch
+      # coverage dropped below the 80% threshold once download-agentic-ytmp3.ts
+      # added enough ffmpeg-gated branches to matter (confirmed live, 2026-08-29).
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version && ffprobe -version
+
       # pnpm verify's test step exercises src/lib/drivers/browser-agent-core.ts
       # and its two driver adapters against a real headless Chromium (no mock
       # browser) -- needs the actual binary present, same as footage-refresh.yml.
