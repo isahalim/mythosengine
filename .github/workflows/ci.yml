@@ -44,6 +44,12 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # pnpm verify's test step exercises src/lib/drivers/browser-agent-core.ts
+      # and its two driver adapters against a real headless Chromium (no mock
+      # browser) -- needs the actual binary present, same as footage-refresh.yml.
+      - name: Install Playwright's Chromium
+        run: npx playwright install --with-deps chromium
+
       - name: pnpm verify
         run: pnpm verify
 
