@@ -22,13 +22,25 @@ import QuotaMeter from "../../console/components/QuotaMeter.astro";
     <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:auto-rows-[minmax(160px,auto)]">
       <BentoCard title="Pipeline pulse" size="wide">
         <Fragment slot="badge">
-          <span id="pulse-live-stage" data-field class="font-mono text-xs text-sodium"></span>
+          <span id="pulse-live-badge" data-field class="hidden items-center gap-1.5 rounded-full bg-sodium/15 px-2 py-0.5 font-mono text-xs text-sodium">
+            <span class="h-1.5 w-1.5 animate-pulse rounded-full bg-sodium"></span>
+            live
+          </span>
         </Fragment>
         <div class="grid grid-cols-4 gap-3 font-mono text-xs">
           <div><p id="pulse-signals" data-field class="text-2xl text-bone">–</p><p class="text-mercury/50">signals</p></div>
           <div><p id="pulse-scripted" data-field class="text-2xl text-bone">–</p><p class="text-mercury/50">scripted</p></div>
           <div><p id="pulse-rendered" data-field class="text-2xl text-bone">–</p><p class="text-mercury/50">rendered</p></div>
           <div><p id="pulse-exported" data-field class="text-2xl text-bone">–</p><p class="text-mercury/50">exported</p></div>
+        </div>
+        <div class="mt-3">
+          <div class="mb-1 flex items-center justify-between gap-2 font-mono text-[0.65rem] text-mercury/50">
+            <span id="pulse-stage-label" data-field>Idle</span>
+            <span id="pulse-stage-pct" data-field></span>
+          </div>
+          <div class="h-1.5 w-full overflow-hidden rounded-full bg-mercury/10">
+            <div id="pulse-stage-bar" data-field class="h-full w-0 rounded-full bg-sodium transition-all duration-500"></div>
+          </div>
         </div>
         <div class="mt-3 flex items-center justify-between gap-3">
           <p class="font-mono text-xs text-mercury/50">

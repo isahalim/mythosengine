@@ -4,10 +4,13 @@
 // DOM/interval code, no React state.
 //
 // Expand/collapse behavior (docs/DECISIONS.md, operator's explicit spec):
-// landing on /console shows the ring full-viewport; clicking a section node
-// shrinks it back to the header position, then navigates; clicking the
-// center (the Liquid Metal shader) expands it again in place; clicking
-// empty backdrop space collapses without navigating.
+// the very first dashboard view right after signing in shows the ring
+// full-viewport (login.ts sets FIRST_LANDING_KEY before its redirect, this
+// file consumes it below — see RadialNav.astro's header comment for why
+// that replaced server-rendering it expanded on every /console visit);
+// clicking a section node navigates immediately; clicking the center (the
+// Liquid Metal shader) expands it again in place; clicking empty backdrop
+// space collapses without navigating.
 import { mountLiquidMetal } from "../../shaders/liquid-metal.ts";
 
 const ROTATE_STEP_DEG = 0.15;
@@ -17,7 +20,9 @@ const ROTATE_INTERVAL_MS = 50;
 // can't be read mid-transition without racing the animation, so these are
 // kept as plain constants instead of measured from the DOM.
 const COLLAPSED_RADIUS_PX = 42;
-const COLLAPSE_TRANSITION_MS = 350;
+// login.ts sets this right before redirecting a freshly-authenticated
+// operator to the dashboard; consumed once below, never set anywhere else.
+const FIRST_LANDING_KEY = "mythos-console-just-signed-in";
 
 function expandedRadiusPx(): number {
   return Math.min(window.innerWidth * 0.6, window.innerHeight * 0.6, 640) / 2;
@@ -42,6 +47,7 @@ export function initRadialNav(): void {
   const nav: HTMLElement = navEl;
   const backdrop = document.getElementById("radial-nav-backdrop");
   const centerButton = document.getElementById("radial-nav-center");
+  const header = nav.closest("header");
   const nodes = Array.from(nav.querySelectorAll<HTMLAnchorElement>("[data-radial-node]"));
   if (nodes.length === 0) return;
 
@@ -68,11 +74,30 @@ export function initRadialNav(): void {
     backdrop?.classList.toggle("opacity-100", next);
     backdrop?.classList.toggle("opacity-0", !next);
     backdrop?.classList.toggle("pointer-events-none", !next);
+    // WebKit treats an element with backdrop-filter as establishing a
+    // containing block for fixed-position descendants (the CSS Filter
+    // Effects spec only requires this for `filter`) -- the expanded nav's
+    // `position: fixed; inset: 0` would then resolve against the header's
+    // own small box instead of the viewport, mis-centering the ring. The
+    // header is fully hidden behind the opaque backdrop whenever the nav
+    // is expanded anyway, so dropping its blur for that moment is
+    // invisible and side-effect-free.
+    header?.classList.toggle("radial-nav-host-expanded", next);
     render();
   }
 
   render();
   window.addEventListener("resize", render);
+
+  // Full-viewport by default only on the very first dashboard view right
+  // after signing in (docs/DECISIONS.md) -- login.ts sets this key right
+  // before its redirect; consumed once so a later visit to /console (e.g.
+  // clicking the Dashboard node from another section) shows the actual
+  // bento dashboard instead of re-triggering the takeover.
+  if (nav.dataset.active === "dashboard" && window.sessionStorage.getItem(FIRST_LANDING_KEY) === "1") {
+    window.sessionStorage.removeItem(FIRST_LANDING_KEY);
+    setExpanded(true);
+  }
 
   nav.addEventListener("mouseenter", () => {
     paused = true;
@@ -96,23 +121,31 @@ export function initRadialNav(): void {
   // should do anything, so it doesn't).
   centerButton?.addEventListener("click", () => setExpanded(true));
 
-  // Backdrop click (empty space, expanded only): collapse without
-  // navigating — the expected escape hatch for a full-viewport menu.
-  backdrop?.addEventListener("click", () => setExpanded(false));
+  // Empty-space click (expanded only): collapse without navigating — the
+  // expected escape hatch for a full-viewport menu. Listening on the
+  // backdrop div doesn't work: `nav` is also `position: fixed; inset: 0`
+  // when expanded, so it fully overlaps the backdrop at a higher z-index
+  // and is what actually receives the click (confirmed empirically — the
+  // backdrop's own listener never fired). Listening on `nav` instead and
+  // checking the click's real target excludes clicks that land on a node
+  // or the center button (their own listeners see those, not this one).
+  nav.addEventListener("click", (event) => {
+    if (expanded && event.target === nav) setExpanded(false);
+  });
 
-  // Node click while expanded: animate the collapse, then navigate — "the
-  // nav bar shrinks and goes to the top" the operator described, not an
-  // instant jump cut. While already collapsed, this is a real <a href>
+  // Node click while expanded: navigate right away. An earlier version
+  // played the collapse animation first and only navigated after it
+  // finished — since this is a real page load (no client router; the
+  // destination page just starts already collapsed), that delay bought
+  // nothing but a few hundred ms of the operator watching the dashboard
+  // reappear before the page they actually clicked loaded, which read as
+  // lag, not polish. While already collapsed, this is a real <a href>
   // doing a real navigation — no JS needed for that path.
   for (const node of nodes) {
     node.addEventListener("click", (event) => {
       if (!expanded) return;
       event.preventDefault();
-      const href = node.getAttribute("href");
-      setExpanded(false);
-      window.setTimeout(() => {
-        if (href) window.location.href = href;
-      }, COLLAPSE_TRANSITION_MS);
+      window.location.href = node.getAttribute("href") ?? "/console";
     });
   }
 

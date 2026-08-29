@@ -67,7 +67,15 @@ async function login(): Promise<void> {
   await postJson("/auth/passkey/authenticate/finish", { challengeId: begin.challengeId, response });
 
   setStatus("Signed in — redirecting…", false);
-  window.location.href = postLoginDestination();
+  const destination = postLoginDestination();
+  // Tells radial-nav.ts to show the full-viewport ring once, right after
+  // this sign-in, on the dashboard it's about to land on — consumed and
+  // removed there. See RadialNav.astro's header comment for why this
+  // replaced always server-rendering the dashboard expanded.
+  if (destination === "/console" || destination === "/console/") {
+    window.sessionStorage.setItem("mythos-console-just-signed-in", "1");
+  }
+  window.location.href = destination;
 }
 
 export function initLogin(): void {

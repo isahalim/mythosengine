@@ -20,8 +20,8 @@ const links: { href: string; label: string; key: Props["active"] }[] = [
 ];
 ---
 
-<header class="glass-card sticky top-4 z-30 mx-auto mb-6 mt-4 flex max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-5">
-  <div class="flex min-w-0 items-center gap-4">
+<header class="glass-card sticky top-4 z-30 mx-auto mb-6 mt-4 grid max-w-6xl grid-cols-[1fr_auto_1fr] items-center gap-3 px-4 py-3 sm:px-5">
+  <div class="flex min-w-0 items-center justify-self-start gap-4">
     <span class="shrink-0 font-display text-sm font-semibold tracking-tight text-bone">Mythos Engine</span>
     <nav class="flex items-center gap-1 overflow-x-auto font-body text-sm md:hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {
@@ -41,7 +41,7 @@ const links: { href: string; label: string; key: Props["active"] }[] = [
     </nav>
   </div>
   <RadialNav active={active} />
-  <div class="flex shrink-0 items-center gap-2">
+  <div class="flex shrink-0 items-center justify-self-end gap-2">
     <div id="killswitch-banner" data-killswitch-banner class="hidden items-center gap-1.5 rounded-full bg-rose/10 px-3 py-1 font-body text-xs text-rose">
       Pipeline halted
     </div>

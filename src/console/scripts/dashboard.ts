@@ -30,13 +30,66 @@ function showApiError(show: boolean): void {
   document.querySelector<HTMLElement>("[data-console-api-error]")?.classList.toggle("hidden", !show);
 }
 
+// The per-video render pipeline's stage order (scripts/pipeline/render.ts's
+// own sequence of db/runs.ts startRun() calls) — used to turn a live run's
+// bare stage name into "step N of len" and a fill percentage. WATCH/SCORE
+// (hourly signal ingestion) and FOOTAGE_REFRESH (weekly library upkeep) are
+// real stages a run can report but aren't part of this per-video funnel, so
+// they're labeled but shown as in-progress rather than plotted on it.
+const RENDER_STAGE_ORDER: string[] = ["script", "critic", "footage_select", "tts", "render", "export"];
+
+const STAGE_LABELS: Record<string, string> = {
+  watch: "Scanning sources for signals",
+  score: "Scoring signals",
+  footage_refresh: "Refreshing footage library",
+  script: "Writing script",
+  critic: "Critiquing script",
+  footage_select: "Selecting footage",
+  tts: "Generating narration",
+  render: "Rendering video",
+  export: "Packaging export",
+};
+
 function renderPulse(pulse: PipelinePulse): void {
   setText("pulse-signals", String(pulse.signalsObserved));
   setText("pulse-scripted", String(pulse.scripted));
   setText("pulse-rendered", String(pulse.rendered));
   setText("pulse-exported", String(pulse.exported));
-  setText("pulse-live-stage", pulse.liveRun ? `live: ${pulse.liveRun.stage}` : "");
+  document.getElementById("pulse-live-badge")?.classList.toggle("hidden", !pulse.liveRun);
+  document.getElementById("pulse-live-badge")?.classList.toggle("flex", Boolean(pulse.liveRun));
   setText("pulse-next-cron", pulse.nextCronAt ? formatRelativeTime(pulse.nextCronAt) : "unscheduled");
+
+  const bar = document.getElementById("pulse-stage-bar");
+  if (pulse.liveRun) {
+    const stepIndex = RENDER_STAGE_ORDER.indexOf(pulse.liveRun.stage);
+    const label = STAGE_LABELS[pulse.liveRun.stage] ?? pulse.liveRun.stage;
+    if (stepIndex >= 0) {
+      const pct = Math.round(((stepIndex + 1) / RENDER_STAGE_ORDER.length) * 100);
+      setText("pulse-stage-label", `Step ${stepIndex + 1}/${RENDER_STAGE_ORDER.length} · ${label}`);
+      setText("pulse-stage-pct", `${pct}%`);
+      if (bar) {
+        bar.style.width = `${pct}%`;
+        bar.classList.remove("animate-pulse");
+      }
+    } else {
+      // A real stage (watch/score/footage_refresh), just not one of the
+      // six render steps above — shown as fully filled and pulsing rather
+      // than a fabricated percentage against a funnel it isn't part of.
+      setText("pulse-stage-label", label);
+      setText("pulse-stage-pct", "");
+      if (bar) {
+        bar.style.width = "100%";
+        bar.classList.add("animate-pulse");
+      }
+    }
+  } else {
+    setText("pulse-stage-label", "Idle");
+    setText("pulse-stage-pct", "");
+    if (bar) {
+      bar.style.width = "0%";
+      bar.classList.remove("animate-pulse");
+    }
+  }
 }
 
 function renderExportPreview(listId: string, items: ExportListItem[], emptyLabel: string): void {
@@ -179,6 +232,15 @@ function showUnavailableState(): void {
   setText("pulse-rendered", "–");
   setText("pulse-exported", "–");
   setText("pulse-next-cron", "–");
+  setText("pulse-stage-label", "Unavailable");
+  setText("pulse-stage-pct", "");
+  document.getElementById("pulse-live-badge")?.classList.add("hidden");
+  document.getElementById("pulse-live-badge")?.classList.remove("flex");
+  const bar = document.getElementById("pulse-stage-bar");
+  if (bar) {
+    bar.style.width = "0%";
+    bar.classList.remove("animate-pulse");
+  }
 }
 
 async function refresh(): Promise<void> {

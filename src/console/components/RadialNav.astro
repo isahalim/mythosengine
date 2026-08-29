@@ -9,10 +9,16 @@
 // hand-ported to vanilla Astro + src/console/scripts/radial-nav.ts.
 //
 // Two states, per the operator's explicit spec (docs/DECISIONS.md):
-// - Expanded: full-viewport, shown by default on first landing at /console
-//   (the dashboard — "when first logged in"). Clicking a section node
-//   shrinks the ring back to the compact header position, then navigates.
-//   Clicking empty space collapses without navigating.
+// - Expanded: full-viewport. Shown by default only on the very first
+//   dashboard view right after signing in — login.ts sets a one-shot
+//   sessionStorage flag before its redirect, radial-nav.ts consumes it on
+//   init. Always server-rendering this expanded on every /console visit
+//   (the original implementation) meant clicking the Dashboard nav node
+//   from anywhere else re-triggered the full-viewport takeover instead of
+//   showing the actual bento dashboard underneath it — fixed by moving the
+//   decision to that one-shot flag instead of `active === "dashboard"`.
+//   Clicking a section node navigates immediately (a real page load — see
+//   radial-nav.ts). Clicking empty space collapses without navigating.
 // - Collapsed: the compact 92px header widget from the original build.
 //   Clicking the center (the Liquid Metal shader, src/shaders/liquid-metal.ts)
 //   expands back to full-viewport, in place, no navigation.
@@ -24,7 +30,6 @@ interface Props {
 }
 
 const { active } = Astro.props;
-const startExpanded = active === "dashboard";
 
 const nodes: { href: string; label: string; key: Props["active"] }[] = [
   { href: "/console", label: "Dashboard", key: "dashboard" },
@@ -47,17 +52,17 @@ const ICON_PATHS: Record<Props["active"], string> = {
 
 <div
   id="radial-nav-backdrop"
-  class:list={["fixed inset-0 z-40 hidden bg-ink transition-opacity duration-300 md:block", startExpanded ? "opacity-100" : "pointer-events-none opacity-0"]}
+  class="pointer-events-none fixed inset-0 z-40 hidden bg-ink opacity-0 transition-opacity duration-300 md:block"
   aria-hidden="true"
 >
 </div>
 
 <nav
   id="radial-nav"
-  class:list={["z-50 hidden shrink-0 items-center justify-center md:flex", startExpanded ? "radial-nav--expanded" : "radial-nav--collapsed"]}
+  class="radial-nav--collapsed z-50 hidden shrink-0 items-center justify-center md:flex"
   aria-label="Console sections"
   data-active={active}
-  data-expanded={startExpanded ? "true" : "false"}
+  data-expanded="false"
 >
   <div class="radial-nav-ring pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-mercury/15"></div>
   <button
