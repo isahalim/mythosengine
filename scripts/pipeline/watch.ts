@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { finishRun, startRun } from "../../db/runs.ts";
+import { finishRun, reapStaleRuns, startRun } from "../../db/runs.ts";
 import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
 import { watchAllEnabledSources } from "../../src/lib/ingest/watch.ts";
 import { scoreObservedSignals } from "../../src/lib/ingest/score.ts";
@@ -35,6 +35,13 @@ async function main(): Promise<void> {
   // nothing to add is a single read.
   const seeded = await seedSourcesFromYaml(env.db, env.rawClient, await readFile(SOURCES_YAML_PATH, "utf8"));
   if (seeded.inserted > 0) console.warn(`SEED: ${seeded.inserted} new source(s) added from data/sources.yml.`);
+
+  // A previous run killed by the Actions job timeout leaves its row
+  // `running` forever, which the console then reports as a live stage.
+  // Swept here rather than in the console: this is a write, and the
+  // pipeline owns the runs table.
+  const reaped = await reapStaleRuns(env.db);
+  if (reaped > 0) console.warn(`Reaped ${reaped} abandoned run row(s) left behind by a killed job.`);
 
   const traceId = crypto.randomUUID();
 

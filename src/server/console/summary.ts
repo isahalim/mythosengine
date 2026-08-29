@@ -1,6 +1,7 @@
 import { desc, gte } from "drizzle-orm";
 import type { AppDb } from "../../../db/client.ts";
 import { footageSegments, footageSources, renders, runs, signals } from "../../../db/schema.ts";
+import { STALE_RUN_THRESHOLD_MS } from "../../../db/runs.ts";
 import { isPipelineEnabled } from "./killswitch.ts";
 import { getSettings } from "./settings.ts";
 import { DEFAULT_DIRECTIVE } from "./directive-schema.ts";
@@ -166,8 +167,18 @@ export async function getConsoleSummary(db: AppDb, killswitchKv: KvLike, vaultKv
   const recentRenders = await db.select().from(renders).where(gte(renders.createdAt, since)).all();
   const rendered = recentRenders.filter((r) => r.status === "rendered").length;
 
+  // A `running` row only counts as live if it started recently enough to
+  // plausibly still be running. GitHub Actions kills a job that exceeds its
+  // timeout without giving it any chance to close its row, so an abandoned
+  // run stays `running` forever — and reporting that as the live stage is
+  // how the console came to show "Refreshing footage library" with a filled
+  // progress bar for hours after the job was dead (2026-08-29). The
+  // pipeline sweeps these rows on its next run (db/runs.ts's reapStaleRuns);
+  // this guard means the dashboard stops lying immediately rather than
+  // waiting for that to happen.
   const liveRunRow = await db.select().from(runs).where(gte(runs.startedAt, since)).orderBy(desc(runs.startedAt)).limit(1).get();
-  const liveRun = liveRunRow && liveRunRow.status === "running" ? { stage: liveRunRow.stage, startedAt: liveRunRow.startedAt } : null;
+  const liveRunIsFresh = liveRunRow !== undefined && now() - Date.parse(liveRunRow.startedAt) < STALE_RUN_THRESHOLD_MS;
+  const liveRun = liveRunRow && liveRunRow.status === "running" && liveRunIsFresh ? { stage: liveRunRow.stage, startedAt: liveRunRow.startedAt } : null;
 
   const [readyForReview, reviewed, auditFlags, ttsStatus, keys, mcpTokens, settings] = await Promise.all([
     listExports(db, "ready_for_review"),

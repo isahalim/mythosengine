@@ -3,6 +3,7 @@ import { createTestDb } from "../../../db/client.ts";
 import { applyMigrations } from "../../../db/apply-migrations.ts";
 import { footageSegments, footageSources, signals, sources } from "../../../db/schema.ts";
 import { getConsoleSummary } from "./summary.ts";
+import { STALE_RUN_THRESHOLD_MS, startRun } from "../../../db/runs.ts";
 
 class FakeKv {
   private readonly store = new Map<string, string>();
@@ -72,5 +73,20 @@ describe("getConsoleSummary", () => {
 
     const summary = await getConsoleSummary(ctx.db, kv, kv, MASTER_KEY_B64);
     expect(summary.footageHealth).toEqual([{ game: "minecraft", segmentCount: 2, avgUsedCount: 6, lowInventory: true }]);
+  });
+
+  // Regression: an Actions job killed by its timeout leaves its row
+  // `running` forever. Reporting that as the live stage is a fabricated
+  // status arriving through stale data, which is exactly what the console
+  // displayed for hours on 2026-08-29.
+  it("does not report a long-abandoned running row as the live stage", async () => {
+    const T0 = Date.parse("2026-08-29T00:00:00Z");
+    await startRun(ctx.db, "footage_refresh", "trace-abandoned", () => T0);
+
+    const stillFresh = await getConsoleSummary(ctx.db, kv, kv, MASTER_KEY_B64, () => T0 + 60_000);
+    expect(stillFresh.pipelinePulse.liveRun?.stage).toBe("footage_refresh");
+
+    const longDead = await getConsoleSummary(ctx.db, kv, kv, MASTER_KEY_B64, () => T0 + STALE_RUN_THRESHOLD_MS + 1);
+    expect(longDead.pipelinePulse.liveRun).toBeNull();
   });
 });

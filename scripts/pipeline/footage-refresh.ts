@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { finishRun, startRun } from "../../db/runs.ts";
+import { finishRun, reapStaleRuns, startRun } from "../../db/runs.ts";
 import { footageSources } from "../../db/schema.ts";
 import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
 import { refreshFootageSource } from "../../src/lib/footage/refresh.ts";
@@ -36,6 +36,13 @@ async function main(): Promise<void> {
   // (render.ts) — this job runs weekly and alone, never concurrently with a
   // render, so there's no cross-job budget to share.
   const llm = createGroqDriverFromEnv(env.groqApiKey, createGroqLimiter());
+
+  // A previous run killed by the Actions job timeout leaves its row
+  // `running` forever, which the console then reports as a live stage.
+  // Swept here rather than in the console: this is a write, and the
+  // pipeline owns the runs table.
+  const reaped = await reapStaleRuns(env.db);
+  if (reaped > 0) console.warn(`Reaped ${reaped} abandoned run row(s) left behind by a killed job.`);
 
   const traceId = crypto.randomUUID();
   // Split on purpose: search is deterministic, download is agentic.
