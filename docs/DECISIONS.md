@@ -4,6 +4,18 @@ Never edit or delete an entry. Append a new one if a decision changes.
 
 ---
 
+## 2026-08-29 (later) — First live pipeline run: a real ffmpeg bug fixed, and the actual remaining blocker found (empty `footage_sources`, not a code defect)
+
+**Operator added `YOUTUBE_API_KEY` as a GitHub Actions secret and asked for it to be triggered.** `gh workflow run footage-refresh.yml` — the first genuinely live run of any pipeline workflow, not a dry run. It failed at `Verify ffmpeg is available`: `ffmpeg: command not found`, exit 127. The prior session's comment claiming ffmpeg/ffprobe ship preinstalled on `ubuntu-latest` doesn't hold for the runner image actually in use now — found by the live failure, not assumed. Fixed in both `footage-refresh.yml` and `render.yml` (the only two workflows that call ffmpeg; `watch.yml` doesn't) by installing it explicitly (`apt-get install ffmpeg`) instead of assuming it's present.
+
+**Re-triggered after the fix.** ffmpeg installed clean, and `Run FOOTAGE REFRESH` itself now succeeds — but in ~1.9 seconds with zero output, then `Push new clips to assets-library` failed: `error: src refspec assets-library does not match any`. Read `scripts/pipeline/footage-refresh.ts` directly rather than guessing: it does `const sources = await env.db.select().from(footageSources).all()` and loops over them — an empty result set means the loop body (the only place a source is ever fetched, scored, or committed to the library) never runs at all, so no orphan branch is ever created for the push step to find. Confirmed independently, not assumed: `grep`'d the entire codebase for anything that inserts into `footage_sources` (`db/schema.ts`: `id`, `channel_url`, `game`, `license_note`) — nothing does. No seed script, no migration seed data, no console UI for adding one exists yet.
+
+**This is not a code bug and wasn't fixed in this session.** `footage_sources` needs real, operator-chosen rows — which specific YouTube channels of long-form gameplay walkthroughs to build the footage library from, which game each belongs to, and a license note per `CLAUDE.md`'s provenance requirements — and `CLAUDE.md`'s own instructions are explicit that footage sourcing is one of the three things this project must stop and ask about rather than guess. Left for the operator to decide and either provide directly (channel URLs + games) or have added on their behalf once decided.
+
+**Verification:** the ffmpeg fix is workflow YAML only, no `src`/`scripts` TypeScript changed, so `pnpm verify` wasn't re-run for it specifically (already green on the immediately prior commit); verified by the live GitHub Actions run itself instead, the correct check for a workflow-file change. `footage-refresh.yml` now runs to completion (exit 0) with real YouTube/ffmpeg/D1/KV credentials — the actual proof this needed, not a mocked test.
+
+---
+
 ## 2026-08-29 — Radial nav bug fixes (off-center, dashboard takeover, navigation lag); dashboard stage-progress bar; pipeline non-run diagnosed as an operator action, not a code bug
 
 **Operator report:** the radial nav was off-center in both states; clicking the Dashboard node from anywhere else never showed the actual dashboard, just re-triggered the full-viewport ring; navigating away from the expanded ring felt laggy; the dashboard gave no sense of pipeline progress; and, most importantly, the pipeline still isn't producing videos despite the previous session's runner work.
