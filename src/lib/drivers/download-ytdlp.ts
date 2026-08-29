@@ -8,6 +8,15 @@ import { err, ok, type Result } from "../result.ts";
 
 const execFileAsync = promisify(execFile);
 
+// YouTube's bot-detection challenge ("Sign in to confirm you're not a bot")
+// hits yt-dlp's default player client hard from datacenter IPs like GitHub
+// Actions runners (confirmed live, 2026-08-29 — every FOOTAGE REFRESH
+// source failed on this before the flag was added). Requesting the tv/
+// web_safari player clients instead is yt-dlp's own documented, cookie-free
+// mitigation — no credential, no account, nothing that touches this
+// project's "never give this system a YouTube credential" rule.
+const YOUTUBE_PLAYER_CLIENT_ARGS = "youtube:player_client=tv,web_safari";
+
 interface YtDlpMetadata {
   id?: string;
   duration?: number;
@@ -58,6 +67,8 @@ export class YtDlpDownloadDriver implements DownloadDriver {
         [
           "--no-playlist",
           "--no-warnings",
+          "--extractor-args",
+          YOUTUBE_PLAYER_CLIENT_ARGS,
           "-f",
           "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
           "--merge-output-format",
@@ -92,7 +103,7 @@ export class YtDlpDownloadDriver implements DownloadDriver {
     try {
       const result = await execFileAsync(
         this.ytDlpBin,
-        ["--dump-json", "--no-warnings", "--skip-download", "--no-playlist", url],
+        ["--dump-json", "--no-warnings", "--skip-download", "--no-playlist", "--extractor-args", YOUTUBE_PLAYER_CLIENT_ARGS, url],
         { signal: AbortSignal.timeout(this.timeoutMs) },
       );
       stdout = result.stdout;
