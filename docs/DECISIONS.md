@@ -4,6 +4,19 @@ Never edit or delete an entry. Append a new one if a decision changes.
 
 ---
 
+## 2026-08-29 (later still) — Two more footage_sources seeded (operator-named channels), direct D1 insert
+
+**Operator named three channels to seed `footage_sources` with: MKIceAndFire, GTA Series Videos, "Hollow."** "Hollow" resolved to the existing `hollowpoiint-gta` row already documented in `data/footage_sources.yml` (seeded there 2026-08-28 but, per the immediately preceding entry, never actually inserted into the real database — the YAML file has no loader, unlike `data/sources.yml`'s `seedSourcesFromYaml`). The other two were verified live before inserting anything, not assumed: `@MKIceAndFire` (4.67M subscribers, confirmed real GTA V "no-commentary full-game 4K" walkthrough content among its broader new-release-walkthrough catalog) and `@gtaseriesvideos` (4.1M subscribers, a Rockstar/GTA-dedicated fan channel — story-mode walkthroughs and official trailers, run by two named individuals per its own about page). Both tagged `game: gta-v`, matching the existing `hollowpoiint-gta` row and the operator's own GTA-themed grouping.
+
+**Inserted directly into the real, production D1 database** (`npx wrangler d1 execute mythosengine --remote`), per the operator's explicit "add them directly" — confirmed empty first (`SELECT COUNT(*)` = 0), then an idempotent `INSERT OR IGNORE` for all three rows (including `hollowpoiint-gta`, since it had never actually landed despite being documented). `data/footage_sources.yml` updated to match, so the tracked file stays the honest record of what's actually seeded rather than drifting from it again.
+
+**A related gap, found while checking, not acted on:** `sources` (the WATCH stage's RSS/Reddit feed list) is *also* empty in production, despite `data/sources.yml` having a vetted list and a working `seedSourcesFromYaml` loader (`src/lib/ingest/seed-sources.ts`) — that loader is only ever called from its own test, never from anything that runs against production. Left alone this session since it wasn't what was asked; flagged to the operator directly. `render.yml` needs `footage_sources` populated to produce a video at all, which is why this session's scope stayed there.
+
+**What was rejected:**
+- **Building a `data/footage_sources.yml` → D1 loader script** (the natural fix, matching `seed-sources.ts`'s existing-but-unused precedent) — the operator asked to "add them directly," which reads as wanting the rows in place now, not new tooling; a loader is real, scoped work for a session that's actually asked for it, especially since `sources.yml` already shows the same gap existing unaddressed.
+
+---
+
 ## 2026-08-29 (later) — First live pipeline run: a real ffmpeg bug fixed, and the actual remaining blocker found (empty `footage_sources`, not a code defect)
 
 **Operator added `YOUTUBE_API_KEY` as a GitHub Actions secret and asked for it to be triggered.** `gh workflow run footage-refresh.yml` — the first genuinely live run of any pipeline workflow, not a dry run. It failed at `Verify ffmpeg is available`: `ffmpeg: command not found`, exit 127. The prior session's comment claiming ffmpeg/ffprobe ship preinstalled on `ubuntu-latest` doesn't hold for the runner image actually in use now — found by the live failure, not assumed. Fixed in both `footage-refresh.yml` and `render.yml` (the only two workflows that call ffmpeg; `watch.yml` doesn't) by installing it explicitly (`apt-get install ffmpeg`) instead of assuming it's present.

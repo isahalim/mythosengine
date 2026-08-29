@@ -14,3 +14,21 @@ footage_sources:
       design in ARCHITECTURE.md §5.0/§9 (75%+ vertical crop, original
       narration, animated captions) — see docs/DECISIONS.md for the
       accepted risk profile; this is not a claim of zero risk.
+
+  - id: mkiceandfire-gta
+    channel_url: https://www.youtube.com/@MKIceAndFire
+    game: gta-v
+    license_note: >
+      Public, high-subscriber (4.7M) no-commentary full-game walkthrough
+      channel; confirmed GTA V long-form content (4K, no-commentary,
+      full-game). Same weekly-refresh + heavy-transformation risk
+      mitigation as ARCHITECTURE.md §5.0/§9 — not a claim of zero risk.
+
+  - id: gtaseriesvideos-gta
+    channel_url: https://www.youtube.com/@gtaseriesvideos
+    game: gta-v
+    license_note: >
+      Public, high-subscriber (4.1M) Rockstar/GTA-focused fan channel
+      (story-mode walkthroughs, official trailers). Same weekly-refresh +
+      heavy-transformation risk mitigation as ARCHITECTURE.md §5.0/§9 —
+      not a claim of zero risk.
