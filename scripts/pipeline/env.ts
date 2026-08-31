@@ -1,4 +1,5 @@
-import { createD1HttpDb, D1HttpRawClient } from "../../db/d1-http.ts";
+import { createD1HttpDb } from "../../db/d1-http.ts";
+import { WorkerBatchClient } from "../../db/worker-batch.ts";
 import type { AppDb, RawSqlClient } from "../../db/client.ts";
 import { KvHttpClient } from "../../src/lib/drivers/kv-http.ts";
 
@@ -7,6 +8,8 @@ import { KvHttpClient } from "../../src/lib/drivers/kv-http.ts";
 // secret of its own).
 const D1_DATABASE_ID = "77a0969e-2fb8-460e-9e52-f2606b2fa2fa";
 export const HOT_KV_NAMESPACE_ID = "e1a2adff832742ae8953cab9905a7aa6";
+/** PROVISIONED.md's "Live URL". Non-secret and already public in that file; overridable for a staging deploy. */
+const DEFAULT_WORKER_URL = "https://mythosengine.5ryfrrjgmg.workers.dev";
 
 /** CLAUDE.md: "never ask for a secret value... name the exact variable and stop" — this is that check, centralized. */
 export function requireEnv(name: string): string {
@@ -38,9 +41,24 @@ export function buildPipelineEnv(): PipelineEnv {
   const groqApiKey = requireEnv("GROQ_API_KEY");
 
   const d1Options = { accountId, apiToken, databaseId: D1_DATABASE_ID };
+
+  // Built on first use, not eagerly. `rawClient` is only ever touched by a
+  // multi-statement write (execAtomic), and FOOTAGE REFRESH never performs
+  // one — requiring its secret up front would stop that job from running for
+  // want of a credential it does not use. A job that *does* write this way
+  // and lacks the secret still fails with the exact variable name, at the
+  // moment it is needed.
+  let rawClient: WorkerBatchClient | undefined;
+
   return {
     db: createD1HttpDb(d1Options),
-    rawClient: new D1HttpRawClient(d1Options),
+    get rawClient(): RawSqlClient {
+      rawClient ??= new WorkerBatchClient({
+        workerUrl: optionalEnv("WORKER_URL") ?? DEFAULT_WORKER_URL,
+        token: requireEnv("PIPELINE_BATCH_TOKEN"),
+      });
+      return rawClient;
+    },
     hotKv: new KvHttpClient({ accountId, apiToken, namespaceId: HOT_KV_NAMESPACE_ID }),
     accountId,
     apiToken,

@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { drizzle as drizzleBetterSqlite3, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import { drizzle as drizzleD1, type DrizzleD1Database } from "drizzle-orm/d1";
 import type { SqliteRemoteDatabase } from "drizzle-orm/sqlite-proxy";
-import { D1HttpRawClient } from "./d1-http.ts";
+import { WorkerBatchClient } from "./worker-batch.ts";
 import * as schema from "./schema.ts";
 
 /**
@@ -67,14 +67,14 @@ export async function getOne<T>(query: { all: () => T[] | Promise<T[]> }): Promi
 }
 
 /** The underlying binding/connection beneath AppDb — needed only for execAtomic below. */
-export type RawSqlClient = D1Database | Database.Database | D1HttpRawClient;
+export type RawSqlClient = D1Database | Database.Database | WorkerBatchClient;
 
-function isD1HttpClient(client: RawSqlClient): client is D1HttpRawClient {
-  return client instanceof D1HttpRawClient;
+function isWorkerBatchClient(client: RawSqlClient): client is WorkerBatchClient {
+  return client instanceof WorkerBatchClient;
 }
 
 function isD1Client(client: RawSqlClient): client is D1Database {
-  return !isD1HttpClient(client) && typeof (client as D1Database).batch === "function";
+  return !isWorkerBatchClient(client) && typeof (client as D1Database).batch === "function";
 }
 
 /**
@@ -91,7 +91,11 @@ function isD1Client(client: RawSqlClient): client is D1Database {
  * for the same friction on a different method).
  */
 export async function execAtomic(client: RawSqlClient, statements: { sql: string; params: unknown[] }[]): Promise<void> {
-  if (isD1HttpClient(client)) {
+  // Outside the Worker: hand the batch to the Worker, which holds the real
+  // D1 binding. D1's REST API cannot do parameterized *and* multi-statement
+  // in one call, so there is no local equivalent to fall back to — see
+  // db/worker-batch.ts.
+  if (isWorkerBatchClient(client)) {
     await client.batch(statements);
     return;
   }

@@ -121,44 +121,19 @@ export function createD1HttpDb(options: D1HttpOptions): SqliteRemoteDatabase<typ
   return drizzle(makeCallback(options), { schema });
 }
 
-/**
- * `RawSqlClient`'s HTTP arm for `execAtomic` (db/client.ts). D1's REST
- * `/query` endpoint's transactional guarantee for a single multi-statement
- * `sql` string isn't spelled out the way `D1Database::batch`'s is
- * ("Batched statements are SQL transactions... aborts/rolls back the
- * entire sequence" — developers.cloudflare.com/d1/worker-api/d1-database/)
- * — so this wraps the statements in explicit `BEGIN`/`COMMIT` and sends
- * them as one HTTP call (same D1 session, real SQL transaction semantics
- * either way), with every `?` renumbered to a globally unique `?N` so
- * per-statement placeholder numbering can't collide across the combined
- * string.
+/*
+ * `D1HttpRawClient` used to live here — `execAtomic`'s HTTP arm, wrapping
+ * its statements in `BEGIN; …; COMMIT;` with a combined `params` array. It
+ * was deleted on 2026-08-30 because it cannot be made to work: D1's REST
+ * `/query` endpoint answers `7400: The request is malformed: params with
+ * multiple statements is not supported`. The endpoint takes either several
+ * statements or bound parameters, never both, and offers no equivalent of
+ * the Worker binding's atomic `.batch()`.
  *
- * **This does not work, and cannot be made to work as written** (exercised
- * against the live database 2026-08-31, which is what the previous version of
- * this comment asked for). Cloudflare answers `7400: The request is malformed:
- * params with multiple statements is not supported` — the REST `/query`
- * endpoint accepts either several statements or bound parameters, never both,
- * and offers no equivalent of the Worker binding's atomic `.batch()`. So every
- * `execAtomic` call from the GitHub Actions runner fails, `generateScript`
- * included. See the OPEN note in ARCHITECTURE.md §4 for the three ways out;
- * all three are decisions rather than fixes, and none has been taken.
+ * Deleted rather than left throwing: a class that compiles, type-checks and
+ * fails only against the live database is a trap, and this one had already
+ * cost a month of scheduled RENDERs. Multi-statement writes from outside the
+ * Worker now go through `db/worker-batch.ts`, which sends them to the one
+ * process that holds the real binding. Single-statement reads still use
+ * `createD1HttpDb` above, which needs no transaction and works fine.
  */
-export class D1HttpRawClient {
-  constructor(private readonly options: D1HttpOptions) {}
-
-  async batch(statements: { sql: string; params: unknown[] }[]): Promise<void> {
-    let counter = 0;
-    const allParams: unknown[] = [];
-    const renumbered = statements.map((s) => {
-      const sql = s.sql.replace(/\?/g, () => {
-        counter++;
-        return `?${counter}`;
-      });
-      allParams.push(...s.params);
-      return sql;
-    });
-
-    const combinedSql = ["BEGIN;", ...renumbered.map((s) => `${s.trim().replace(/;\s*$/, "")};`), "COMMIT;"].join("\n");
-    await queryD1Http(this.options as Required<Pick<D1HttpOptions, "accountId" | "databaseId" | "apiToken">> & D1HttpOptions, combinedSql, allParams);
-  }
-}

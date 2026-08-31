@@ -6,7 +6,11 @@ import { auditLog } from "../../db/schema.ts";
 // text-chat tool loop) so the audit trail can tell an external MCP client
 // apart from the console's own chat agent, even though both ultimately call
 // the same AGENT_TOOLS.
-export type AuditActor = "human" | "agent" | "mcp";
+// "pipeline" is the GitHub Actions runner writing through
+// POST /internal/d1/batch (src/server/internal/d1-batch.ts) — the only
+// actor that is not a person or a tool loop acting for one, and worth
+// telling apart precisely because it holds a key that can run SQL.
+export type AuditActor = "human" | "agent" | "mcp" | "pipeline";
 
 /**
  * Every mutating console action — human or agent-triggered — writes here.

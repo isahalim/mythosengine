@@ -33,6 +33,7 @@ class FakeKv implements HotKvLike {
 
 const MASTER_KEY_B64 = "3q2-7_zdaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const SESSION_SIGNING_KEY = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const PIPELINE_BATCH_TOKEN = "pbt_" + "c".repeat(48);
 const ENROLLMENT_TOKEN = "correct-enrollment-token";
 
 function apiRequest(path: string, init: RequestInit & { cookie?: string } = {}): Request {
@@ -68,6 +69,7 @@ describe("router", () => {
       sessionSigningKey: SESSION_SIGNING_KEY,
       consoleEnrollmentToken: ENROLLMENT_TOKEN,
       groqApiKeyFallback: "gsk_" + "a".repeat(40),
+      pipelineBatchToken: PIPELINE_BATCH_TOKEN,
     };
     vi.mocked(simplewebauthn.verifyRegistrationResponse).mockReset();
     vi.mocked(simplewebauthn.verifyAuthenticationResponse).mockReset();
@@ -444,5 +446,48 @@ describe("router", () => {
       const body = await res?.text();
       expect(body ?? "").not.toContain(plantedSecret);
     }
+  });
+
+  describe("/internal/*", () => {
+    function batchRequest(token: string | null): Request {
+      const headers = new Headers({ "content-type": "application/json" });
+      if (token !== null) headers.set("authorization", `Bearer ${token}`);
+      return new Request("https://example.workers.dev/internal/d1/batch", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ statements: [{ sql: "insert into footage_sources (id, game, channel_url, license_note, enabled) values (?, ?, ?, ?, ?)", params: ["r1", "g", "u", "n", 1] }] }),
+      });
+    }
+
+    it("routes a valid batch through to the handler without any session", async () => {
+      const response = await handleApiRequest(batchRequest(PIPELINE_BATCH_TOKEN), deps);
+      expect(response?.status).toBe(200);
+    });
+
+    it("does not accept a console session in place of the batch token", async () => {
+      // The two credentials are deliberately unrelated: a stolen console
+      // cookie must not become an arbitrary-SQL capability.
+      const cookie = await completeRegistrationAndLogin();
+      const response = await handleApiRequest(
+        new Request("https://example.workers.dev/internal/d1/batch", {
+          method: "POST",
+          headers: { cookie, "content-type": "application/json" },
+          body: JSON.stringify({ statements: [{ sql: "select 1", params: [] }] }),
+        }),
+        deps,
+      );
+      expect(response?.status).toBe(401);
+    });
+
+    it("answers an unknown /internal/ path with 404 rather than serving console HTML", async () => {
+      // Falling through would hand a prober the asset handler's response for
+      // a prefix that exists only for machine callers.
+      const response = await handleApiRequest(new Request("https://example.workers.dev/internal/whatever", { method: "POST" }), deps);
+      expect(response?.status).toBe(404);
+    });
+
+    it("still ignores paths this router does not own", async () => {
+      expect(await handleApiRequest(new Request("https://example.workers.dev/anything-else"), deps)).toBeNull();
+    });
   });
 });

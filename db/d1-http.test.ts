@@ -1,8 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { createD1HttpDb, D1HttpRawClient } from "./d1-http.ts";
-import { execAtomic, getOne } from "./client.ts";
+import { createD1HttpDb } from "./d1-http.ts";
+import { getOne } from "./client.ts";
 import { signals, sources } from "./schema.ts";
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => void;
@@ -155,32 +155,3 @@ describe("createD1HttpDb", () => {
   });
 });
 
-describe("D1HttpRawClient (execAtomic's HTTP arm)", () => {
-  let mock: ReturnType<typeof startMockServer>;
-
-  beforeEach(() => {
-    mock = startMockServer();
-  });
-
-  afterEach(() => {
-    mock.server.close();
-  });
-
-  it("wraps multiple statements in one BEGIN/COMMIT call with globally renumbered placeholders", async () => {
-    mock.queue(jsonResult([]));
-    const client = new D1HttpRawClient({ accountId: "acct", databaseId: "db", apiToken: "token", baseUrl: await mock.baseUrl, maxAttempts: 1, timeoutMs: 2000 });
-
-    await execAtomic(client, [
-      { sql: "UPDATE sources SET enabled = ? WHERE id = ?", params: [0, "src-1"] },
-      { sql: "INSERT INTO sources (id, kind, url) VALUES (?, ?, ?)", params: ["src-2", "rss", "https://example.com"] },
-    ]);
-
-    expect(mock.requests).toHaveLength(1);
-    const { sql, params } = mock.requests[0];
-    expect(sql).toMatch(/^BEGIN;/);
-    expect(sql).toMatch(/COMMIT;$/);
-    expect(sql).toContain("?1");
-    expect(sql).toContain("?5");
-    expect(params).toEqual([0, "src-1", "src-2", "rss", "https://example.com"]);
-  });
-});

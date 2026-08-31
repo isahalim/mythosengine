@@ -23,6 +23,7 @@ import { getConsoleSummary } from "./console/summary.ts";
 import { createChatSession, deleteChatSession, getChatMessages, listChatSessions } from "./console/chat.ts";
 import { runAgentTurn, type ToolInvoker } from "./agent/loop.ts";
 import { issueMcpToken, listMcpTokens, revokeMcpToken, verifyMcpToken } from "./mcp/tokens.ts";
+import { handleD1Batch } from "./internal/d1-batch.ts";
 import { callMcpTool, handleMcpRequest } from "./mcp/server.ts";
 import { log } from "./log.ts";
 import type { KvLike } from "../lib/drivers/cache-kv.ts";
@@ -37,6 +38,8 @@ export interface RouterEnv {
   SESSION_SIGNING_KEY: string;
   CONSOLE_ENROLLMENT_TOKEN: string;
   GROQ_API_KEY: string;
+  /** Shared secret for POST /internal/d1/batch. Optional in the type, fail-closed in the handler: an unset secret must close the endpoint, never open it. */
+  PIPELINE_BATCH_TOKEN?: string;
 }
 
 // Shared across requests within one Worker isolate's lifetime — same
@@ -72,6 +75,7 @@ export interface RouterDeps {
   sessionSigningKey: string;
   consoleEnrollmentToken: string;
   groqApiKeyFallback: string;
+  pipelineBatchToken: string | undefined;
 }
 
 function depsFromEnv(env: RouterEnv): RouterDeps {
@@ -84,6 +88,7 @@ function depsFromEnv(env: RouterEnv): RouterDeps {
     sessionSigningKey: env.SESSION_SIGNING_KEY,
     consoleEnrollmentToken: env.CONSOLE_ENROLLMENT_TOKEN,
     groqApiKeyFallback: env.GROQ_API_KEY,
+    pipelineBatchToken: env.PIPELINE_BATCH_TOKEN,
   };
 }
 
@@ -135,7 +140,20 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
   const { pathname } = url;
   const method = request.method;
 
-  if (!pathname.startsWith("/auth/") && !pathname.startsWith("/console/")) return null;
+  if (!pathname.startsWith("/auth/") && !pathname.startsWith("/console/") && !pathname.startsWith("/internal/")) return null;
+
+  // The machine-to-machine surface, handled before every console concern
+  // below: no session, no cookie, no reauth nonce, and deliberately not
+  // reachable by any of the console's own paths. Its own bearer secret is
+  // checked inside the handler, which fails closed when that secret is
+  // unset (src/server/internal/d1-batch.ts).
+  if (pathname === "/internal/d1/batch" && method === "POST") {
+    return handleD1Batch(request, { db: deps.db, rawClient: deps.rawClient, pipelineBatchToken: deps.pipelineBatchToken });
+  }
+  // Nothing else lives under /internal/ — say so rather than falling
+  // through to the static asset handler, which would answer a probe of this
+  // prefix with the console's HTML.
+  if (pathname.startsWith("/internal/")) return json({ error: "not_found" }, 404);
 
   // /console/settings is both an Astro page (src/pages/console/settings.astro)
   // and a JSON API route (GET /console/settings, ARCHITECTURE.md §6) at the
