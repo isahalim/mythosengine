@@ -101,7 +101,16 @@ export async function commitClipToLibrary(
   if (!addResult.ok) return addResult;
 
   const commitMessage = `feat(${metadata.footageSourceId}): clip [video:${metadata.sourceVideoId}] [${metadata.clipStartS}-${metadata.clipEndS}s]`;
-  const commitResult = await git(worktreeDir, ["commit", "-m", commitMessage], options);
+  // Committed by pathspec, never as "whatever is staged". A caller that
+  // fails between `add` and `commit` moves on to the next clip
+  // (refreshFootageSource does exactly that), leaving these paths sitting in
+  // the index — and a bare `git commit` would then sweep that abandoned clip
+  // into the *next* clip's commit. Observed live on 2026-08-30: a third clip
+  // reached the assets-library branch inside another clip's commit, with no
+  // `footage_segments` row and no provenance anywhere pointing at it. A clip
+  // in the library that the database has never heard of is exactly the kind
+  // of unaccounted footage this system is not allowed to have.
+  const commitResult = await git(worktreeDir, ["commit", "-m", commitMessage, "--", libraryRelativePath, `${libraryRelativePath}.json`], options);
   if (!commitResult.ok) return commitResult;
 
   const shaResult = await git(worktreeDir, ["rev-parse", "HEAD"], options);
