@@ -390,8 +390,7 @@ describe("router", () => {
     });
   });
 
-  it("streams a real export's bytes on download and marks it downloaded", async () => {
-    const cookie = await completeRegistrationAndLogin();
+  async function seedExport(suggestedTitle = "t"): Promise<void> {
     const { sources, signals, scripts, footageSources, footageSegments, renders, exports: exportsTable } = await import("../../db/schema.ts");
     await ctx.db.insert(sources).values({ id: "src1", kind: "reddit", url: "http://x" }).run();
     await ctx.db.insert(signals).values({ id: "sig1", sourceId: "src1", canonicalUrl: "http://x/1", title: "t", observedAt: "2026-01-01", engagementScore: 1, simhash: "a", state: "exported" }).run();
@@ -401,13 +400,56 @@ describe("router", () => {
     await ctx.db.insert(renders).values({ id: "ren1", scriptId: "scr1", footageSegmentId: "fseg1", ttsDriver: "edge", ttsVoice: "v", status: "rendered", createdAt: "2026-01-01" }).run();
     await ctx.db
       .insert(exportsTable)
-      .values({ id: "exp1", renderId: "ren1", storageKey: "blob:exp1", sizeBytes: 4, suggestedTitle: "t", suggestedDescription: "d", suggestedTagsJson: "[]", auditJson: "{}", createdAt: "2026-01-01", expiresAt: "2026-01-04", status: "ready_for_review" })
+      .values({ id: "exp1", renderId: "ren1", storageKey: "blob:exp1", sizeBytes: 4, suggestedTitle, suggestedDescription: "d", suggestedTagsJson: "[]", auditJson: "{}", createdAt: "2026-01-01", expiresAt: "2026-01-04", status: "ready_for_review" })
       .run();
     hotKv.setBlob("blob:exp1", new TextEncoder().encode("mp4!").buffer);
+  }
+
+  it("streams a real export's bytes on download and marks it downloaded", async () => {
+    const cookie = await completeRegistrationAndLogin();
+    await seedExport();
 
     const res = await handleApiRequest(apiRequest("/console/exports/exp1/download", { cookie }), deps);
     expect(res?.status).toBe(200);
     expect(new TextDecoder().decode(await res?.arrayBuffer())).toBe("mp4!");
+  });
+
+  it("serves the download to a plain browser navigation, which sends no JSON accept header", async () => {
+    // The console renders Download as an <a href>, so the browser navigates
+    // and sends `Accept: text/html,...`. The router's "a GET that doesn't
+    // want JSON is a page request" rule sent that to the static asset
+    // handler, which has no such file — the button 404'd (2026-08-31). Every
+    // test here had used the JSON header, so nothing caught it.
+    const cookie = await completeRegistrationAndLogin();
+    await seedExport();
+
+    const res = await handleApiRequest(
+      apiRequest("/console/exports/exp1/download", {
+        cookie,
+        headers: { accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,*/*;q=0.8" },
+      }),
+      deps,
+    );
+    expect(res).not.toBeNull();
+    expect(res?.status).toBe(200);
+    expect(res?.headers.get("content-type")).toBe("video/mp4");
+    expect(new TextDecoder().decode(await res?.arrayBuffer())).toBe("mp4!");
+  });
+
+  it("sends the video as an attachment so it downloads instead of playing in the tab", async () => {
+    const cookie = await completeRegistrationAndLogin();
+    await seedExport("Ever watched a movie so insane?");
+
+    const res = await handleApiRequest(apiRequest("/console/exports/exp1/download", { cookie }), deps);
+    expect(res?.headers.get("content-disposition")).toBe('attachment; filename="Ever-watched-a-movie-so-insane-exp1.mp4"');
+  });
+
+  it("still treats a non-JSON GET of a console page as a page request", async () => {
+    // The exemption above must not become "every GET is an API call" — a
+    // browser opening /console/settings has to get the Astro page, not JSON.
+    const cookie = await completeRegistrationAndLogin();
+    const res = await handleApiRequest(apiRequest("/console/settings", { cookie, headers: { accept: "text/html" } }), deps);
+    expect(res).toBeNull();
   });
 
   it("logs out by clearing the session cookie, so the same cookie no longer authenticates", async () => {

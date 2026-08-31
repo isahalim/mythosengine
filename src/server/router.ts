@@ -14,7 +14,7 @@ import { consumeReauthNonce, issueReauthNonce } from "./auth/reauth.ts";
 import { writeAuditLog } from "./audit.ts";
 import { DirectiveSchema } from "./console/directive-schema.ts";
 import { compileDirectiveFromRawText, dryRunSettings, getSettings, resetToDefaults, updateSettings } from "./console/settings.ts";
-import { discardExport, downloadExport, listExports, markExportReviewed, type ExportBlobStore, type ExportStatus } from "./console/exports.ts";
+import { discardExport, downloadExport, exportFileName, listExports, markExportReviewed, type ExportBlobStore, type ExportStatus } from "./console/exports.ts";
 import { rotateProviderKey, ROTATABLE_KEY_NAMES, type RotatableKeyName } from "./console/keys.ts";
 import { dispatchRun } from "./console/dispatch.ts";
 import { setPipelineEnabled } from "./console/killswitch.ts";
@@ -92,6 +92,20 @@ function depsFromEnv(env: RouterEnv): RouterDeps {
   };
 }
 
+/**
+ * The one route this router owns that a browser reaches by **navigating** to
+ * it rather than fetching it. The console renders it as a plain `<a href>`
+ * on purpose (`src/console/lib/api.ts`: "never needs a client-side fetch"),
+ * and it answers with `video/mp4` — never JSON. So it can never satisfy the
+ * "does this GET actually want JSON" test below, and has to be named as an
+ * exception to it.
+ *
+ * Getting that wrong is what made the Download button 404: a navigation
+ * sends `Accept: text/html,...`, the test sent the request on to the static
+ * asset handler, and the asset handler has no such file (2026-08-31).
+ */
+const EXPORT_DOWNLOAD_PATTERN = /^\/console\/exports\/([^/]+)\/download$/;
+
 function json(data: unknown, status = 200): Response {
   return Response.json(data, { status });
 }
@@ -162,7 +176,7 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
   // JSON; src/console/lib/api.ts's get() sends this header for exactly that
   // reason. A plain browser navigation has no such header, so it falls
   // through to env.ASSETS untouched.
-  if (method === "GET" && !(request.headers.get("accept") ?? "").includes("application/json")) return null;
+  if (method === "GET" && !EXPORT_DOWNLOAD_PATTERN.test(pathname) && !(request.headers.get("accept") ?? "").includes("application/json")) return null;
 
   const ctx = deps;
   const rp = rpConfigFor(url);
@@ -277,13 +291,22 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
       return json(await listExports(ctx.db, status ?? undefined));
     }
 
-    const downloadMatch = pathname.match(/^\/console\/exports\/([^/]+)\/download$/);
+    const downloadMatch = pathname.match(EXPORT_DOWNLOAD_PATTERN);
     if (downloadMatch && method === "GET") {
       const result = await downloadExport(ctx.db, ctx.hotKv, downloadMatch[1]);
       if (result.kind === "not_found") return json({ error: "not_found" }, 404);
       if (result.kind === "blob_missing") return json({ error: "blob_missing" }, 410);
       await writeAuditLog(ctx.db, "human", "export.download", downloadMatch[1], {});
-      return new Response(result.bytes, { headers: { "content-type": "video/mp4" } });
+      // `attachment` is what makes this a download rather than a video that
+      // opens in the tab and plays. The button says Download; without this
+      // header Chrome navigates and plays it, which is not what a reviewer
+      // asked for and leaves them with no file.
+      return new Response(result.bytes, {
+        headers: {
+          "content-type": "video/mp4",
+          "content-disposition": `attachment; filename="${exportFileName(result.export.suggestedTitle, result.export.id)}"`,
+        },
+      });
     }
 
     const reviewMatch = pathname.match(/^\/console\/exports\/([^/]+)\/mark-reviewed$/);

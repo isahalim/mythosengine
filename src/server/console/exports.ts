@@ -92,6 +92,27 @@ export async function discardExport(db: AppDb, blobStore: ExportBlobStore, id: s
 export type DownloadResult = { kind: "ok"; bytes: ArrayBuffer; export: typeof exportsTable.$inferSelect } | { kind: "not_found" } | { kind: "blob_missing" };
 
 /** Streams a ready-for-review export's real MP4 from KV, and marks it downloaded (CONSOLE_SPEC.md §4/§6). */
+/**
+ * A filename for the `Content-Disposition` header.
+ *
+ * Sanitized to a conservative ASCII slug rather than passed through: the
+ * title is model-generated text that reaches this header verbatim, and a
+ * quote or a newline in it would let that text break out of the header — so
+ * only `[A-Za-z0-9]`, `-` and `_` survive, and the length is bounded. The
+ * export id is appended so two similar titles never produce the same name in
+ * a reviewer's downloads folder, and stands alone if the title slugs to
+ * nothing at all (it can: a title of only emoji or punctuation).
+ */
+export function exportFileName(suggestedTitle: string, id: string): string {
+  const slug = suggestedTitle
+    .normalize("NFKD")
+    .replace(/[^A-Za-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60)
+    .replace(/-+$/, "");
+  return `${slug.length > 0 ? `${slug}-` : ""}${id}.mp4`;
+}
+
 export async function downloadExport(db: AppDb, blobStore: ExportBlobStore, id: string): Promise<DownloadResult> {
   const existing = await getExport(db, id);
   if (!existing) return { kind: "not_found" };

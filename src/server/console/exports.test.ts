@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createTestDb } from "../../../db/client.ts";
 import { applyMigrations } from "../../../db/apply-migrations.ts";
 import { exports as exportsTable, renders, scripts, signals, sources, footageSources, footageSegments } from "../../../db/schema.ts";
-import { discardExport, downloadExport, getExport, listExports, markExportReviewed, type ExportBlobStore } from "./exports.ts";
+import { discardExport, downloadExport, getExport, listExports, markExportReviewed, type ExportBlobStore, exportFileName } from "./exports.ts";
 
 class FakeBlobStore implements ExportBlobStore {
   readonly store = new Map<string, ArrayBuffer>();
@@ -95,5 +95,30 @@ describe("exports service", () => {
     expect(result).toEqual({ kind: "ok" });
     expect(blobs.store.has("blob:exp1")).toBe(false);
     expect((await getExport(ctx.db, "exp1"))?.status).toBe("discarded");
+  });
+});
+
+describe("exportFileName", () => {
+  it("slugs the suggested title and always ends in the export id", () => {
+    expect(exportFileName("Ever watched a movie so insane?", "exp1")).toBe("Ever-watched-a-movie-so-insane-exp1.mp4");
+  });
+
+  it("falls back to the id alone when the title slugs to nothing", () => {
+    // Titles are model-generated; one made only of emoji or punctuation is
+    // not hypothetical.
+    expect(exportFileName("🎬🔥 —— !!", "exp1")).toBe("exp1.mp4");
+    expect(exportFileName("", "exp1")).toBe("exp1.mp4");
+  });
+
+  it("cannot break out of the Content-Disposition header it is placed in", () => {
+    const hostile = 'a"; filename="owned.exe\r\nX-Injected: yes';
+    const name = exportFileName(hostile, "exp1");
+    expect(name).not.toContain('"');
+    expect(name).not.toMatch(/[\r\n]/);
+    expect(name).toMatch(/^[A-Za-z0-9_-]+\.mp4$/);
+  });
+
+  it("bounds the length so a long title cannot produce an unusable filename", () => {
+    expect(exportFileName("word ".repeat(200), "exp1").length).toBeLessThanOrEqual(80);
   });
 });
