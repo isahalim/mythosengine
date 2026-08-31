@@ -1,8 +1,9 @@
 name: RENDER
 
 # Operator-triggered, not scheduled. Each invocation does exactly one signal
-# end-to-end (SCRIPT -> CRITIC -> PLAN -> FOOTAGE SELECT -> TTS -> ALIGN ->
-# RENDER -> AUDIT -> EXPORT), not a loop of three.
+# end-to-end (RESEARCH -> SCRIPT -> CRITIC -> FOOTAGE SELECT -> TTS -> ALIGN
+# -> RENDER -> AUDIT -> EXPORT), not a loop of three. ALIGN runs only on the
+# Gemini narration path; PLAN is not built yet (plan v2 §8 item 4).
 #
 # The 3x/day cron was removed 2026-08-31. It was never the right shape for
 # this system and the self-hosted runner is what settled it: footage only
