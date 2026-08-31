@@ -154,6 +154,45 @@ describe("fetchWithRetry", () => {
     expect(Date.now() - startedAt).toBeLessThan(2000);
   });
 
+  it("folds a 4xx body into the error, so the provider's own explanation survives", async () => {
+    // On 2026-08-31 both RESEARCH and SCRIPT died on `HTTP 400 from
+    // https://api.groq.com/...` and the run could not say why. A 400 means
+    // the request was wrong and the body is the only thing that says how.
+    const failing: typeof fetch = async () =>
+      new Response(JSON.stringify({ error: { message: "model `x` does not exist", type: "invalid_request_error" } }), { status: 400 });
+
+    const result = await fetchWithRetry(baseUrl, {}, { timeoutMs: 1000, maxAttempts: 1, baseDelayMs: 5, fetchImpl: failing });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.kind).toBe("provider_error");
+      expect(result.error.retryable).toBe(false);
+      expect(result.error.message).toContain("does not exist");
+    }
+  });
+
+  it("does not choke when a 4xx has an unreadable body", async () => {
+    const failing: typeof fetch = async () =>
+      new Response(null, { status: 404, headers: { "content-type": "application/json" } });
+
+    const result = await fetchWithRetry(baseUrl, {}, { timeoutMs: 1000, maxAttempts: 1, baseDelayMs: 5, fetchImpl: failing });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("HTTP 404");
+  });
+
+  it("leaves 5xx bodies alone — the status is the finding and the body is usually an HTML error page", async () => {
+    const failing: typeof fetch = async () => new Response("<html><body>502 Bad Gateway</body></html>", { status: 502 });
+
+    const result = await fetchWithRetry(baseUrl, {}, { timeoutMs: 1000, maxAttempts: 1, baseDelayMs: 5, fetchImpl: failing });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.retryable).toBe(true);
+      expect(result.error.message).not.toContain("html");
+    }
+  });
+
   it("retries a non-Error network throw and reports it via String(cause) on the last attempt", async () => {
     let calls = 0;
     const flakyFetch: typeof fetch = async () => {

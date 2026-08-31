@@ -66,6 +66,31 @@ function describeRateLimitHeaders(res: Response): string {
   return parts.length > 0 ? ` [${parts.sort().join(", ")}]` : "";
 }
 
+/**
+ * The provider's own explanation of a 4xx, folded into the error message.
+ *
+ * A 400 means the *request* was wrong, and the body is the only thing that
+ * says how — an unknown model id, a rejected parameter, a malformed message.
+ * Discarding it turns every one of those into an identical
+ * `HTTP 400 from https://api.groq.com/...`, which is exactly as useful as no
+ * error at all. On 2026-08-31 both RESEARCH and SCRIPT failed that way and
+ * the run could not say why.
+ *
+ * Bounded, and only read on the failure path — the success path never touches
+ * the body. Provider error bodies describe the request we sent, not our
+ * credentials: the key travels in a header and is never echoed back.
+ */
+async function describeErrorBody(res: Response): Promise<string> {
+  if (res.status < 400 || res.status >= 500) return "";
+  try {
+    const text = (await res.text()).replace(/\s+/g, " ").trim();
+    return text.length > 0 ? `: ${text.slice(0, 400)}` : "";
+  } catch {
+    // The status is the finding; a body we could not read does not change it.
+    return "";
+  }
+}
+
 function retryAfterMs(res: Response): number | null {
   const header = res.headers.get("retry-after");
   if (!header) return null;
@@ -101,12 +126,13 @@ export async function fetchWithRetry(
       const waitTooLong = requestedDelay !== null && requestedDelay > maxRetryDelayMs;
       if (!retryable || isLastAttempt || waitTooLong) {
         const limitDetail = res.status === 429 ? describeRateLimitHeaders(res) : "";
+        const bodyDetail = await describeErrorBody(res);
         return err({
           kind: res.status === 429 ? "rate_limited" : "provider_error",
           message:
             waitTooLong && res.status === 429
               ? `HTTP 429 from ${url}; Retry-After ${Math.round(requestedDelay / 1000)}s exceeds the ${Math.round(maxRetryDelayMs / 1000)}s retry budget${limitDetail}`
-              : `HTTP ${res.status} from ${url}${limitDetail}`,
+              : `HTTP ${res.status} from ${url}${limitDetail}${bodyDetail}`,
           retryable,
         });
       }
