@@ -21,7 +21,7 @@
 | **Reddit RSS/Atom syndication feeds, News RSS** | Yes | **Yes** | Zero-key trend sources — **not** Reddit's JSON/Data API, see §5.1 |
 | **X (Twitter) API** | **No** — the free tier has no meaningful search access as of 2026 | N/A | Not in the default profile. Driver exists, disabled unless the operator has a paid tier |
 | **YouTube Community tab** | No official API | **Yes**, but unofficial/fragile | Best-effort source, same fragility contract as `yt-captions` had in the old project |
-| **Browser-driven footage acquisition** (headless Chromium, no model) | Yes | **Yes** | Weekly footage-source discovery *and* download (§5.0): Playwright searches youtube.com for `"<game name>" walkthrough "<channel name>" youtube` and reads the results off the page, then convert+downloads the chosen video at **1080p** via `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy` (ytmp3) by driving that page's ids and polling its own ready/error state. One active channel (@HollowPoiint), whose ~1h episodes are what make 1080p affordable. Replaces the YouTube Data API v3 search and yt-dlp — both removed. No API key, no cookies, no tokens |
+| **Browser-driven footage acquisition** (headless Chromium, no model) | Yes | **Yes** | Weekly footage-source discovery *and* download (§5.0): Playwright searches youtube.com for `"<game name>" walkthrough "<channel name>" youtube` and reads the results off the page, then downloads the chosen video at **1080p** through one of two routes (§5.0): a pinned `yt-dlp` binary (default), or Playwright over the `media.ytmp3.gg` converter. One active channel (@HollowPoiint), whose ~1h episodes are what make 1080p affordable. Replaces the YouTube Data API v3 search. No API key, no cookies, no tokens |
 
 **What this costs in practice:** effectively $0/month at 3 exports/day, with one caveat — Edge TTS is a free ride on an unofficial API, not a contractual guarantee. `config/providers.ts` keeps TTS behind the same driver interface as everything else specifically so a paid fallback (ElevenLabs, Groq TTS if it ships one) is a single env var away if Microsoft ever closes the endpoint off.
 
@@ -314,9 +314,13 @@ CREATE INDEX idx_scripts_created  ON scripts(created_at);   -- today's-diversity
 CREATE UNIQUE INDEX idx_directive_active ON directives(status) WHERE status = 'active';
 ```
 
-> **OPEN — `execAtomic` cannot work over D1's REST API (2026-08-31).** `D1HttpRawClient.batch` sends its statements as one `BEGIN; …; COMMIT;` string with a combined `params` array, and Cloudflare answers `7400: The request is malformed: params with multiple statements is not supported`. The REST `/query` endpoint takes *either* multiple statements *or* bound parameters, never both — and it has no equivalent of the Worker binding's `.batch()`. That file's own comment said this path was "unverified until exercised against a live D1"; it has now been exercised, and it does not work. Every multi-statement mutation from the GitHub Actions runner therefore fails, `generateScript` included, so **SCRIPT cannot persist and the pipeline cannot reach RENDER.**
->
-> The three ways out all need an explicit decision, so none has been taken: (a) inline the values as escaped SQL literals and send the statements without params — throws away parameterization, which is not a trade to make quietly; (b) route these writes through the Worker, whose D1 binding has a genuinely atomic `.batch()` — a new authenticated internal API surface; (c) drop to sequential non-atomic statements with a compensating recovery path — which `CLAUDE.md`'s NEVER block forbids without an override. (b) is the only one that keeps both parameterization and atomicity.
+**Atomic multi-statement writes from the pipeline go through the Worker (resolved 2026-08-30).** `execAtomic` needs statements that are both parameterized *and* atomic. Inside the Worker that is `D1Database.batch()`, a real transaction. From the GitHub Actions runner there was no equivalent: D1's REST `/query` endpoint answers `7400: The request is malformed: params with multiple statements is not supported` — it takes *either* several statements *or* bound parameters, never both, and exposes no batch primitive. That is what broke every multi-statement write from the runner, `generateScript` included, so SCRIPT could not persist and the pipeline could not reach RENDER.
+
+Of the three ways out — inline escaped literals (throws away parameterization), sequential non-atomic writes (forbidden by `CLAUDE.md`), or send the batch to the process that holds the real binding — the third was taken (operator decision, 2026-08-30). `db/worker-batch.ts`'s `WorkerBatchClient` POSTs the statement list to `POST /internal/d1/batch`, which `src/server/internal/d1-batch.ts` executes through the Worker's own `execAtomic`. Both properties survive the trip.
+
+`D1HttpRawClient` was **deleted** rather than left in place throwing: a class that compiles, type-checks, and fails only against the live database is a trap, and this one had already cost a month of scheduled RENDERs. Single-statement reads still use `createD1HttpDb` over the REST API directly — they need no transaction.
+
+The endpoint is a deliberately narrow surface with a real key on it, because it can run arbitrary SQL: a dedicated `PIPELINE_BATCH_TOKEN` bearer secret compared in constant time over SHA-256 digests (no length or prefix leak), **fail-closed when that secret is unset** — an unconfigured deployment answers 503 rather than opening — hard caps on statement count, combined SQL size and parameter count, an `audit_log` row per call under a new `pipeline` actor recording the SQL but never the bound parameters, and no acceptance of a console session in its place, so a stolen console cookie never becomes an arbitrary-SQL capability.
 
 **Reading one row: `getOne()`, never `.get()`.** `AppDb` spans three dialects, and drizzle's `.get()` does not behave the same on all of them. Over the D1 HTTP client (the GitHub Actions arm), a query matching nothing hands the sqlite-proxy dialect an empty array; `mapGetResult` only short-circuits on a *falsy* `rows`, and `[]` is truthy, so it builds a row object with every field `undefined`. A miss therefore comes back truthy and every `if (!row)` guard stops working. RENDER failed on every scheduled run from 2026-08-29 to 2026-08-31 with `"undefined" is not valid JSON` — `getSettings` handing a ghost row's `compiledJson` to `JSON.parse` — and the quieter cases (an unmatched credential, MCP token, or export) were failing the whole time without saying so. `db/client.ts`'s `getOne()` uses `.all()[0]`, which maps an empty result identically on all three dialects.
 
@@ -361,12 +365,13 @@ a schema that will.
 
 ### 0. FOOTAGE REFRESH (weekly cron — the only stage that touches third-party video)
 
-**Browser-driven video acquisition** — built, not proposed. A real headless
+**Browser-driven source discovery** — built, not proposed. A real headless
 Chromium (`src/lib/drivers/browser-session.ts`) replaces the YouTube Data
-API v3 search and `yt-dlp` — both removed, along with `YOUTUBE_API_KEY` and
-`YOUTUBE_COOKIES`. The prior `yt-dlp` driver's last several commits were all
-fighting YouTube's bot-check with no durable fix; this replaces the
-mechanism rather than patching it further.
+API v3 search, which is removed along with `YOUTUBE_API_KEY`. Downloading is
+a separate concern with two routes, described under "Two acquisition routes"
+below; `yt-dlp` was removed on 2026-08-28 and reinstated as one of those two
+on 2026-08-30 (operator directive). `YOUTUBE_COOKIES` remains removed — no
+route here is configured with cookies.
 
 **Both legs are deterministic. This job makes no model calls at all**
 (revised 2026-08-29, operator directive). Search went first, when per-action
@@ -420,7 +425,23 @@ typed outcome rather than a hang.
    awkward to test. No model call, no API key, no cookies. Every id is still
    verified against `extractYoutubeVideoId` before being trusted: scraped
    page data is untrusted input exactly as model output was.
-> **OPEN — footage acquisition is blocked (2026-08-31).** `media.ytmp3.gg` answers the GitHub Actions runner with a "Service Discontinued" modal over the converter form; the same URL from a residential IP serves a working page with no overlay at all. Whether that is a genuine shutdown, a staged rollout, or datacenter-IP blocking presented as one, the effect is the same: **the pipeline's only footage source cannot convert anything from where the pipeline runs.** `footage_segments` is empty, so RENDER has nothing to select and cannot produce a video. Replacing the converter means adding a provider, which `CLAUDE.md` reserves for an explicit operator decision — it has not been made, and nothing here has been changed to work around the notice.
+
+**Two acquisition routes (2026-08-30).** `DownloadDriver` has two implementations and the choice is made at one call site, `buildDownloadDriver` in `scripts/pipeline/footage-refresh.ts`, from `FOOTAGE_DOWNLOADER`:
+
+| Route | Module | State |
+|---|---|---|
+| `ytdlp` (default) | `src/lib/drivers/download-ytdlp.ts` | pinned, checksummed `yt-dlp` binary; verified end to end 2026-08-30 |
+| `ytmp3` | `src/lib/drivers/download-ytmp3-dom.ts` | Playwright over `media.ytmp3.gg`; verified working from a residential IP 2026-08-30, blocked from GitHub-hosted runners |
+
+Why two. `media.ytmp3.gg` began answering GitHub-hosted runners with a "Service Discontinued" modal over the converter form while serving a working page, with no overlay, to residential addresses — six consecutive refresh runs failed, the last three in about two minutes each, too fast to be conversion trouble. The driver was not at fault and was measured to prove it: driven unmodified from a residential IP it converted and downloaded a validated 1080p file in 41 seconds. **The variable was where the browser ran, not what it did**, and no amount of correct driver code addresses that. So `yt-dlp` was reinstated as a second route by operator directive rather than the converter being patched, and the converter was kept rather than deleted: a second route that works from a different place is what makes the next such block survivable.
+
+This reverses the 2026-08-28 removal of `yt-dlp`, and does not claim the reason for that removal has gone away. That driver was losing to YouTube's bot check and every commit was another patch at it. Nothing here has solved that — `classifyYtDlpError` gives the bot check its own error kind precisely so a run that hits it says so in one legible line, because the remedy is operational (run from somewhere YouTube trusts) and not something a driver can fix. What *is* new is that the failure is now named instead of mysterious, and that the alternate route exists.
+
+Two properties of the `yt-dlp` route are better than the converter's: duration is checked from `--dump-json` **before a byte is downloaded**, so an over-long source costs one cheap metadata call instead of gigabytes; and the output path is taken from yt-dlp's own `--print after_move:filepath` rather than reconstructed from a template, which merging and remuxing can both invalidate. Format selection prefers H.264 explicitly — `[ext=mp4]` alone selects AV1, which YouTube also serves in an mp4 container, and AV1 decodes several times slower on the CPU-only runners that then decode every frame twice (motion scoring, then clipping).
+
+Everything downloaded by either route is validated the same way, by the shared `probeVideo` in `src/lib/drivers/probe-video.ts`: a real video stream and a finite duration, before the duration ceiling is enforced against that *measured* value. The two routes differ entirely in how they obtain a file and not at all in what makes one acceptable.
+
+**Verified end to end 2026-08-30**, whole leg, live: search read three @HollowPoiint candidates off youtube.com; the first was refused as age-gated and the next downloaded (44 min, 1080p H.264); head/tail trim, motion scoring, clipping, provenance and the `assets-library` commits all ran; two 65-second 1080p clips landed in the library with matching `footage_segments` rows, in 427 seconds. `footage_segments` is no longer empty.
 
 **Two things the live site does that the fixture had to learn** (both found on 2026-08-31, the first real run on the deterministic driver):
 
