@@ -1,17 +1,14 @@
-import { execFile } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pipeline } from "node:stream/promises";
-import { promisify } from "node:util";
 import type { Page } from "playwright";
 import { launchBrowserSession } from "./browser-session.ts";
+import { describeError, probeVideo } from "./probe-video.ts";
 import { extractYoutubeVideoId } from "./youtube-url.ts";
 import type { DownloadDriver, DownloadRequest, DownloadResponse, DriverError } from "./types.ts";
 import { err, ok, type Result } from "../result.ts";
-
-const execFileAsync = promisify(execFile);
 
 const YTMP3_TOOL_URL = "https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy";
 
@@ -529,7 +526,7 @@ export class DomYtmp3DownloadDriver implements DownloadDriver {
     sourceVideoId: string,
     maxDurationS: number | undefined,
   ): Promise<Result<DownloadResponse, DriverError>> {
-    const probeResult = await this.probeVideo(filePath);
+    const probeResult = await probeVideo(filePath, this.ffprobeBin);
     if (!probeResult.ok) return probeResult;
     const { durationS } = probeResult.value;
 
@@ -542,31 +539,6 @@ export class DomYtmp3DownloadDriver implements DownloadDriver {
     }
 
     return ok({ filePath, durationS, sourceVideoId });
-  }
-
-  /** Nothing downloaded here is ever executed — only probed by ffprobe and, if valid, handed to ffmpeg for clipping. A file that isn't a real video (a disguised payload, an ad redirect's HTML error page) fails here, not later in the pipeline. */
-  private async probeVideo(filePath: string): Promise<Result<{ durationS: number }, DriverError>> {
-    try {
-      const { stdout } = await execFileAsync(
-        this.ffprobeBin,
-        ["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", filePath],
-        { signal: AbortSignal.timeout(30_000), maxBuffer: 8 * 1024 * 1024 },
-      );
-      const parsed: unknown = JSON.parse(stdout);
-      if (!isFfprobeOutput(parsed)) {
-        return err({ kind: "invalid_response", message: "ffprobe returned no usable output", retryable: false });
-      }
-      if (!(parsed.streams ?? []).some((s) => s.codec_type === "video")) {
-        return err({ kind: "invalid_response", message: "downloaded file has no video stream — refusing to trust it", retryable: false });
-      }
-      const durationS = Number(parsed.format?.duration);
-      if (!Number.isFinite(durationS)) {
-        return err({ kind: "invalid_response", message: "ffprobe returned no usable duration", retryable: false });
-      }
-      return ok({ durationS });
-    } catch (cause) {
-      return err(classifyProbeError(cause));
-    }
   }
 }
 
@@ -645,30 +617,4 @@ async function dismissServiceNotice(page: Page, actionTimeout: number): Promise<
 
 function exactLabelPattern(label: string): RegExp {
   return new RegExp(`^\\s*${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`);
-}
-
-interface FfprobeOutput {
-  format?: { duration?: string };
-  streams?: { codec_type?: string }[];
-}
-function isFfprobeOutput(value: unknown): value is FfprobeOutput {
-  return typeof value === "object" && value !== null;
-}
-
-function describeError(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
-}
-
-function classifyProbeError(cause: unknown): DriverError {
-  const message = describeError(cause);
-  if (cause instanceof Error && cause.name === "AbortError") return { kind: "timeout", message, retryable: true };
-  if (message.includes("ENOENT")) {
-    return { kind: "provider_error", message: `${message} — is ffprobe installed?`, retryable: false };
-  }
-  // ffprobe exiting non-zero on the downloaded file is the "not actually a
-  // video" case (or a transient truncated download) — never retryable as-is
-  // since retrying without re-downloading would just re-probe the same bad
-  // file, but it *is* the caller's (refreshFootageSource's) job to try the
-  // next candidate, so this stays informative rather than fatal-looking.
-  return { kind: "invalid_response", message: `ffprobe rejected the downloaded file: ${message}`, retryable: false };
 }

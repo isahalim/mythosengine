@@ -57,13 +57,29 @@ jobs:
           ffmpeg -version && ffprobe -version
 
       # playwright is a real, pinned npm dependency (package.json) -- this
-      # just fetches the matching Chromium build. Replaces the yt-dlp
-      # pin/checksum step and the YOUTUBE_COOKIES cookie workaround this
-      # job used to need (ARCHITECTURE.md §5.0, 2026-08-28): footage
-      # acquisition is a deterministic headless-browser flow, not a yt-dlp
-      # subprocess -- and, since 2026-08-29, not a model-driven one either.
+      # just fetches the matching Chromium build. Still needed whichever
+      # acquisition route runs: the *search* leg reads youtube.com's results
+      # page with a real browser either way, and the ytmp3 route drives its
+      # converter with one. Both legs are deterministic and model-free.
       - name: Install Playwright's Chromium
         run: npx playwright install --with-deps chromium
+
+      # Pinned to an exact release and checksummed, the same supply-chain
+      # discipline ARCHITECTURE.md states for ffmpeg -- the other non-npm
+      # binary this pipeline shells out to. Deliberately not the npm wrapper
+      # package (`yt-dlp-exec`): that is a single-maintainer republish of
+      # this same binary, and CLAUDE.md's import rule exists to keep exactly
+      # that out of the dependency tree.
+      - name: Install yt-dlp (pinned)
+        run: |
+          curl -sfL -o /usr/local/bin/yt-dlp \
+            https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/yt-dlp_linux
+          echo "${YT_DLP_SHA256}  /usr/local/bin/yt-dlp" | sha256sum -c -
+          chmod +x /usr/local/bin/yt-dlp
+          yt-dlp --version
+        env:
+          YT_DLP_VERSION: "2026.08.19"
+          YT_DLP_SHA256: "58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a"
 
       - name: Run FOOTAGE REFRESH
         run: npx tsx scripts/pipeline/footage-refresh.ts
@@ -72,6 +88,10 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          # "ytdlp" (the default) or "ytmp3". Both routes are built and
+          # tested; see buildDownloadDriver in the script for why there are
+          # two and when the other one is the answer.
+          FOOTAGE_DOWNLOADER: ytdlp
 
       - name: Push new clips to assets-library
         run: git push origin assets-library
