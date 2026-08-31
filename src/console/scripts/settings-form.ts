@@ -131,7 +131,6 @@ export function initSettingsForm(): void {
   const dryRunButton = document.getElementById("dry-run-button");
   const activateButton = document.getElementById("activate-button");
   const resetButton = document.getElementById("reset-defaults-button");
-  const errorBanner = document.querySelector<HTMLElement>("[data-console-api-error]");
 
   let lastDryRunSnapshot: string | null = null;
 
@@ -163,11 +162,9 @@ export function initSettingsForm(): void {
 
       if (!result.ok) {
         if (redirectIfUnauthorized(result.error)) return;
-        errorBanner?.classList.remove("hidden");
         setStatus(`Dry run failed: ${result.error.message}`);
         return;
       }
-      errorBanner?.classList.add("hidden");
       renderDryRun(result.value);
       lastDryRunSnapshot = JSON.stringify(parsed.data);
       if (activateButton instanceof HTMLButtonElement) activateButton.disabled = false;
@@ -218,10 +215,22 @@ export function initSettingsForm(): void {
     const result = await getSettings();
     if (!result.ok) {
       if (redirectIfUnauthorized(result.error)) return;
-      errorBanner?.classList.remove("hidden");
+      /*
+        This is the one place the banner was load-bearing rather than
+        redundant, and dropping it without a replacement would have been the
+        worst outcome of this change. The form falls back to the defaults so
+        it is still usable — but defaults are indistinguishable from real
+        saved settings once they are in the fields, so an operator would be
+        looking at values that are NOT what the pipeline is running and have
+        no way to tell. Say it in the loudest state this page has.
+      */
       populateForm(DEFAULT_DIRECTIVE);
+      showValidationErrors([
+        `Couldn't load the active directive (${result.error.kind}). These are the defaults, not what the pipeline is running — reload before changing anything.`,
+      ]);
       return;
     }
+    showValidationErrors([]);
     populateForm(result.value.compiled);
   })();
 }

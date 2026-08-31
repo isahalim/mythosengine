@@ -89,17 +89,14 @@ function buildRow(item: ExportListItem, onChanged: () => void): HTMLLIElement {
 
 async function loadStatus(status: ExportStatus): Promise<void> {
   const list = document.getElementById("export-list");
-  const errorBanner = document.querySelector<HTMLElement>("[data-console-api-error]");
   if (!list) return;
 
   const result = await listExports(status);
   if (!result.ok) {
     if (redirectIfUnauthorized(result.error)) return;
-    errorBanner?.classList.remove("hidden");
     list.replaceChildren(el("li", "text-sm text-mercury/50", "Unavailable."));
     return;
   }
-  errorBanner?.classList.add("hidden");
 
   list.replaceChildren();
   if (result.value.length === 0) {

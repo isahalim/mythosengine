@@ -26,10 +26,6 @@ function setText(id: string, value: string): void {
   if (node) node.textContent = value;
 }
 
-function showApiError(show: boolean): void {
-  document.querySelector<HTMLElement>("[data-console-api-error]")?.classList.toggle("hidden", !show);
-}
-
 // The per-video render pipeline's stage order (scripts/pipeline/render.ts's
 // own sequence of db/runs.ts startRun() calls) — used to turn a live run's
 // bare stage name into "step N of len" and a fill percentage. WATCH/SCORE
@@ -247,11 +243,12 @@ async function refresh(): Promise<void> {
   const result = await getSummary();
   if (!result.ok) {
     if (redirectIfUnauthorized(result.error)) return;
-    showApiError(true);
+    // showUnavailableState() is the whole failure signal: every card that
+    // would have shown a number says "Unavailable" in place. A banner on top
+    // of that said the same thing a second time, louder.
     showUnavailableState();
     return;
   }
-  showApiError(false);
   const summary = result.value;
   renderPulse(summary.pipelinePulse);
   renderExportPreview("ready-preview", summary.readyForReview, "Nothing waiting for review.");

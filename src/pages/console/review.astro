@@ -24,10 +24,6 @@ const tabs: { status: string; label: string }[] = [
   <ConsoleShell active="review" />
 
   <main class="mx-auto max-w-4xl px-6 pb-16">
-    <div id="console-api-error" data-console-api-error class="glass-alert mb-6 hidden">
-      Console API not reachable.
-    </div>
-
     <div class="mb-6 flex flex-wrap gap-2" role="tablist" aria-label="Export status filter">
       {
         tabs.map((tab, i) => (

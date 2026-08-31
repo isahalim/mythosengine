@@ -19,10 +19,6 @@ function threadEl(): HTMLElement | null {
 function statusEl(): HTMLElement | null {
   return document.getElementById("voice-status");
 }
-function errorBannerEl(): HTMLElement | null {
-  return document.querySelector<HTMLElement>("[data-console-api-error]");
-}
-
 function appendBubble(role: "user" | "assistant" | "tool", text: string): void {
   const thread = threadEl();
   if (!thread) return;
@@ -140,12 +136,10 @@ export function initVoice(): void {
     const transcribed = await transcribeVoice(audio);
     if (!transcribed.ok) {
       if (redirectIfUnauthorized(transcribed.error)) return;
-      errorBannerEl()?.classList.remove("hidden");
       setStatus("Couldn't transcribe that — hold the orb and try again.");
       button.disabled = false;
       return;
     }
-    errorBannerEl()?.classList.add("hidden");
 
     const transcript = transcribed.value.transcript.trim();
     if (!transcript) {
@@ -161,11 +155,9 @@ export function initVoice(): void {
     button.disabled = false;
     if (!turn.ok) {
       if (redirectIfUnauthorized(turn.error)) return;
-      errorBannerEl()?.classList.remove("hidden");
       setStatus("Couldn't reach the console — hold the orb and try again.");
       return;
     }
-    errorBannerEl()?.classList.add("hidden");
     activeSessionId = turn.value.sessionId;
 
     for (const toolName of turn.value.toolCallsMade) appendBubble("tool", toolName);

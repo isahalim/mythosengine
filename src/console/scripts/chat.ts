@@ -43,10 +43,6 @@ function sessionListEl(): HTMLElement | null {
 function threadEl(): HTMLElement | null {
   return document.getElementById("chat-thread");
 }
-function errorBannerEl(): HTMLElement | null {
-  return document.querySelector<HTMLElement>("[data-console-api-error]");
-}
-
 async function refreshSessionList(): Promise<void> {
   const list = sessionListEl();
   if (!list) return;
@@ -54,11 +50,9 @@ async function refreshSessionList(): Promise<void> {
   const result = await listChatSessions();
   if (!result.ok) {
     if (redirectIfUnauthorized(result.error)) return;
-    errorBannerEl()?.classList.remove("hidden");
     list.replaceChildren(el("li", "text-sm text-mercury/50", "Unavailable."));
     return;
   }
-  errorBannerEl()?.classList.add("hidden");
 
   list.replaceChildren();
   if (result.value.length === 0) {
@@ -184,11 +178,12 @@ async function openSession(sessionId: string): Promise<void> {
   const result = await getChatMessages(sessionId);
   if (!result.ok) {
     if (redirectIfUnauthorized(result.error)) return;
-    errorBannerEl()?.classList.remove("hidden");
+    // An empty thread reads as an empty chat, not as a failed load — the
+    // banner used to carry that distinction, so it has to be said here.
     renderThread([]);
+    showTurnFailure(`Couldn't load this chat (${result.error.kind}). Nothing was lost — try reopening it.`);
     return;
   }
-  errorBannerEl()?.classList.add("hidden");
   renderThread(result.value);
 }
 
@@ -211,7 +206,7 @@ export async function sendComposerMessage(content: string, onBusyChange?: (busy:
     const created = await createChatSession();
     if (!created.ok) {
       if (redirectIfUnauthorized(created.error)) return;
-      errorBannerEl()?.classList.remove("hidden");
+      showTurnFailure(`Couldn't start a new chat (${created.error.kind}). Your message wasn't sent — try again.`);
       return;
     }
     sessionId = created.value.id;
@@ -230,7 +225,6 @@ export async function sendComposerMessage(content: string, onBusyChange?: (busy:
   onBusyChange?.(false);
   if (!result.ok) {
     if (redirectIfUnauthorized(result.error)) return;
-    errorBannerEl()?.classList.remove("hidden");
     // The turn may well have been persisted server-side before the failure
     // (the user message is written first — src/server/agent/loop.ts), so
     // re-read rather than assuming the thread is still accurate.
@@ -239,7 +233,6 @@ export async function sendComposerMessage(content: string, onBusyChange?: (busy:
     showTurnFailure(`That turn didn't complete (${result.error.kind}). Nothing was lost — send it again, or check the dashboard.`);
     return;
   }
-  errorBannerEl()?.classList.add("hidden");
   await refreshSessionList();
   const refreshed = await getChatMessages(sessionId);
   if (refreshed.ok) renderThread(refreshed.value);
@@ -250,7 +243,12 @@ export function initChat(): void {
   newChatBtn?.addEventListener("click", () => {
     void (async () => {
       const result = await createChatSession();
-      if (result.ok) await openSession(result.value.id);
+      if (result.ok) {
+        await openSession(result.value.id);
+        return;
+      }
+      if (redirectIfUnauthorized(result.error)) return;
+      showTurnFailure(`Couldn't start a new chat (${result.error.kind}). Try again.`);
     })();
   });
 
