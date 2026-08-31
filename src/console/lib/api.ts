@@ -21,6 +21,12 @@ import type {
   DryRunResult,
   ExportListItem,
   ExportStatus,
+  QueuedPickView,
+  RankedIdea,
+  RunMontage,
+  RunProgress,
+  RunSummary,
+  Topic,
   VoiceTurnResult,
 } from "./types.ts";
 
@@ -100,6 +106,56 @@ export function discardExport(id: string): Promise<Result<{ ok: true }, DriverEr
   return send(`/console/exports/${encodeURIComponent(id)}/discard`, "POST");
 }
 
+// ---- the guided run's first three steps (plan v2 §7) ----
+
+/** Ranked candidates for one topic. `exclude` carries the picks already made in this wizard; the server also excludes anything already queued. */
+export function listIdeas(topic: Topic, limit = 5, exclude: string[] = []): Promise<Result<RankedIdea[], DriverError>> {
+  const params = new URLSearchParams({ topic, limit: String(limit) });
+  if (exclude.length > 0) params.set("exclude", exclude.join(","));
+  return get<RankedIdea[]>(`/console/ideas?${params.toString()}`);
+}
+
+export function getRunPlan(): Promise<Result<QueuedPickView[], DriverError>> {
+  return get<QueuedPickView[]>("/console/run-plan");
+}
+
+export function submitRunPlan(picks: { topic: Topic; signalId: string }[]): Promise<Result<{ ok: true; planId: string; queued: number }, DriverError>> {
+  return send("/console/run-plan", "POST", { picks });
+}
+
+export function cancelRunPick(id: string): Promise<Result<{ ok: true }, DriverError>> {
+  return send(`/console/run-plan/${encodeURIComponent(id)}`, "DELETE");
+}
+
+// ---- the guided run (plan v2 §7 steps 4 and 5) ----
+// All reads. Starting a run is still dispatchRun() below, and the review
+// actions are still the export calls above — the run view drives both
+// through the same endpoints the dashboard and the queue already use.
+
+export function listRuns(): Promise<Result<RunSummary[], DriverError>> {
+  return get<RunSummary[]>("/console/runs");
+}
+
+export function getRunProgress(traceId: string): Promise<Result<RunProgress, DriverError>> {
+  return get<RunProgress>(`/console/runs/${encodeURIComponent(traceId)}`);
+}
+
+// Reaches Pexels server-side (cached per keyword for a day), so it gets the
+// write budget rather than the read one — it is a slower call than a D1 read,
+// and a montage that times out client-side would look like a run with no
+// keywords rather than a slow network.
+const MONTAGE_TIMEOUT_MS = 15_000;
+
+export async function getRunMontage(traceId: string): Promise<Result<RunMontage, DriverError>> {
+  const res = await fetchWithRetry(
+    `/console/runs/${encodeURIComponent(traceId)}/montage`,
+    { method: "GET", credentials: "same-origin", headers: { accept: "application/json" } },
+    { timeoutMs: MONTAGE_TIMEOUT_MS, maxAttempts: 1, baseDelayMs: 0 },
+  );
+  if (!res.ok) return res;
+  return readJson<RunMontage>(res.value);
+}
+
 export function getSettings(): Promise<Result<DirectiveSummary, DriverError>> {
   return get<DirectiveSummary>("/console/settings");
 }
@@ -124,7 +180,8 @@ export function testKey(name: string): Promise<Result<{ ok: true }, DriverError>
   return send(`/console/keys/${encodeURIComponent(name)}/test`, "POST");
 }
 
-export function dispatchRun(): Promise<Result<{ ok: true; runId: string }, DriverError>> {
+/** `note` is set when the run was recorded but not actually triggered — see src/server/console/dispatch.ts. The run view shows it verbatim. */
+export function dispatchRun(): Promise<Result<{ ok: true; runId: string; note?: string }, DriverError>> {
   return send("/console/dispatch", "POST");
 }
 

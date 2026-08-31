@@ -4,8 +4,18 @@ import { runs } from "../../../db/schema.ts";
 import type { KvLike } from "../../lib/drivers/cache-kv.ts";
 import { isPipelineEnabled } from "./killswitch.ts";
 
-const DISPATCH_STAGE = "dispatch";
+/** The stage name of the console's own dispatch record — read back by src/server/console/runs.ts to tell a recorded run from a triggered one. */
+export const DISPATCH_STAGE = "dispatch";
 const MAX_DISPATCHES_PER_HOUR = 10;
+
+/**
+ * Said to the operator verbatim, in the console's run view as well as in the
+ * dispatch response — the run page has to explain why a run it just created
+ * will never move, and a second wording of the same fact would drift from
+ * this one.
+ */
+export const DISPATCH_NOT_TRIGGERED_NOTE =
+  "recorded — no GitHub Actions workflow_dispatch credential is provisioned yet (PROVISIONED.md), so the pipeline run itself was not actually triggered";
 
 export type DispatchResult =
   | { kind: "queued"; runId: string; note: string }
@@ -55,9 +65,5 @@ export async function dispatchRun(db: AppDb, killswitchKv: KvLike, now: () => nu
     })
     .run();
 
-  return {
-    kind: "queued",
-    runId,
-    note: "recorded — no GitHub Actions workflow_dispatch credential is provisioned yet (PROVISIONED.md), so the pipeline run itself was not actually triggered",
-  };
+  return { kind: "queued", runId, note: DISPATCH_NOT_TRIGGERED_NOTE };
 }

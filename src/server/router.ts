@@ -20,6 +20,10 @@ import { dispatchRun } from "./console/dispatch.ts";
 import { setPipelineEnabled } from "./console/killswitch.ts";
 import { approveScript } from "./console/scripts.ts";
 import { getConsoleSummary } from "./console/summary.ts";
+import { getRunProgress, listRecentRuns } from "./console/runs.ts";
+import { isTopic, rankIdeas } from "./console/ideas.ts";
+import { cancelPlanPick, listPlan, queuePlan, queuedSignalIds } from "./console/run-plan.ts";
+import { getRunMontage } from "./console/montage.ts";
 import { createChatSession, deleteChatSession, getChatMessages, listChatSessions } from "./console/chat.ts";
 import { runAgentTurn, type ToolInvoker } from "./agent/loop.ts";
 import { issueMcpToken, listMcpTokens, revokeMcpToken, verifyMcpToken } from "./mcp/tokens.ts";
@@ -38,6 +42,8 @@ export interface RouterEnv {
   SESSION_SIGNING_KEY: string;
   CONSOLE_ENROLLMENT_TOKEN: string;
   GROQ_API_KEY: string;
+  /** Optional — Pexels supplies the run view's *preview* montage only (src/server/console/montage.ts). Unset means no montage, never a broken console. */
+  PEXELS_API_KEY?: string;
   /** Shared secret for POST /internal/d1/batch. Optional in the type, fail-closed in the handler: an unset secret must close the endpoint, never open it. */
   PIPELINE_BATCH_TOKEN?: string;
 }
@@ -75,6 +81,7 @@ export interface RouterDeps {
   sessionSigningKey: string;
   consoleEnrollmentToken: string;
   groqApiKeyFallback: string;
+  pexelsApiKeyFallback: string | undefined;
   pipelineBatchToken: string | undefined;
 }
 
@@ -88,6 +95,7 @@ function depsFromEnv(env: RouterEnv): RouterDeps {
     sessionSigningKey: env.SESSION_SIGNING_KEY,
     consoleEnrollmentToken: env.CONSOLE_ENROLLMENT_TOKEN,
     groqApiKeyFallback: env.GROQ_API_KEY,
+    pexelsApiKeyFallback: env.PEXELS_API_KEY,
     pipelineBatchToken: env.PIPELINE_BATCH_TOKEN,
   };
 }
@@ -105,6 +113,12 @@ function depsFromEnv(env: RouterEnv): RouterDeps {
  * asset handler, and the asset handler has no such file (2026-08-31).
  */
 const EXPORT_DOWNLOAD_PATTERN = /^\/console\/exports\/([^/]+)\/download$/;
+
+/** The guided run's two per-run reads (src/server/console/runs.ts, montage.ts). The montage pattern is tested first, since `/runs/:id` would otherwise swallow it. */
+const RUN_PROGRESS_PATTERN = /^\/console\/runs\/([^/]+)$/;
+const RUN_MONTAGE_PATTERN = /^\/console\/runs\/([^/]+)\/montage$/;
+/** One queued pick, cancellable while it is still queued (db/run-picks.ts). */
+const RUN_PLAN_PICK_PATTERN = /^\/console\/run-plan\/([^/]+)$/;
 
 function json(data: unknown, status = 200): Response {
   return Response.json(data, { status });
@@ -284,6 +298,69 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
     if (pathname === "/console/summary" && method === "GET") {
       const summary = await getConsoleSummary(ctx.db, ctx.hotKv, ctx.vaultKv, deps.vaultMasterKey);
       return json(summary);
+    }
+
+    // ---- the guided run's first three steps: count, topic, ranked ideas ----
+    // The ideas endpoint is a read over the signals corpus (BM25, no model
+    // call — src/server/console/ideas.ts). The plan endpoints are the only
+    // *write* the run view owns, and they write to a queue RENDER claims
+    // from; nothing here triggers a render itself.
+    if (pathname === "/console/ideas" && method === "GET") {
+      const topic = url.searchParams.get("topic") ?? "";
+      if (!isTopic(topic)) return json({ error: "unknown_topic" }, 422);
+      const limitParam = Number(url.searchParams.get("limit") ?? 5);
+      const limit = Number.isFinite(limitParam) ? Math.min(Math.max(Math.trunc(limitParam), 1), 20) : 5;
+      // Whatever the operator picked earlier in this same wizard, plus
+      // whatever is already queued from a previous one: neither should be
+      // offered again, or one run makes two videos about one story.
+      const exclude = [...(url.searchParams.get("exclude")?.split(",").filter((id) => id !== "") ?? []), ...(await queuedSignalIds(ctx.db))];
+      return json(await rankIdeas(ctx.db, topic, limit, exclude));
+    }
+
+    if (pathname === "/console/run-plan" && method === "GET") {
+      return json(await listPlan(ctx.db));
+    }
+
+    if (pathname === "/console/run-plan" && method === "POST") {
+      const body = await readJson(request);
+      if (!body.ok) return json({ error: "invalid_json" }, 400);
+      const result = await queuePlan(ctx.db, ctx.rawClient, body.value);
+      if (result.kind === "invalid") return json({ error: "invalid_plan", message: result.message }, 422);
+      if (result.kind === "unknown_signal") return json({ error: "unknown_signal", signalIds: result.signalIds }, 422);
+      if (result.kind === "not_eligible") return json({ error: "not_eligible", signalIds: result.signalIds }, 409);
+      await writeAuditLog(ctx.db, "human", "run.plan", result.planId, { queued: result.queued });
+      return json({ ok: true, planId: result.planId, queued: result.queued });
+    }
+
+    const cancelPickMatch = pathname.match(RUN_PLAN_PICK_PATTERN);
+    if (cancelPickMatch && method === "DELETE") {
+      const result = await cancelPlanPick(ctx.db, cancelPickMatch[1]);
+      if (result.kind === "not_found") return json({ error: "not_found" }, 404);
+      await writeAuditLog(ctx.db, "human", "run.plan.cancel", cancelPickMatch[1], {});
+      return json({ ok: true });
+    }
+
+    // ---- the guided run (plan v2 §7 steps 4 and 5) ----
+    // Read-only, all three: the run view watches what the pipeline is
+    // doing, it does not steer it. Starting a run is still POST
+    // /console/dispatch, and the export actions are still the export
+    // routes below — no second write path for either.
+    if (pathname === "/console/runs" && method === "GET") {
+      return json(await listRecentRuns(ctx.db));
+    }
+
+    const runMontageMatch = pathname.match(RUN_MONTAGE_PATTERN);
+    if (runMontageMatch && method === "GET") {
+      const montage = await getRunMontage(ctx.db, ctx.hotKv, ctx.vaultKv, deps.vaultMasterKey, deps.pexelsApiKeyFallback, runMontageMatch[1]);
+      if (montage === null) return json({ error: "not_found" }, 404);
+      return json(montage);
+    }
+
+    const runProgressMatch = pathname.match(RUN_PROGRESS_PATTERN);
+    if (runProgressMatch && method === "GET") {
+      const progress = await getRunProgress(ctx.db, runProgressMatch[1]);
+      if (progress === null) return json({ error: "not_found" }, 404);
+      return json(progress);
     }
 
     if (pathname === "/console/exports" && method === "GET") {

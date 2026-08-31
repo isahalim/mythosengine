@@ -6,13 +6,14 @@
 import RadialNav from "./RadialNav.astro";
 
 interface Props {
-  active: "dashboard" | "review" | "settings" | "chat" | "voice";
+  active: "dashboard" | "run" | "review" | "settings" | "chat" | "voice";
 }
 
 const { active } = Astro.props;
 
 const links: { href: string; label: string; key: Props["active"] }[] = [
   { href: "/console", label: "Dashboard", key: "dashboard" },
+  { href: "/console/run", label: "Run", key: "run" },
   { href: "/console/review", label: "Review queue", key: "review" },
   { href: "/console/chat", label: "Chat", key: "chat" },
   { href: "/console/voice", label: "Voice", key: "voice" },

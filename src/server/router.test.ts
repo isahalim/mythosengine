@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as simplewebauthn from "@simplewebauthn/server";
 import { createTestDb } from "../../db/client.ts";
 import { applyMigrations } from "../../db/apply-migrations.ts";
+import { signals, sources } from "../../db/schema.ts";
 import { handleApiRequest, SESSION_COOKIE_NAME, type HotKvLike, type RouterDeps } from "./router.ts";
 
 vi.mock("@simplewebauthn/server", async (importOriginal) => {
@@ -69,6 +70,7 @@ describe("router", () => {
       sessionSigningKey: SESSION_SIGNING_KEY,
       consoleEnrollmentToken: ENROLLMENT_TOKEN,
       groqApiKeyFallback: "gsk_" + "a".repeat(40),
+      pexelsApiKeyFallback: undefined,
       pipelineBatchToken: PIPELINE_BATCH_TOKEN,
     };
     vi.mocked(simplewebauthn.verifyRegistrationResponse).mockReset();
@@ -530,6 +532,117 @@ describe("router", () => {
 
     it("still ignores paths this router does not own", async () => {
       expect(await handleApiRequest(new Request("https://example.workers.dev/anything-else"), deps)).toBeNull();
+    });
+  });
+
+  describe("the run plan's routes", () => {
+    async function seedScoredSignal(id: string, title: string): Promise<void> {
+      await ctx.db.insert(sources).values({ id: `src-${id}`, kind: "reddit", url: `http://x/${id}` }).run();
+      await ctx.db
+        .insert(signals)
+        .values({ id, sourceId: `src-${id}`, canonicalUrl: `http://x/${id}/1`, title, observedAt: "2026-08-31T00:00:00.000Z", engagementScore: 5, simhash: id, state: "scored" })
+        .run();
+    }
+
+    it("requires a session for ideas and for the plan", async () => {
+      expect((await handleApiRequest(apiRequest("/console/ideas?topic=ai"), deps))?.status).toBe(401);
+      expect((await handleApiRequest(apiRequest("/console/run-plan"), deps))?.status).toBe(401);
+    });
+
+    it("rejects an unknown topic with 422 rather than ranking nothing", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      const res = await handleApiRequest(apiRequest("/console/ideas?topic=sports", { cookie }), deps);
+      expect(res?.status).toBe(422);
+    });
+
+    it("ranks ideas, queues a plan, and stops offering what it queued", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      await seedScoredSignal("sig-ai", "OpenAI model release splits the industry");
+
+      const ideas = await handleApiRequest(apiRequest("/console/ideas?topic=ai", { cookie }), deps);
+      expect(ideas?.status).toBe(200);
+      expect((await ideas?.json()) as { signalId: string }[]).toMatchObject([{ signalId: "sig-ai" }]);
+
+      const queued = await handleApiRequest(
+        apiRequest("/console/run-plan", { method: "POST", cookie, body: JSON.stringify({ picks: [{ topic: "ai", signalId: "sig-ai" }] }) }),
+        deps,
+      );
+      expect(queued?.status).toBe(200);
+
+      // Queued once means offered no more — otherwise one run makes two
+      // videos about the same story.
+      const after = await handleApiRequest(apiRequest("/console/ideas?topic=ai", { cookie }), deps);
+      expect((await after?.json()) as unknown[]).toEqual([]);
+
+      const plan = await handleApiRequest(apiRequest("/console/run-plan", { cookie }), deps);
+      expect((await plan?.json()) as { signalId: string }[]).toMatchObject([{ signalId: "sig-ai", topic: "ai" }]);
+    });
+
+    it("refuses a plan naming a signal that was never scored", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      const res = await handleApiRequest(
+        apiRequest("/console/run-plan", { method: "POST", cookie, body: JSON.stringify({ picks: [{ topic: "ai", signalId: "ghost" }] }) }),
+        deps,
+      );
+      expect(res?.status).toBe(422);
+    });
+
+    it("cancels a queued pick and reports an unknown one as 404", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      await seedScoredSignal("sig-tech", "Startup launches a privacy-first chip platform");
+      await handleApiRequest(
+        apiRequest("/console/run-plan", { method: "POST", cookie, body: JSON.stringify({ picks: [{ topic: "tech", signalId: "sig-tech" }] }) }),
+        deps,
+      );
+      const plan = (await (await handleApiRequest(apiRequest("/console/run-plan", { cookie }), deps))?.json()) as { id: string }[];
+
+      const cancelled = await handleApiRequest(apiRequest(`/console/run-plan/${plan[0].id}`, { method: "DELETE", cookie }), deps);
+      expect(cancelled?.status).toBe(200);
+      expect((await (await handleApiRequest(apiRequest("/console/run-plan", { cookie }), deps))?.json()) as unknown[]).toEqual([]);
+
+      const missing = await handleApiRequest(apiRequest("/console/run-plan/ghost", { method: "DELETE", cookie }), deps);
+      expect(missing?.status).toBe(404);
+    });
+  });
+
+  describe("the guided run's routes", () => {
+    it("requires a session for the run list", async () => {
+      const res = await handleApiRequest(apiRequest("/console/runs"), deps);
+      expect(res?.status).toBe(401);
+    });
+
+    it("lists a recorded run and reads it back by trace id", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      const dispatched = await handleApiRequest(apiRequest("/console/dispatch", { method: "POST", cookie }), deps);
+      const { runId } = (await dispatched?.json()) as { runId: string };
+
+      const list = await handleApiRequest(apiRequest("/console/runs", { cookie }), deps);
+      expect(list?.status).toBe(200);
+      expect((await list?.json()) as unknown[]).toHaveLength(1);
+
+      const progress = await handleApiRequest(apiRequest(`/console/runs/${runId}`, { cookie }), deps);
+      expect(progress?.status).toBe(200);
+      // Dispatch records a run it has no credential to trigger; the run view
+      // has to be told that, not left to spin.
+      expect((await progress?.json()) as { status: string }).toMatchObject({ status: "not_triggered" });
+    });
+
+    it("answers an unknown trace id with 404, not an empty run", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      const res = await handleApiRequest(apiRequest("/console/runs/no-such-trace", { cookie }), deps);
+      expect(res?.status).toBe(404);
+    });
+
+    it("serves the montage route separately from the progress route", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      const dispatched = await handleApiRequest(apiRequest("/console/dispatch", { method: "POST", cookie }), deps);
+      const { runId } = (await dispatched?.json()) as { runId: string };
+
+      const montage = await handleApiRequest(apiRequest(`/console/runs/${runId}/montage`, { cookie }), deps);
+      expect(montage?.status).toBe(200);
+      // No PEXELS_API_KEY in these deps, so the honest answer is "not
+      // configured" — never an empty montage that reads as a failed search.
+      expect((await montage?.json()) as { configured: boolean }).toMatchObject({ configured: false, videos: [] });
     });
   });
 });

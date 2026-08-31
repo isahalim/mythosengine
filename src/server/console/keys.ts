@@ -4,13 +4,17 @@ import { fetchWithRetry } from "../../lib/drivers/http.ts";
 import type { DriverError } from "../../lib/drivers/types.ts";
 import { ok, type Result } from "../../lib/result.ts";
 
-export const ROTATABLE_KEY_NAMES = ["GROQ_API_KEY", "YOUTUBE_API_KEY"] as const;
+export const ROTATABLE_KEY_NAMES = ["GROQ_API_KEY", "YOUTUBE_API_KEY", "PEXELS_API_KEY"] as const;
 export type RotatableKeyName = (typeof ROTATABLE_KEY_NAMES)[number];
 
 const SHAPE_VALIDATORS: Record<RotatableKeyName, z.ZodString> = {
   GROQ_API_KEY: z.string().regex(/^gsk_[A-Za-z0-9]{40,}$/, "Groq keys look like gsk_<40+ alphanumeric chars>"),
   // YouTube's read-only API key is an opaque string — shape is validated by the live check instead (CONSOLE_SPEC.md §2).
   YOUTUBE_API_KEY: z.string().min(20),
+  // Pexels keys are a 56-character alphanumeric string; the length is not
+  // documented as stable, so this checks the alphabet and a floor and lets
+  // the live check settle the rest.
+  PEXELS_API_KEY: z.string().regex(/^[A-Za-z0-9]{30,}$/, "Pexels keys look like a long alphanumeric string"),
 };
 
 /** CONSOLE_SPEC.md §2 step 3: call the provider with the candidate credential; a live 200 is the only thing that validates it. */
@@ -23,6 +27,17 @@ async function liveCheck(name: RotatableKeyName, candidate: string, fetchImpl?: 
         headers: { "content-type": "application/json", authorization: `Bearer ${candidate}` },
         body: JSON.stringify({ model: "openai/gpt-oss-20b", messages: [{ role: "user", content: "hi" }], max_tokens: 1 }),
       },
+      { timeoutMs: 8_000, maxAttempts: 1, baseDelayMs: 0, fetchImpl },
+    );
+    return result.ok ? ok(undefined) : result;
+  }
+
+  if (name === "PEXELS_API_KEY") {
+    // One result, one keyword — the cheapest call the API offers. Pexels
+    // authenticates with a bare Authorization header, no Bearer prefix.
+    const result = await fetchWithRetry(
+      "https://api.pexels.com/videos/search?query=city&per_page=1",
+      { method: "GET", headers: { authorization: candidate, accept: "application/json" } },
       { timeoutMs: 8_000, maxAttempts: 1, baseDelayMs: 0, fetchImpl },
     );
     return result.ok ? ok(undefined) : result;

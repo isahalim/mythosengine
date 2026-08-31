@@ -150,6 +150,111 @@ export interface VoiceTurnResult extends AgentTurnResult {
   sessionId: string;
 }
 
+// ---- the guided run's first three steps (plan v2 §7) ----
+// Mirrors src/server/console/ideas.ts and run-plan.ts.
+
+/** The topic set the console offers, in order. Kept in step with ideas.ts's TOPICS — the server rejects anything else with 422. */
+export const TOPICS = ["viral", "politics", "tech", "science", "ai", "philosophy", "concept"] as const;
+export type Topic = (typeof TOPICS)[number];
+
+export interface RankedIdea {
+  signalId: string;
+  title: string;
+  url: string;
+  sourceKind: string;
+  observedAt: string;
+  engagementScore: number;
+  relevance: number;
+  matchedTerms: number;
+  score: number;
+}
+
+export interface QueuedPickView {
+  id: string;
+  planId: string;
+  position: number;
+  topic: string;
+  signalId: string;
+  /** Null when the signal row is gone — rendered as a missing title, never as a fabricated one. */
+  title: string | null;
+  createdAt: string;
+}
+
+// ---- the guided run (plan v2 §7 steps 4 and 5) ----
+// Mirrors src/server/console/runs.ts and montage.ts exactly. A "run" is one
+// `runs.trace_id`: the pipeline stamps every stage row of one invocation
+// with it, and `scripts.trace_id` hangs that invocation's videos off it.
+
+interface RunStage {
+  stage: string;
+  status: string;
+  startedAt: string;
+  finishedAt: string | null;
+  errorClass: string | null;
+}
+
+export interface RunVideo {
+  scriptId: string;
+  hook: string;
+  keywords: string[];
+  wordCount: number;
+  createdAt: string;
+  renderId: string | null;
+  renderStatus: string | null;
+  ttsVoice: string | null;
+  durationS: number | null;
+  exportId: string | null;
+  exportStatus: ExportStatus | null;
+  suggestedTitle: string | null;
+  sizeBytes: number | null;
+}
+
+/** `not_triggered` is a real state, not an error: POST /console/dispatch records a run it has no credential to actually start. */
+export type RunStatus = "not_triggered" | "queued" | "running" | "succeeded" | "failed";
+
+export interface RunProgress {
+  traceId: string;
+  status: RunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  stages: RunStage[];
+  videos: RunVideo[];
+  note: string | null;
+}
+
+export interface RunSummary {
+  traceId: string;
+  status: RunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  videoCount: number;
+}
+
+/**
+ * A preview clip for the waiting screen's montage — retrieved from Pexels
+ * for one of the script's keywords. Preview only: the rendered video's
+ * footage comes from the maintained library, and these clips never enter
+ * it. The UI must keep saying so, and must keep the attribution visible.
+ */
+export interface MontageClip {
+  id: number;
+  keyword: string;
+  videoUrl: string;
+  thumbnailUrl: string;
+  durationS: number;
+  width: number;
+  height: number;
+  photographer: string;
+  sourceUrl: string;
+}
+
+export interface RunMontage {
+  traceId: string;
+  configured: boolean;
+  videos: { scriptId: string; keywords: string[]; clips: MontageClip[] }[];
+  failures: { keyword: string; error: string }[];
+}
+
 export interface McpTokenSummary {
   id: string;
   label: string;

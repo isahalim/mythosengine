@@ -1,0 +1,206 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import { createTestDb } from "../../../db/client.ts";
+import { applyMigrations } from "../../../db/apply-migrations.ts";
+import { exports as exportsTable, footageSegments, footageSources, renders, runs, scripts, signals, sources } from "../../../db/schema.ts";
+import { getRunProgress, listRecentRuns } from "./runs.ts";
+
+const TRACE = "trace-1";
+
+async function seedSignal(ctx: ReturnType<typeof createTestDb>, id = "sig1"): Promise<void> {
+  await ctx.db.insert(sources).values({ id: "src1", kind: "reddit", url: "http://x" }).run();
+  await ctx.db
+    .insert(signals)
+    .values({ id, sourceId: "src1", canonicalUrl: `http://x/${id}`, title: "t", observedAt: "2026-08-31T00:00:00.000Z", engagementScore: 1, simhash: "a", state: "scripted" })
+    .run();
+}
+
+async function seedFootage(ctx: ReturnType<typeof createTestDb>): Promise<void> {
+  await ctx.db
+    .insert(footageSources)
+    .values({ id: "fs1", channelUrl: "https://youtube.com/@HollowPoiint", game: "GTA V", licenseNote: "walkthrough", enabled: 1 })
+    .run();
+  await ctx.db
+    .insert(footageSegments)
+    .values({
+      id: "seg1",
+      footageSourceId: "fs1",
+      sourceVideoId: "vid1",
+      clipStartS: 600,
+      clipEndS: 665,
+      motionScore: 0.5,
+      libraryPath: "clips/seg1.mp4",
+      usedCount: 0,
+      fetchedAt: "2026-08-31T00:00:00.000Z",
+    })
+    .run();
+}
+
+describe("getRunProgress", () => {
+  let ctx: ReturnType<typeof createTestDb>;
+
+  beforeEach(() => {
+    ctx = createTestDb();
+    applyMigrations(ctx.client);
+  });
+
+  it("returns null for a trace that has no run rows", async () => {
+    expect(await getRunProgress(ctx.db, "nope")).toBeNull();
+  });
+
+  it("reports a dispatch-only trace as not_triggered, with the note dispatch itself returns", async () => {
+    await ctx.db.insert(runs).values({ id: "r1", startedAt: "2026-08-31T10:00:00.000Z", stage: "dispatch", status: "queued", traceId: TRACE }).run();
+
+    const progress = await getRunProgress(ctx.db, TRACE);
+
+    expect(progress?.status).toBe("not_triggered");
+    expect(progress?.note).toContain("workflow_dispatch");
+    expect(progress?.videos).toEqual([]);
+  });
+
+  it("orders the stages by start time and reports a run with an open stage as running", async () => {
+    await ctx.db
+      .insert(runs)
+      .values([
+        { id: "r2", startedAt: "2026-08-31T10:00:05.000Z", finishedAt: "2026-08-31T10:00:09.000Z", stage: "script", status: "succeeded", traceId: TRACE },
+        { id: "r1", startedAt: "2026-08-31T10:00:00.000Z", finishedAt: "2026-08-31T10:00:04.000Z", stage: "research", status: "succeeded", traceId: TRACE },
+        { id: "r3", startedAt: "2026-08-31T10:00:10.000Z", stage: "critic", status: "running", traceId: TRACE },
+      ])
+      .run();
+
+    const progress = await getRunProgress(ctx.db, TRACE);
+
+    expect(progress?.stages.map((s) => s.stage)).toEqual(["research", "script", "critic"]);
+    expect(progress?.status).toBe("running");
+    expect(progress?.finishedAt).toBeNull();
+  });
+
+  it("reports a failed stage as a failed run and keeps its error class", async () => {
+    await ctx.db
+      .insert(runs)
+      .values([
+        { id: "r1", startedAt: "2026-08-31T10:00:00.000Z", finishedAt: "2026-08-31T10:00:04.000Z", stage: "research", status: "succeeded", traceId: TRACE },
+        { id: "r2", startedAt: "2026-08-31T10:00:05.000Z", finishedAt: "2026-08-31T10:00:06.000Z", stage: "script", status: "failed", errorClass: "provider_error", traceId: TRACE },
+      ])
+      .run();
+
+    const progress = await getRunProgress(ctx.db, TRACE);
+
+    expect(progress?.status).toBe("failed");
+    expect(progress?.stages[1].errorClass).toBe("provider_error");
+  });
+
+  it("attaches the trace's script, its render and its export as one video", async () => {
+    await seedSignal(ctx);
+    await seedFootage(ctx);
+    await ctx.db.insert(runs).values({ id: "r1", startedAt: "2026-08-31T10:00:00.000Z", finishedAt: "2026-08-31T10:05:00.000Z", stage: "export", status: "succeeded", traceId: TRACE }).run();
+    await ctx.db
+      .insert(scripts)
+      .values({
+        id: "scr1",
+        signalId: "sig1",
+        hook: "Your city is watching you sleep.",
+        body: "Councils bought the cameras quietly, and the city never voted on it.",
+        debateQuestion: "Would you have voted for it?",
+        wordCount: 140,
+        status: "approved",
+        traceId: TRACE,
+        createdAt: "2026-08-31T10:00:30.000Z",
+      })
+      .run();
+    await ctx.db
+      .insert(renders)
+      .values({ id: "rn1", scriptId: "scr1", footageSegmentId: "seg1", ttsDriver: "edge", ttsVoice: "en-US-AvaNeural", durationS: 47.5, status: "rendered", createdAt: "2026-08-31T10:04:00.000Z" })
+      .run();
+    await ctx.db
+      .insert(exportsTable)
+      .values({
+        id: "ex1",
+        renderId: "rn1",
+        storageKey: "exports/ex1.mp4",
+        sizeBytes: 4_200_000,
+        suggestedTitle: "The city is watching",
+        suggestedDescription: "d",
+        suggestedTagsJson: "[]",
+        auditJson: "{}",
+        createdAt: "2026-08-31T10:05:00.000Z",
+        expiresAt: "2026-09-03T10:05:00.000Z",
+        status: "ready_for_review",
+      })
+      .run();
+
+    const progress = await getRunProgress(ctx.db, TRACE);
+
+    expect(progress?.videos).toHaveLength(1);
+    const video = progress?.videos[0];
+    expect(video?.scriptId).toBe("scr1");
+    expect(video?.renderId).toBe("rn1");
+    expect(video?.exportId).toBe("ex1");
+    expect(video?.exportStatus).toBe("ready_for_review");
+    expect(video?.ttsVoice).toBe("en-US-AvaNeural");
+    expect(video?.keywords.length).toBeGreaterThan(0);
+    expect(video?.keywords).toContain("city");
+  });
+
+  it("shows a script with no render yet as a video in progress, not as a missing one", async () => {
+    await seedSignal(ctx);
+    await ctx.db.insert(runs).values({ id: "r1", startedAt: "2026-08-31T10:00:00.000Z", stage: "tts", status: "running", traceId: TRACE }).run();
+    await ctx.db
+      .insert(scripts)
+      .values({ id: "scr1", signalId: "sig1", hook: "h", body: "b", debateQuestion: "q", wordCount: 3, status: "draft", traceId: TRACE, createdAt: "2026-08-31T10:00:30.000Z" })
+      .run();
+
+    const progress = await getRunProgress(ctx.db, TRACE);
+
+    expect(progress?.videos).toHaveLength(1);
+    expect(progress?.videos[0].renderId).toBeNull();
+    expect(progress?.videos[0].exportId).toBeNull();
+  });
+
+  it("does not attribute another trace's script to this run", async () => {
+    await seedSignal(ctx);
+    await ctx.db.insert(runs).values({ id: "r1", startedAt: "2026-08-31T10:00:00.000Z", stage: "script", status: "running", traceId: TRACE }).run();
+    await ctx.db
+      .insert(scripts)
+      .values({ id: "scr-other", signalId: "sig1", hook: "h", body: "b", debateQuestion: "q", wordCount: 3, status: "draft", traceId: "some-other-trace", createdAt: "2026-08-31T10:00:30.000Z" })
+      .run();
+
+    const progress = await getRunProgress(ctx.db, TRACE);
+
+    expect(progress?.videos).toEqual([]);
+  });
+});
+
+describe("listRecentRuns", () => {
+  let ctx: ReturnType<typeof createTestDb>;
+
+  beforeEach(() => {
+    ctx = createTestDb();
+    applyMigrations(ctx.client);
+  });
+
+  it("groups run rows by trace, newest first, and counts each trace's videos", async () => {
+    await seedSignal(ctx);
+    await ctx.db
+      .insert(runs)
+      .values([
+        { id: "a1", startedAt: "2026-08-31T09:00:00.000Z", finishedAt: "2026-08-31T09:01:00.000Z", stage: "script", status: "succeeded", traceId: "older" },
+        { id: "b1", startedAt: "2026-08-31T11:00:00.000Z", finishedAt: "2026-08-31T11:01:00.000Z", stage: "research", status: "succeeded", traceId: "newer" },
+        { id: "b2", startedAt: "2026-08-31T11:02:00.000Z", stage: "script", status: "running", traceId: "newer" },
+      ])
+      .run();
+    await ctx.db
+      .insert(scripts)
+      .values({ id: "scr1", signalId: "sig1", hook: "h", body: "b", debateQuestion: "q", wordCount: 3, status: "draft", traceId: "newer", createdAt: "2026-08-31T11:02:30.000Z" })
+      .run();
+
+    const recent = await listRecentRuns(ctx.db);
+
+    expect(recent.map((run) => run.traceId)).toEqual(["newer", "older"]);
+    expect(recent[0]).toMatchObject({ status: "running", videoCount: 1 });
+    expect(recent[1]).toMatchObject({ status: "succeeded", videoCount: 0 });
+  });
+
+  it("returns an empty list on a fresh install rather than a placeholder run", async () => {
+    expect(await listRecentRuns(ctx.db)).toEqual([]);
+  });
+});

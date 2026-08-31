@@ -26,13 +26,14 @@
 // Desktop-only (md: and up) — ConsoleShell.astro keeps the flat pill nav
 // for narrow viewports, where an orbital layout has no reasonable room.
 interface Props {
-  active: "dashboard" | "review" | "settings" | "chat" | "voice";
+  active: "dashboard" | "run" | "review" | "settings" | "chat" | "voice";
 }
 
 const { active } = Astro.props;
 
 const nodes: { href: string; label: string; key: Props["active"] }[] = [
   { href: "/console", label: "Dashboard", key: "dashboard" },
+  { href: "/console/run", label: "Run", key: "run" },
   { href: "/console/review", label: "Review", key: "review" },
   { href: "/console/chat", label: "Chat", key: "chat" },
   { href: "/console/voice", label: "Voice", key: "voice" },
@@ -43,6 +44,9 @@ const nodes: { href: string; label: string; key: Props["active"] }[] = [
 // project (src/console/scripts/chat.ts's closeIcon() sets the precedent).
 const ICON_PATHS: Record<Props["active"], string> = {
   dashboard: "M4 4h7v7H4zM13 4h7v4h-7zM13 11h7v9h-7zM4 14h7v6H4z",
+  // A play triangle inside a frame — the guided run, which is the one nav
+  // node that starts something rather than showing something.
+  run: "M4 5h16v14H4zM10 9.5l5 2.5-5 2.5z",
   review: "M5 6h14M5 12h14M5 18h9",
   chat: "M4 5h16v11H8l-4 4z",
   voice: "M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3zM6 11a6 6 0 0 0 12 0M12 18v3",
