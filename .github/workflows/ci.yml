@@ -46,9 +46,9 @@ jobs:
 
       # Not preinstalled on ubuntu-latest (same finding as footage-refresh.yml).
       # Without it, every ffmpeg-gated test (clip/motion-score/render-ffmpeg/
-      # refresh/download-agentic-ytmp3 -- all use the hasFfmpeg()+skipIf
+      # refresh/download-ytmp3-dom -- all use the hasFfmpeg()+skipIf
       # pattern) silently skips here, which is how src/lib/drivers/**'s branch
-      # coverage dropped below the 80% threshold once download-agentic-ytmp3.ts
+      # coverage dropped below the 80% threshold once the ytmp3 download driver
       # added enough ffmpeg-gated branches to matter (confirmed live, 2026-08-29).
       - name: Install ffmpeg
         run: |
@@ -56,9 +56,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends ffmpeg
           ffmpeg -version && ffprobe -version
 
-      # pnpm verify's test step exercises src/lib/drivers/browser-agent-core.ts
-      # and its two driver adapters against a real headless Chromium (no mock
-      # browser) -- needs the actual binary present, same as footage-refresh.yml.
+      # pnpm verify's test step drives both footage drivers
+      # (youtube-search-dom.ts, download-ytmp3-dom.ts) against a real headless
+      # Chromium and a local fixture site (no mock browser) -- needs the actual
+      # binary present, same as footage-refresh.yml.
       - name: Install Playwright's Chromium
         run: npx playwright install --with-deps chromium
 

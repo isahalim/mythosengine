@@ -60,7 +60,8 @@ jobs:
       # just fetches the matching Chromium build. Replaces the yt-dlp
       # pin/checksum step and the YOUTUBE_COOKIES cookie workaround this
       # job used to need (ARCHITECTURE.md §5.0, 2026-08-28): footage
-      # acquisition is now an agentic browser flow, not a yt-dlp subprocess.
+      # acquisition is a deterministic headless-browser flow, not a yt-dlp
+      # subprocess -- and, since 2026-08-29, not a model-driven one either.
       - name: Install Playwright's Chromium
         run: npx playwright install --with-deps chromium
 

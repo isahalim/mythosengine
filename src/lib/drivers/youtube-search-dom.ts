@@ -1,5 +1,5 @@
 import type { Page } from "playwright";
-import { launchBrowserSession } from "./browser-agent-core.ts";
+import { launchBrowserSession } from "./browser-session.ts";
 import { extractYoutubeVideoId } from "./youtube-url.ts";
 import type { ChannelTopVideoRequest, ChannelTopVideoResponse, DriverError, YoutubeSearchDriver } from "./types.ts";
 import { err, ok, type Result } from "../result.ts";

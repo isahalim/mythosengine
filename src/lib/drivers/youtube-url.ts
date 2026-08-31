@@ -1,4 +1,4 @@
-// Shared between youtube-search-dom.ts and download-agentic-ytmp3.ts —
+// Shared between youtube-search-dom.ts and download-ytmp3-dom.ts —
 // the one place that decides whether something claiming to be a YouTube
 // video URL actually is one. Applied to both directions: a URL the search
 // agent read off a results page, and a URL a caller hands to the download

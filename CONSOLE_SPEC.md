@@ -43,7 +43,7 @@ Unchanged from MythosEngine. `@simplewebauthn/server` / `@simplewebauthn/browser
 
 | Key | Storage | Rotatable from the console? |
 |---|---|---|
-| `GROQ_API_KEY` | KV, AES-GCM under `VAULT_MASTER_KEY` | **Yes** — also what the agentic footage-acquisition loop uses (§6, ARCHITECTURE.md §5.0); no separate key for that |
+| `GROQ_API_KEY` | KV, AES-GCM under `VAULT_MASTER_KEY` | **Yes** — script/critic/metadata and this console's agent (§6). Footage acquisition does **not** use it: that job has been model-free since 2026-08-29 (ARCHITECTURE.md §5.0) |
 | Future provider keys (a paid TTS fallback, if Edge TTS ever dies) | same | Yes |
 | `CLOUDFLARE_API_TOKEN` | Actions secret + `wrangler secret` | **No** — infrastructure credentials stay out of the console's reach. Also what the render job uses to write export blobs to KV |
 | `VAULT_MASTER_KEY`, `SESSION_SIGNING_KEY`, `TURNSTILE_SECRET_KEY` | `wrangler secret` only | No |
@@ -217,7 +217,7 @@ A separate section from the text chat (`/console/voice`, not a mode inside `/con
 
 **External MCP clients:** the same `POST /console/mcp` endpoint the voice page's own turn loop uses internally is also reachable by a real external MCP client (Claude Desktop, Claude Code) via a bearer token (§2's "MCP access tokens"). Same allowlist, same audit trail, either way in.
 
-**Footage acquisition is a separate agent, not this one.** The weekly FOOTAGE REFRESH job (`ARCHITECTURE.md` §5.0) also runs a Groq tool-calling loop — to search youtube.com and convert+download via `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy` — but that loop is its own thing (`src/lib/drivers/browser-agent-core.ts`), built and run entirely inside the GitHub Actions job. It is not exposed through `POST /console/mcp`, does not share `AGENT_TOOLS`' allowlist, and the operator never talks to it — there's nothing to steer here, the operator only ever sees its output as new rows in `footage_segments`/the footage-health dashboard tile. Worth calling out only so the two agent loops in this codebase (this one, operator-facing; that one, CI-only) don't get confused for each other.
+**Footage acquisition is not an agent at all any more.** The weekly FOOTAGE REFRESH job (`ARCHITECTURE.md` §5.0) drives a headless browser to search youtube.com and convert+download via `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy`, but as of 2026-08-29 both legs are deterministic code (`youtube-search-dom.ts`, `download-ytmp3-dom.ts`) and it makes no model calls whatsoever — the tool-calling loop that used to run there (`browser-agent-core.ts`) was deleted. **This console agent is now the only agent loop in the codebase**, which removes the confusion this note used to exist to prevent. Footage acquisition is still never exposed through `POST /console/mcp` and shares nothing with `AGENT_TOOLS`; the operator only ever sees its output as new rows in `footage_segments`/the footage-health dashboard tile.
 
 ---
 

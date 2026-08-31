@@ -56,8 +56,10 @@ export class TokenBucketLimiter {
    * `tokenCapacity`, so `tokenBudget >= estimatedTokens` never becomes true
    * and the loop below spins forever, silently. That is not theoretical: on
    * 2026-08-29 the weekly FOOTAGE REFRESH job deadlocked here. Its browser
-   * agent (`browser-agent-core.ts`) accumulates page snapshots and link
-   * lists into its prompt, crossed ~20k characters — `(6000 - 1024) * 4`,
+   * agent (`browser-agent-core.ts`, since deleted — that job is entirely
+   * deterministic now and makes no model calls at all) accumulated page
+   * snapshots and link lists into its prompt, crossed ~20k characters —
+   * `(6000 - 1024) * 4`,
    * the exact point where `estimatePromptTokens` in groq.ts tips past this
    * limiter's 6000/min capacity — and the job then sat with an idle
    * Chromium open, emitting nothing at all, until the 30-minute GitHub

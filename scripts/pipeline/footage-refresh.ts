@@ -4,8 +4,7 @@ import { footageSources } from "../../db/schema.ts";
 import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
 import { refreshFootageSource } from "../../src/lib/footage/refresh.ts";
 import { DomYoutubeSearchDriver } from "../../src/lib/drivers/youtube-search-dom.ts";
-import { AgenticYtmp3DownloadDriver } from "../../src/lib/drivers/download-agentic-ytmp3.ts";
-import { createGroqDriverFromEnv, createGroqLimiter } from "../../src/lib/drivers/resolve-groq-driver.ts";
+import { DomYtmp3DownloadDriver } from "../../src/lib/drivers/download-ytmp3-dom.ts";
 import { buildPipelineEnv } from "./env.ts";
 
 /**
@@ -17,12 +16,14 @@ import { buildPipelineEnv } from "./env.ts";
  * runs `git push origin assets-library` once every source has been
  * processed.
  *
- * Acquisition is agentic (ARCHITECTURE.md §5.0, operator directive): search
- * and download both drive a real headless browser via a bounded Groq
- * tool-calling loop (src/lib/drivers/browser-agent-core.ts) instead of the
- * YouTube Data API + yt-dlp this replaced — see that module and the two
- * driver files for the guardrails (origin allowlisting, ffprobe validation
- * of anything downloaded).
+ * Acquisition drives a real headless browser (ARCHITECTURE.md §5.0) instead
+ * of the YouTube Data API + yt-dlp this replaced, and as of 2026-08-29 both
+ * legs are deterministic: **this job makes no model calls at all.** See the
+ * two driver files for the guardrails (origin allowlisting, ffprobe
+ * validation of anything downloaded, a byte ceiling on the download).
+ *
+ * `buildPipelineEnv()` still requires GROQ_API_KEY — it is shared with the
+ * daily render pipeline, which does call Groq. Nothing in this job reads it.
  */
 async function main(): Promise<void> {
   const env = buildPipelineEnv();
@@ -32,11 +33,6 @@ async function main(): Promise<void> {
     return;
   }
 
-  // A separate limiter instance from the daily SCRIPT/CRITIC pipeline's
-  // (render.ts) — this job runs weekly and alone, never concurrently with a
-  // render, so there's no cross-job budget to share.
-  const llm = createGroqDriverFromEnv(env.groqApiKey, createGroqLimiter());
-
   // A previous run killed by the Actions job timeout leaves its row
   // `running` forever, which the console then reports as a live stage.
   // Swept here rather than in the console: this is a write, and the
@@ -45,11 +41,12 @@ async function main(): Promise<void> {
   if (reaped > 0) console.warn(`Reaped ${reaped} abandoned run row(s) left behind by a killed job.`);
 
   const traceId = crypto.randomUUID();
-  // Split on purpose: search is deterministic, download is agentic.
-  // Reading a results page has one right answer and no ambiguity to
-  // resolve, so it costs zero tokens now (youtube-search-dom.ts). Driving
-  // ytmp3.gg genuinely varies — the layout shifts, ad interstitials appear,
-  // the convert step has to be waited out — so that leg keeps the model.
+  // Both legs are plain code. Reading a results page has one right answer,
+  // and so does driving ytmp3.gg's form: it is a fixed, id-addressed state
+  // machine, and "wait for the conversion" is a poll on the page's own
+  // ready/error state, not a judgement call. The agentic download driver
+  // that used to sit here was removed on 2026-08-29 (operator directive)
+  // once that was demonstrated end to end against the live site.
   const drivers = {
     search: new DomYoutubeSearchDriver(),
     // ytmp3.gg gates its Convert button behind a checkbox asserting the user
@@ -60,7 +57,7 @@ async function main(): Promise<void> {
     // under heavy transformation -- "not a claim of zero risk." The driver
     // defaults this to false precisely so the choice has to be made here,
     // deliberately, rather than assumed by a library.
-    download: new AgenticYtmp3DownloadDriver({ llm, acceptCopyrightAttestation: true }),
+    download: new DomYtmp3DownloadDriver({ acceptCopyrightAttestation: true }),
   };
 
   const sources = await env.db.select().from(footageSources).all();
