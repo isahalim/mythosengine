@@ -3,6 +3,24 @@ import { err, ok, type Result } from "../result.ts";
 import type { DriverError, LlmDriver, LlmMessage } from "../drivers/types.ts";
 
 /**
+ * Completion budget for a JSON-mode call.
+ *
+ * A 130-170 word script is only ~250 tokens of JSON, so 1024 looked generous.
+ * It was not: the gpt-oss models spend reasoning tokens before emitting, and
+ * those count against the same ceiling. SCRIPT failed live on 2026-08-31 with
+ * Groq's own words — "max completion tokens reached before generating a valid
+ * document" — and the repair retry then burned a second call against the same
+ * ceiling, which could never have succeeded.
+ *
+ * Deliberately not larger: `GroqDriver` prices a request at
+ * `maxTokens + promptChars / 4` against an 8,000-token/minute bucket
+ * (ARCHITECTURE.md §5.0 records what happens when a single call can consume
+ * the whole bucket — `acquire()` waits for a refill that never comes, and the
+ * job hangs until the Actions timeout). 3,072 leaves that headroom intact.
+ */
+const JSON_MAX_TOKENS = 3072;
+
+/**
  * Groq rejecting its own model's malformed JSON, rather than a fault on our
  * side. Matched on the provider's documented error code, not on prose.
  */
@@ -27,7 +45,7 @@ export async function requestValidatedJson<T>(
   const messages: LlmMessage[] = [{ role: "system", content: systemPrompt }];
 
   for (let attempt = 0; attempt < 2; attempt++) {
-    const completion = await llm.complete({ model, messages, jsonSchema: true, maxTokens: 1024, temperature: 0.8 });
+    const completion = await llm.complete({ model, messages, jsonSchema: true, maxTokens: JSON_MAX_TOKENS, temperature: 0.8 });
     if (!completion.ok) {
       // Groq's JSON mode validates the generation server-side and rejects a
       // malformed one as HTTP 400 `json_validate_failed`. That is the model

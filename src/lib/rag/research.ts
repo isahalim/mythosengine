@@ -161,7 +161,10 @@ export async function researchSignal(
       messages,
       tools: TOOLS,
       toolChoice: "auto",
-      maxTokens: 1200,
+      // Same reasoning-token pressure as src/lib/pipeline/request-json.ts:
+      // the budget covers the model's reasoning as well as the brief, and a
+      // brief carrying six key points and eight citations is not small.
+      maxTokens: 3072,
       temperature: 0.3,
     });
     if (!completion.ok) return completion;

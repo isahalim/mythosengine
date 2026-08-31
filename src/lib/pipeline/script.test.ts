@@ -131,6 +131,19 @@ describe("generateScript", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("asks for enough completion budget to cover the model's reasoning as well as the script", async () => {
+    // SCRIPT failed live on 2026-08-31 with Groq's own words: "max completion
+    // tokens reached before generating a valid document". The script itself
+    // is ~250 tokens; the gpt-oss reasoning ahead of it is what overran 1024.
+    const llm = new ScriptedLlm([llmResponse(VALID_SCRIPT_JSON)]);
+    await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
+
+    expect(llm.calls[0].maxTokens).toBeGreaterThanOrEqual(3072);
+    // ...and not so large that one call can drain the 8k/min token bucket,
+    // which is how the old browser agent used to hang the job outright.
+    expect(llm.calls[0].maxTokens).toBeLessThan(6000);
+  });
+
   it("repairs once when Groq rejects its own model's malformed JSON, instead of hard-failing", async () => {
     // Groq validates JSON-mode output server-side and returns HTTP 400
     // `json_validate_failed`. That is the model failing to produce valid
