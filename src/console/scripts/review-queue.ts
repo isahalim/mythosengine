@@ -48,7 +48,12 @@ function buildRow(item: ExportListItem, onChanged: () => void): HTMLLIElement {
   download.textContent = "Download";
   right.appendChild(download);
 
-  if (item.status === "ready_for_review") {
+  // Both statuses, not just ready_for_review. Downloading flips an export to
+  // "downloaded", and gating the actions on the earlier status stranded it:
+  // no Mark reviewed, no Discard, nothing to do but wait for it to expire —
+  // and marking something reviewed *after* watching it is the whole workflow.
+  // The server already accepts either transition; this was only a UI gate.
+  if (item.status === "ready_for_review" || item.status === "downloaded") {
     const reviewBtn = document.createElement("button");
     reviewBtn.type = "button";
     reviewBtn.className = "rounded-full border border-oxide/40 px-3.5 py-1.5 font-body text-xs text-oxide transition-colors hover:bg-oxide/10";

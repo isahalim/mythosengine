@@ -91,7 +91,6 @@ export async function discardExport(db: AppDb, blobStore: ExportBlobStore, id: s
 
 export type DownloadResult = { kind: "ok"; bytes: ArrayBuffer; export: typeof exportsTable.$inferSelect } | { kind: "not_found" } | { kind: "blob_missing" };
 
-/** Streams a ready-for-review export's real MP4 from KV, and marks it downloaded (CONSOLE_SPEC.md §4/§6). */
 /**
  * A filename for the `Content-Disposition` header.
  *
@@ -113,6 +112,7 @@ export function exportFileName(suggestedTitle: string, id: string): string {
   return `${slug.length > 0 ? `${slug}-` : ""}${id}.mp4`;
 }
 
+/** Streams a ready-for-review export's real MP4 from KV, and marks it downloaded (CONSOLE_SPEC.md §4/§6). */
 export async function downloadExport(db: AppDb, blobStore: ExportBlobStore, id: string): Promise<DownloadResult> {
   const existing = await getExport(db, id);
   if (!existing) return { kind: "not_found" };

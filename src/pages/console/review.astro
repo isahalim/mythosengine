@@ -7,8 +7,13 @@
 import ConsoleLayout from "../../layouts/ConsoleLayout.astro";
 import ConsoleShell from "../../console/components/ConsoleShell.astro";
 
+// "Downloaded" is its own tab because downloadExport moves an export into
+// that status the moment its bytes are served. Without a tab for it, a
+// successful download made the export vanish from the console entirely —
+// it was in no list, and the operator had no way to reach it again.
 const tabs: { status: string; label: string }[] = [
   { status: "ready_for_review", label: "Ready for review" },
+  { status: "downloaded", label: "Downloaded" },
   { status: "reviewed", label: "Reviewed" },
   { status: "discarded", label: "Discarded" },
   { status: "expired", label: "Expired" },

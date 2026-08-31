@@ -98,6 +98,29 @@ describe("exports service", () => {
   });
 });
 
+describe("an export stays reachable after it is downloaded", () => {
+  it("is listed under the status downloadExport moves it to", async () => {
+    // downloadExport flips ready_for_review -> downloaded. The console has a
+    // tab per status, so a status no tab lists is an export that has
+    // silently vanished from the operator's view — which is what happened
+    // until the "Downloaded" tab was added (2026-08-31). This is that
+    // invariant, guarded where it can be tested.
+    const ctx = createTestDb();
+    applyMigrations(ctx.client);
+    const blobs = new FakeBlobStore();
+    await seedExport(ctx.db, "exp1", "ready_for_review");
+    blobs.store.set("blob:exp1", new TextEncoder().encode("mp4!").buffer);
+
+    expect((await listExports(ctx.db, "ready_for_review")).map((e) => e.id)).toContain("exp1");
+
+    const result = await downloadExport(ctx.db, blobs, "exp1");
+    expect(result.kind).toBe("ok");
+
+    expect((await listExports(ctx.db, "ready_for_review")).map((e) => e.id)).not.toContain("exp1");
+    expect((await listExports(ctx.db, "downloaded")).map((e) => e.id)).toContain("exp1");
+  });
+});
+
 describe("exportFileName", () => {
   it("slugs the suggested title and always ends in the export id", () => {
     expect(exportFileName("Ever watched a movie so insane?", "exp1")).toBe("Ever-watched-a-movie-so-insane-exp1.mp4");
