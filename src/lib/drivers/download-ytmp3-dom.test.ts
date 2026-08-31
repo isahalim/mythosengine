@@ -68,7 +68,7 @@ const FIXTURE_HTML = `<!doctype html>
 </form>
 <div id="result" style="display:none">
   <div class="status" id="status-el"></div>
-  <button id="retry-btn" style="display:none">Retry</button>
+  <button id="retry-btn" style="display:none" onclick="runConversion()">Retry</button>
   <button id="download-btn" style="display:none">Download</button>
 </div>
 <script>
@@ -83,21 +83,34 @@ const FIXTURE_HTML = `<!doctype html>
     document.querySelector('.video-group-trigger').textContent = ' ' + btn.textContent.trim() + ' ';
     document.getElementById('quality-menu').style.display = 'none';
   }
+  // How many conversions have been started. A failTimes=N query param fails
+  // the first N and then succeeds, which is what makes the driver's use of
+  // the page's own #retry-btn testable.
+  var conversionAttempts = 0;
   function startConversion(event) {
     event.preventDefault();
     document.getElementById('downloadForm').style.display = 'none';
+    runConversion();
+    return false;
+  }
+  function runConversion() {
+    conversionAttempts++;
     var result = document.getElementById('result');
     var status = document.getElementById('status-el');
     result.style.display = 'block';
+    // Reset from any previous failure, exactly as the real page does.
+    status.className = 'status';
+    document.getElementById('retry-btn').style.display = 'none';
     status.textContent = 'Checking video source…';
     setTimeout(function () { status.textContent = 'Analyzing video details…'; }, 50);
 
     var delayMs = Number(params.get('delayMs') || '250');
     var outcome = params.get('outcome') || 'ok';
+    var failTimes = Number(params.get('failTimes') || '0');
     if (outcome === 'hang') return false;
 
     setTimeout(function () {
-      if (outcome === 'error') {
+      if (outcome === 'error' || conversionAttempts <= failTimes) {
         status.className = 'status status--error';
         status.textContent = 'An error occurred - please retry';
         document.getElementById('retry-btn').style.display = 'inline';
@@ -294,6 +307,59 @@ describe.skipIf(!hasFfmpeg())("DomYtmp3DownloadDriver", () => {
       expect(result.error.message).toContain("An error occurred");
     }
     expect(fileRequests).toEqual([]);
+  });
+
+  it("takes the page up on its own retry button and recovers from a transient failure", async () => {
+    // Observed live 2026-08-31: a HollowPoiint video died with "An error
+    // occurred - please retry" five seconds in, and that one hiccup failed
+    // the channel's whole weekly refresh. The page renders #retry-btn for
+    // exactly this; the driver now clicks it.
+    const driver = new DomYtmp3DownloadDriver({
+      toolUrl: toolUrl("?failTimes=1&delayMs=150&durationAttr=3"),
+      acceptCopyrightAttestation: true,
+      pollIntervalMs: 100,
+    });
+
+    const result = await driver.fetchVideo({ url: YOUTUBE_URL });
+
+    expect(result.ok).toBe(true);
+    expect(fileRequests).toEqual(["/files/real.mp4"]);
+  });
+
+  it("gives up after the configured number of conversion attempts", async () => {
+    const driver = new DomYtmp3DownloadDriver({
+      toolUrl: toolUrl("?outcome=error&delayMs=150"),
+      acceptCopyrightAttestation: true,
+      pollIntervalMs: 100,
+      maxConversionAttempts: 2,
+    });
+
+    const result = await driver.fetchVideo({ url: YOUTUBE_URL });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe("provider_error");
+    // Retrying is bounded — a converter that keeps failing is telling us
+    // something real, and must not spin the job until the Actions timeout.
+    expect(fileRequests).toEqual([]);
+  });
+
+  it("does not retry a timeout — the conversion is still running, restarting it just spends the budget twice", async () => {
+    const driver = new DomYtmp3DownloadDriver({
+      toolUrl: toolUrl("?outcome=hang"),
+      acceptCopyrightAttestation: true,
+      conversionTimeoutMs: 1_200,
+      pollIntervalMs: 100,
+      maxConversionAttempts: 3,
+    });
+
+    const startedAt = Date.now();
+    const result = await driver.fetchVideo({ url: YOUTUBE_URL });
+    const elapsed = Date.now() - startedAt;
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe("timeout");
+    // One timeout budget, not three.
+    expect(elapsed).toBeLessThan(1_200 * 2);
   });
 
   it("times out — rather than hanging — when the page never resolves either way", async () => {

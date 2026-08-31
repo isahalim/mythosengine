@@ -129,9 +129,22 @@ export async function refreshFootageSource(
   let lastError: DriverError | undefined;
   let sawOnlyAlreadyHave = true;
 
+  // The candidate pool, before anything is attempted. Logged because this
+  // job's only evidence is CI stdout, and on 2026-08-31 a run that tried
+  // exactly one candidate and stopped could not say whether search had
+  // returned one or the other two had been filtered — two very different
+  // problems, indistinguishable from the outside.
+  console.warn(
+    `FOOTAGE REFRESH [${footageSource.id}]: ${videosResult.value.length} candidate(s): ` +
+      videosResult.value.map((v) => `${v.videoId} (${v.durationS}s, ${v.viewCount} views)`).join(", "),
+  );
+
   for (const video of videosResult.value) {
     const existing = await db.select().from(footageSegments).where(eq(footageSegments.sourceVideoId, video.videoId)).all();
-    if (existing.length > 0) continue;
+    if (existing.length > 0) {
+      console.warn(`FOOTAGE REFRESH [${footageSource.id}]: skipping ${video.videoId} — already in the library.`);
+      continue;
+    }
     sawOnlyAlreadyHave = false;
 
     // Rejected on the search result's stated duration, before a byte moves.
@@ -141,13 +154,13 @@ export async function refreshFootageSource(
     // that cannot survive both 10-minute buffers plus a clip has nothing to
     // offer.
     if (video.durationS > maxSourceDurationS || video.durationS < minUsableDurationS) {
-      lastError = {
-        kind: "policy_violation",
-        message: `candidate ${video.videoId} is ${video.durationS}s, outside the usable range ${minUsableDurationS}-${maxSourceDurationS}s`,
-        retryable: false,
-      };
+      const message = `candidate ${video.videoId} is ${video.durationS}s, outside the usable range ${minUsableDurationS}-${maxSourceDurationS}s`;
+      console.warn(`FOOTAGE REFRESH [${footageSource.id}]: rejecting ${message}.`);
+      lastError = { kind: "policy_violation", message, retryable: false };
       continue;
     }
+
+    console.warn(`FOOTAGE REFRESH [${footageSource.id}]: attempting ${video.videoId} (${video.durationS}s).`);
 
     if (worktreeDir === undefined) {
       const dir = await mkdtemp(join(tmpdir(), "footage-refresh-worktree-"));
@@ -168,6 +181,7 @@ export async function refreshFootageSource(
       maxDurationS: maxSourceDurationS,
     });
     if (!downloadResult.ok) {
+      console.warn(`FOOTAGE REFRESH [${footageSource.id}]: ${video.videoId} failed to download (${downloadResult.error.kind}: ${downloadResult.error.message}); trying the next candidate.`);
       lastError = downloadResult.error;
       continue;
     }

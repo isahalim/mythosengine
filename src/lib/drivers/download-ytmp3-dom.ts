@@ -47,6 +47,8 @@ const DOWNLOAD_TIMEOUT_MS = 900_000;
  * download starts at all.
  */
 const MAX_DOWNLOAD_BYTES = 6 * 1024 * 1024 * 1024;
+/** Conversion attempts before a video is called bad. The page offers `#retry-btn` on failure; this is how many times that offer is taken. */
+const MAX_CONVERSION_ATTEMPTS = 3;
 
 /**
  * Every selector below was read off the live page with a real browser on
@@ -79,6 +81,7 @@ const SELECTORS = {
   qualitySelect: "#quality-select",
   consentCheckbox: "#copyright-consent-checkbox",
   submitButton: "#submit-button",
+  retryButton: "#retry-btn",
 } as const;
 
 export interface DomYtmp3DownloadDriverOptions {
@@ -108,6 +111,8 @@ export interface DomYtmp3DownloadDriverOptions {
   pollIntervalMs?: number;
   downloadTimeoutMs?: number;
   maxDownloadBytes?: number;
+  /** How many times the conversion is attempted before giving up on a video. Defaults to 3. */
+  maxConversionAttempts?: number;
   ffprobeBin?: string;
 }
 
@@ -303,7 +308,53 @@ export class DomYtmp3DownloadDriver implements DownloadDriver {
       });
     }
 
-    return this.waitForConversion(page);
+    return this.convertWithRetries(page, actionTimeout);
+  }
+
+  /**
+   * Drives the conversion, and takes the page up on its own offer to retry.
+   *
+   * A failed conversion renders `.status--error` **next to a `#retry-btn`** —
+   * the site's own signal that the failure is worth another go, not a verdict
+   * on the video. Observed live on 2026-08-31: a first-choice HollowPoiint
+   * video died with "An error occurred - please retry" five seconds in, and
+   * that single transient hiccup failed the channel's entire weekly refresh.
+   * Clicking what the page is offering costs one round trip and is the
+   * difference between a bad minute and a bad week.
+   *
+   * Bounded, and every attempt is announced: a converter that fails three
+   * times is telling us something real about that video, and the run log has
+   * to show the difference between "retried and recovered" and "retried and
+   * gave up".
+   */
+  private async convertWithRetries(page: Page, actionTimeout: number): Promise<Result<{ fileUrl: string; reportedDurationS: number | null }, DriverError>> {
+    const maxAttempts = this.options.maxConversionAttempts ?? MAX_CONVERSION_ATTEMPTS;
+
+    for (let attempt = 1; ; attempt++) {
+      const result = await this.waitForConversion(page);
+      // Only the page's own retry-me state is retried. A timeout means the
+      // conversion is still grinding somewhere, and starting it over would
+      // just spend the budget again.
+      if (result.ok || result.error.kind !== "provider_error" || attempt >= maxAttempts) {
+        if (!result.ok && attempt > 1) {
+          console.warn(`[ytmp3] gave up after ${attempt} conversion attempts.`);
+        }
+        return result;
+      }
+
+      console.warn(`[ytmp3] conversion attempt ${attempt}/${maxAttempts} failed; clicking the page's own retry button.`);
+      try {
+        await page.locator(SELECTORS.retryButton).first().click({ timeout: actionTimeout });
+      } catch (cause) {
+        // The button the state machine says is there isn't clickable. Report
+        // the original conversion failure, with why the retry never happened.
+        return err({
+          kind: "provider_error",
+          message: `${result.error.message} (retry button could not be clicked: ${describeError(cause)})`,
+          retryable: true,
+        });
+      }
+    }
   }
 
   /**
