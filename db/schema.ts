@@ -76,11 +76,49 @@ export const scripts = sqliteTable(
   ],
 );
 
+/**
+ * RESEARCH (ARCHITECTURE.md §5.2.5) — the grounded brief SCRIPT was written
+ * from, and the citations it stands on. Kept as its own table rather than a
+ * column on `scripts` because it is evidence, not draft content: §9 requires
+ * the export's audit package to show a reviewer what the script was
+ * grounded in, and a brief survives a script being rewritten.
+ *
+ * Nullable from the pipeline's point of view — a render whose RESEARCH
+ * failed simply has no row here, and AUDIT SUMMARY says so. A retrieval
+ * outage degrades the day's video, it does not cancel it.
+ */
+export const researchBriefs = sqliteTable(
+  "research_briefs",
+  {
+    id: text("id").primaryKey(),
+    signalId: text("signal_id")
+      .notNull()
+      .references(() => signals.id, { onDelete: "cascade" }),
+    summary: text("summary").notNull(),
+    // JSON arrays rather than child tables: nothing queries inside them,
+    // they are written once and read back whole into the audit package.
+    keyPointsJson: text("key_points_json").notNull(),
+    citationsJson: text("citations_json").notNull(),
+    /** Which model produced it, and which tools it actually ran — the audit trail for how the brief was built. */
+    model: text("model").notNull(),
+    toolCallsJson: text("tool_calls_json").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [index("idx_research_signal").on(t.signalId, t.createdAt)],
+);
+
 export const footageSources = sqliteTable("footage_sources", {
   id: text("id").primaryKey(),
   channelUrl: text("channel_url").notNull(),
   game: text("game").notNull(),
   licenseNote: text("license_note").notNull(),
+  // Mirrors `sources.enabled` (ARCHITECTURE.md §5.1): a channel is retired
+  // by flipping this, never by deleting the row. `renders.footage_segment_id`
+  // is a restricting FK, so deleting a source would either fail or destroy
+  // the provenance of exports the operator has already reviewed — and §9
+  // requires that provenance to stay readable for the life of the export.
+  // Both FOOTAGE REFRESH and FOOTAGE SELECT filter on this.
+  enabled: integer("enabled").notNull().default(1),
 });
 
 export const footageSegments = sqliteTable(

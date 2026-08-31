@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { applyMigrations } from "./apply-migrations.ts";
 import { createTestDb } from "./client.ts";
@@ -156,5 +156,32 @@ describe("claimNextFootageSegment", () => {
   it("returns null when no segments exist for the requested game", async () => {
     const claimed = await claimNextFootageSegment(ctx.db, "subway-surfers", "2026-01-02T00:00:00Z");
     expect(claimed).toBeNull();
+  });
+
+  it("never claims a segment belonging to a disabled source", async () => {
+    // Retiring a channel (db/migrations/0008) has to stop its footage
+    // appearing in new renders. Deleting the row was not an option: exports
+    // already delivered point at these segments and §9 requires that
+    // provenance to stay readable.
+    ctx.db.update(footageSources).set({ enabled: 0 }).where(eq(footageSources.id, "fsrc1")).run();
+
+    expect(await claimNextFootageSegment(ctx.db, "minecraft", "2026-01-02T00:00:00Z")).toBeNull();
+
+    // ...and the segments themselves are still there, untouched.
+    const rows = ctx.db.select().from(footageSegments).all();
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.usedCount === 0)).toBe(true);
+  });
+
+  it("still claims from an enabled source when a disabled one shares the game", async () => {
+    ctx.db.update(footageSources).set({ enabled: 0 }).where(eq(footageSources.id, "fsrc1")).run();
+    ctx.db.insert(footageSources).values({ id: "fsrc2", channelUrl: "http://y", game: "minecraft", licenseNote: "owned" }).run();
+    ctx.db
+      .insert(footageSegments)
+      .values({ id: "seg3", footageSourceId: "fsrc2", sourceVideoId: "v2", clipStartS: 0, clipEndS: 65, motionScore: 0.7, libraryPath: "c", fetchedAt: "2026-01-01" })
+      .run();
+
+    const claimed = await claimNextFootageSegment(ctx.db, "minecraft", "2026-01-02T00:00:00Z");
+    expect(claimed?.id).toBe("seg3");
   });
 });

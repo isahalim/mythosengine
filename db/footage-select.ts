@@ -31,6 +31,11 @@ export interface ClaimedFootageSegment {
  * `sql` template values are still parameterized/escaped by drizzle, not
  * string-concatenated.
  *
+ * A segment whose `footage_sources` row is disabled is never claimed
+ * (operator directive 2026-08-30, db/migrations/0008): retiring a channel
+ * has to stop it appearing in *new* renders, while leaving its existing
+ * segments and their provenance intact for exports already delivered.
+ *
  * Built against `AppDb` rather than a raw better-sqlite3 handle — the
  * raw-statement version this replaced could only ever run against the
  * local test dialect, not the D1 binding or the D1-over-HTTP client the
@@ -44,7 +49,7 @@ export async function claimNextFootageSegment(db: AppDb, game: string, nowIso: s
       sql`${footageSegments.id} = (
         SELECT fs.id FROM footage_segments fs
         JOIN footage_sources src ON src.id = fs.footage_source_id
-        WHERE src.game = ${game}
+        WHERE src.game = ${game} AND src.enabled = 1
         ORDER BY fs.used_count ASC, fs.last_used_at IS NOT NULL, fs.last_used_at ASC
         LIMIT 1
       )`,

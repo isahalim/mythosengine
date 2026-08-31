@@ -57,6 +57,20 @@
       "when": 1787950016134,
       "tag": "0007_mcp_tokens",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1788151258625,
+      "tag": "0008_footage_source_enabled",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1788151955009,
+      "tag": "0009_research_briefs",
+      "breakpoints": true
     }
   ]
 }

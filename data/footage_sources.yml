@@ -3,11 +3,18 @@
 # footage-sourcing design in docs/DECISIONS.md. The weekly FOOTAGE REFRESH
 # job discovers each channel's current top video and clips from it; the
 # same source video can be reused across many distinct renders.
+#
+# `enabled: false` retires a channel without deleting it. FOOTAGE REFRESH
+# stops pulling new video from it and FOOTAGE SELECT stops choosing its
+# segments, but the rows survive so already-exported renders keep the
+# provenance §9 requires. Nothing loads this file at runtime — it is the
+# committed record of what db/migrations/0008 put in the table.
 
 footage_sources:
   - id: hollowpoiint-gta
     channel_url: https://www.youtube.com/@HollowPoiint
     game: gta-v
+    enabled: true
     license_note: >
       Public, high-subscriber (3.2M) full-game walkthrough channel.
       Footage acquisition follows the weekly-refresh + heavy-transformation
@@ -15,18 +22,27 @@ footage_sources:
       narration, animated captions) — see docs/DECISIONS.md for the
       accepted risk profile; this is not a claim of zero risk.
 
+  # Disabled 2026-08-30 (operator directive): the only active source is
+  # @HollowPoiint. Its ~1h episodes are what make a 1080p pull affordable
+  # (~1.6 GB, against the download driver's 6 GB ceiling); this channel's
+  # top candidates measured 4h37m / 17h25m / 14h40m, which at 1080p are
+  # ~7.6 GB and up — the first is rejected by the byte ceiling and the
+  # other two never get downloaded at all.
   - id: mkiceandfire-gta
     channel_url: https://www.youtube.com/@MKIceAndFire
     game: gta-v
+    enabled: false
     license_note: >
       Public, high-subscriber (4.7M) no-commentary full-game walkthrough
       channel; confirmed GTA V long-form content (4K, no-commentary,
       full-game). Same weekly-refresh + heavy-transformation risk
       mitigation as ARCHITECTURE.md §5.0/§9 — not a claim of zero risk.
 
+  # Disabled 2026-08-30 (operator directive) — see above.
   - id: gtaseriesvideos-gta
     channel_url: https://www.youtube.com/@gtaseriesvideos
     game: gta-v
+    enabled: false
     license_note: >
       Public, high-subscriber (4.1M) Rockstar/GTA-focused fan channel
       (story-mode walkthroughs, official trailers). Same weekly-refresh +

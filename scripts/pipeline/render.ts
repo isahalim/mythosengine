@@ -12,10 +12,14 @@ import { DEFAULT_DIRECTIVE } from "../../src/server/console/directive-schema.ts"
 import { checkAndAlert } from "../../src/server/alerts/rules.ts";
 import { pickGamesForToday, pickVoicesForToday, weightSourcesForToday } from "../../src/lib/pipeline/diversity.ts";
 import { generateScript } from "../../src/lib/pipeline/script.ts";
+import { researchSignal, type ResearchBrief } from "../../src/lib/rag/research.ts";
+import { saveResearchBrief } from "../../src/lib/rag/research-store.ts";
+import { SignalsBm25Retriever } from "../../src/lib/rag/retriever.ts";
+import { ArticleFetchDriver } from "../../src/lib/drivers/article-fetch.ts";
 import { critiqueScript } from "../../src/lib/pipeline/critic.ts";
 import { buildCaptionCues } from "../../src/lib/pipeline/captions.ts";
 import { pickTtsRate } from "../../src/lib/pipeline/tts-rate.ts";
-import { computeAuditSummary, type FootageProvenance } from "../../src/lib/pipeline/audit.ts";
+import { computeAuditSummary, type FootageProvenance, type ResearchProvenance } from "../../src/lib/pipeline/audit.ts";
 import { runExport } from "../../src/lib/pipeline/export.ts";
 import { readClipFromLibrary } from "../../src/lib/footage/library.ts";
 import { EdgeTtsDriver } from "../../src/lib/drivers/tts-edge.ts";
@@ -25,6 +29,18 @@ import { createGroqDriverFromEnv, createGroqLimiter } from "../../src/lib/driver
 import { buildPipelineEnv, HOT_KV_NAMESPACE_ID } from "./env.ts";
 
 const REPO_DIR = process.cwd();
+
+/**
+ * The brief as the audit package records it: the citations and the model
+ * that produced them, without the retrieved page text. A reviewer needs to
+ * see what the script was grounded in and be able to check it; the fetched
+ * article bodies are working material, and storing them in every export
+ * would multiply KV usage for something nobody reads.
+ */
+function toResearchProvenance(brief: ResearchBrief | null): ResearchProvenance | null {
+  if (!brief) return null;
+  return { model: brief.model, summary: brief.summary, citations: brief.citations, toolCallsMade: brief.toolCallsMade };
+}
 
 function todayStartIso(): string {
   return `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
@@ -92,9 +108,34 @@ async function main(): Promise<void> {
 
   const llm = createGroqDriverFromEnv(env.groqApiKey, createGroqLimiter());
 
+  // ---- RESEARCH (RAG: BM25 retrieval + live source reads, driven by Groq tool-calling) ----
+  // Deliberately not fatal. A retrieval outage, a rate limit, or a model
+  // that cannot produce a citable brief costs this render its grounding and
+  // nothing else — SCRIPT falls back to writing from the signal title, and
+  // AUDIT SUMMARY flags the result as ungrounded so the reviewer knows
+  // which kind of script they are reading. Losing the day's video to a
+  // failed research call would be a strictly worse trade.
+  const researchRunId = await startRun(env.db, "research", traceId);
+  const researchResult = await researchSignal(
+    llm,
+    new SignalsBm25Retriever(env.db),
+    new ArticleFetchDriver(),
+    chosenSignal,
+  );
+  let research: ResearchBrief | null = null;
+  if (researchResult.ok) {
+    research = researchResult.value;
+    await saveResearchBrief(env.db, chosenSignal.id, research);
+    await finishRun(env.db, researchRunId, "succeeded");
+    console.warn(`RESEARCH: ${research.citations.length} citation(s) from ${research.toolCallsMade.length} tool call(s).`);
+  } else {
+    await finishRun(env.db, researchRunId, "failed", `${researchResult.error.kind}: ${researchResult.error.message}`);
+    console.warn(`RESEARCH failed (${researchResult.error.kind}: ${researchResult.error.message}) — continuing ungrounded.`);
+  }
+
   // ---- SCRIPT ----
   const scriptRunId = await startRun(env.db, "script", traceId);
-  const scriptResult = await generateScript(env.rawClient, chosenSignal, llm);
+  const scriptResult = await generateScript(env.rawClient, chosenSignal, llm, research);
   if (!scriptResult.ok) {
     await finishRun(env.db, scriptRunId, "failed", scriptResult.error.kind);
     throw new Error(`SCRIPT failed: ${scriptResult.error.message}`);
@@ -125,7 +166,10 @@ async function main(): Promise<void> {
           .all();
   const gamesUsedToday = todaysGameRows.map((r) => r.footage_sources.game);
 
-  const allGames = [...new Set((await env.db.select().from(footageSources).all()).map((r) => r.game))];
+  // Only enabled sources (db/migrations/0008) — a game whose every channel
+  // has been retired must not be ranked as a candidate, or FOOTAGE SELECT
+  // spends a claim attempt on a game it can never satisfy.
+  const allGames = [...new Set((await env.db.select().from(footageSources).where(eq(footageSources.enabled, 1)).all()).map((r) => r.game))];
   const eligibleGames = directive.focusGames.length > 0 ? directive.focusGames.filter((g) => allGames.includes(g)) : allGames;
   const rankedGames = pickGamesForToday(eligibleGames, gamesUsedToday, directive.diversityMode);
 
@@ -195,6 +239,7 @@ async function main(): Promise<void> {
       minOriginalityScore: directive.minOriginalityScore,
       policyFlags: critic.policyFlags,
       footage,
+      research: toResearchProvenance(research),
       voiceUsedToday: voicesUsedToday.includes(voice),
       recentScriptBodies: recentScripts.map((r) => r.body),
       narrationDurationS: renderResult.value.durationS,

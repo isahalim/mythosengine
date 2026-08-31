@@ -5,9 +5,9 @@ import { createTestDb } from "../../../db/client.ts";
 import { scripts, signals, sources } from "../../../db/schema.ts";
 import { ok, type Result } from "../result.ts";
 import type { DriverError, LlmDriver, LlmRequest, LlmResponse } from "../drivers/types.ts";
-import { generateScript } from "./script.ts";
+import { formatResearchBrief, generateScript } from "./script.ts";
 
-const PROMPT_TEMPLATE = "Signal: {{signal_title_and_summary}}. Output JSON only.";
+const PROMPT_TEMPLATE = "Signal: {{signal_title_and_summary}}. Research: {{research_brief}} Output JSON only.";
 
 class ScriptedLlm implements LlmDriver {
   private call = 0;
@@ -54,7 +54,7 @@ describe("generateScript", () => {
 
   it.each(SIGNAL_FIXTURES)("produces a schema-valid script for fixture signal %#", async (title) => {
     const llm = new ScriptedLlm([llmResponse(VALID_SCRIPT_JSON)]);
-    const result = await generateScript(ctx.client, { id: "sig1", title }, llm, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
+    const result = await generateScript(ctx.client, { id: "sig1", title }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.value.hook.length).toBeGreaterThan(0);
@@ -65,7 +65,7 @@ describe("generateScript", () => {
 
   it("inserts a draft script row and transitions the signal to scripted", async () => {
     const llm = new ScriptedLlm([llmResponse(VALID_SCRIPT_JSON)]);
-    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
+    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
     expect(result.ok).toBe(true);
 
     if (!result.ok) throw new Error("expected an ok result");
@@ -77,38 +77,96 @@ describe("generateScript", () => {
     expect(signal?.state).toBe("scripted");
   });
 
-  it("passes only the signal's title to the model — no other context (hallucination-boundary discipline)", async () => {
+  it("passes only the signal's title and the research brief — no other context (hallucination-boundary discipline)", async () => {
     const llm = new ScriptedLlm([llmResponse(VALID_SCRIPT_JSON)]);
-    await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
+    await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
     expect(llm.calls).toHaveLength(1);
-    expect(llm.calls[0].messages[0].content).toBe("Signal: Big balance patch splits the community. Output JSON only.");
+    expect(llm.calls[0].messages[0].content).toBe(
+      "Signal: Big balance patch splits the community. Research: No research was available for this topic. Write from the signal alone (rule 5). Output JSON only.",
+    );
+  });
+
+  it("puts the research brief's substance into the prompt when there is one", async () => {
+    const llm = new ScriptedLlm([llmResponse(VALID_SCRIPT_JSON)]);
+    await generateScript(
+      ctx.client,
+      { id: "sig1", title: "Big balance patch splits the community" },
+      llm,
+      {
+        summary: "The patch halved a weapon's damage.",
+        keyPoints: ["Pro players called it overdue", "Casual players called it a nerf too far"],
+        citations: [{ signalId: "sig9", claim: "Pros called it overdue", title: "Pros react", url: "https://x/1", sourceKind: "reddit" }],
+        toolCallsMade: ["search_discourse"],
+        model: "openai/gpt-oss-20b",
+      },
+      () => Date.parse("2026-08-28T01:00:00Z"),
+      PROMPT_TEMPLATE,
+    );
+
+    const prompt = llm.calls[0].messages[0].content;
+    expect(prompt).toContain("The patch halved a weapon's damage.");
+    expect(prompt).toContain("Pro players called it overdue");
+    // The claim and its source travel together — the writer is told what
+    // each fact rests on, not just handed a pile of assertions.
+    expect(prompt).toContain("[reddit: Pros react]");
   });
 
   it("repairs once on invalid JSON, then succeeds", async () => {
     const llm = new ScriptedLlm([llmResponse("not json at all"), llmResponse(VALID_SCRIPT_JSON)]);
-    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
+    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
     expect(result.ok).toBe(true);
     expect(llm.calls).toHaveLength(2);
   });
 
   it("hard-fails after the JSON is invalid twice in a row", async () => {
     const llm = new ScriptedLlm([llmResponse("not json"), llmResponse("still not json")]);
-    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
+    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe("invalid_response");
   });
 
   it("hard-fails when the response is valid JSON but fails schema validation twice", async () => {
     const llm = new ScriptedLlm([llmResponse(JSON.stringify({ hook: "only a hook" })), llmResponse(JSON.stringify({ hook: "still only a hook" }))]);
-    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
+    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
     expect(result.ok).toBe(false);
   });
 
   it("does not mutate the signal or insert a script when the LLM call itself fails", async () => {
     const llm = new ScriptedLlm([{ ok: false, error: { kind: "timeout", message: "boom", retryable: true } }]);
-    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
+    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
     expect(result.ok).toBe(false);
     expect(ctx.db.select().from(scripts).all()).toHaveLength(0);
     expect(ctx.db.select().from(signals).get()?.state).toBe("scored");
+  });
+});
+
+describe("formatResearchBrief", () => {
+  it("says so explicitly when there is no brief, rather than rendering an empty block", () => {
+    // A blank research section reads to a model like an oversight to fill in
+    // from memory — which is the exact failure RESEARCH exists to prevent.
+    const rendered = formatResearchBrief(null);
+    expect(rendered).toContain("No research was available");
+    expect(rendered.trim().length).toBeGreaterThan(0);
+  });
+
+  it("renders summary, key points and each citation's supporting source", () => {
+    const rendered = formatResearchBrief({
+      summary: "Summary line.",
+      keyPoints: ["First point", "Second point"],
+      citations: [
+        { signalId: "a", claim: "Claim one", title: "Title one", url: "https://x/1", sourceKind: "rss" },
+        { signalId: "b", claim: "Claim two", title: "Title two", url: "https://x/2", sourceKind: "reddit" },
+      ],
+      toolCallsMade: ["search_discourse"],
+      model: "openai/gpt-oss-20b",
+    });
+
+    expect(rendered).toContain("Summary line.");
+    expect(rendered).toContain("- First point");
+    expect(rendered).toContain("- Claim one [rss: Title one]");
+    expect(rendered).toContain("- Claim two [reddit: Title two]");
+    // URLs are omitted on purpose: the writer cannot visit them, and they
+    // are pure token cost in a prompt. They live in the audit package.
+    expect(rendered).not.toContain("https://");
   });
 });

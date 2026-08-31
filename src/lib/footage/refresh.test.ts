@@ -1,5 +1,6 @@
 import { execFile, execSync } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { copyFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -9,7 +10,7 @@ import { createTestDb } from "../../../db/client.ts";
 import { footageSegments, footageSources } from "../../../db/schema.ts";
 import type { DownloadDriver, YoutubeSearchDriver } from "../drivers/types.ts";
 import { err, ok } from "../result.ts";
-import { refreshFootageSource } from "./refresh.ts";
+import { refreshFootageSource, sampleMotionWindows } from "./refresh.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -89,7 +90,9 @@ describe("refreshFootageSource (real ffmpeg + real scratch git repo)", () => {
         ctx.db,
         source,
         { search: fakeSearch, download: fakeDownload(sourceVideoPath) },
-        { clipDurationS: 2, candidatesPerVideo: 2, repoDir },
+        // headTailBufferS is scaled to the 8s synthetic source the way the
+        // 600s production default is scaled to a ~1h episode.
+        { clipDurationS: 2, candidatesPerVideo: 2, headTailBufferS: 1, repoDir },
       );
 
       expect(result.status).toBe("refreshed");
@@ -184,7 +187,7 @@ describe("refreshFootageSource (real ffmpeg + real scratch git repo)", () => {
       ctx.db,
       source,
       { search: twoCandidateSearch, download: fallthroughDownload },
-      { clipDurationS: 2, candidatesPerVideo: 2, repoDir },
+      { clipDurationS: 2, candidatesPerVideo: 2, headTailBufferS: 1, repoDir },
     );
 
     expect(result.status).toBe("refreshed");
@@ -201,8 +204,132 @@ describe("refreshFootageSource (real ffmpeg + real scratch git repo)", () => {
       ctx.db,
       source,
       { search: fakeSearch, download: fakeDownload(sourceVideoPath) },
-      { repoDir: "/definitely/not/a/real/git/repo/path", clipDurationS: 2, candidatesPerVideo: 1 },
+      { repoDir: "/definitely/not/a/real/git/repo/path", clipDurationS: 2, candidatesPerVideo: 1, headTailBufferS: 1 },
     );
     expect(result.status).toBe("failed");
+  });
+
+  it("rejects an over-long candidate before downloading a single byte", async () => {
+    const source = ctx.db.select().from(footageSources).all()[0];
+    const longSearch: YoutubeSearchDriver = {
+      findTopLongFormVideos: async () =>
+        ok([{ videoId: "four-hour-vid", title: "Full Walkthrough (4h37m)", durationS: 16_620, viewCount: 9_000_000 }]),
+    };
+    // The exact shape the retired channels produced: a 4h37m candidate is
+    // ~7.6 GB at 1080p, over the download driver's ceiling. Rejecting it
+    // here means the ceiling is never reached, because the transfer never
+    // starts.
+    let downloadCalls = 0;
+    const countingDownload: DownloadDriver = {
+      fetchVideo: async () => {
+        downloadCalls++;
+        return ok({ filePath: sourceVideoPath, durationS: 16_620, sourceVideoId: "four-hour-vid" });
+      },
+    };
+
+    const result = await refreshFootageSource(ctx.db, source, { search: longSearch, download: countingDownload }, { repoDir });
+
+    expect(downloadCalls).toBe(0);
+    expect(result.status).toBe("failed");
+    expect(result.error?.kind).toBe("policy_violation");
+    expect(result.error?.message).toContain("16620s");
+  });
+
+  it("rejects a candidate too short to survive both buffers plus a clip", async () => {
+    const source = ctx.db.select().from(footageSources).all()[0];
+    // 20 minutes clears the long-form floor but not 2x600s + a 65s clip.
+    const shortSearch: YoutubeSearchDriver = {
+      findTopLongFormVideos: async () => ok([{ videoId: "twenty-min", title: "Part 1", durationS: 1200, viewCount: 5000 }]),
+    };
+    let downloadCalls = 0;
+    const countingDownload: DownloadDriver = {
+      fetchVideo: async () => {
+        downloadCalls++;
+        return ok({ filePath: sourceVideoPath, durationS: 1200, sourceVideoId: "twenty-min" });
+      },
+    };
+
+    const result = await refreshFootageSource(ctx.db, source, { search: shortSearch, download: countingDownload }, { repoDir });
+
+    expect(downloadCalls).toBe(0);
+    expect(result.status).toBe("failed");
+    expect(result.error?.kind).toBe("policy_violation");
+  });
+
+  it.skipIf(!hasFfmpeg())("records clip timestamps against the original video, not the trimmed body", async () => {
+    const source = ctx.db.select().from(footageSources).all()[0];
+
+    const result = await refreshFootageSource(
+      ctx.db,
+      source,
+      { search: fakeSearch, download: fakeDownload(sourceVideoPath) },
+      { clipDurationS: 2, candidatesPerVideo: 2, headTailBufferS: 1, repoDir },
+    );
+    expect(result.status).toBe("refreshed");
+
+    // Every window the sampler can return lives inside the 1s..7s body, so
+    // once the offset is added back no clip may start before the buffer or
+    // end after it. A clip at 0s would mean the offset was dropped and the
+    // audit package is pointing a reviewer at the wrong moment.
+    const rows = ctx.db.select().from(footageSegments).all();
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.clipStartS).toBeGreaterThanOrEqual(1);
+      expect(row.clipEndS).toBeLessThanOrEqual(7);
+      expect(row.clipEndS - row.clipStartS).toBe(2);
+    }
+  });
+
+  it.skipIf(!hasFfmpeg())("deletes both the download and the trimmed body when it is done", async () => {
+    const source = ctx.db.select().from(footageSources).all()[0];
+    const downloadCopy = join(await mkdtemp(join(tmpdir(), "footage-refresh-copy-")), "source.mp4");
+    await copyFile(sourceVideoPath, downloadCopy);
+
+    await refreshFootageSource(
+      ctx.db,
+      source,
+      { search: fakeSearch, download: fakeDownload(downloadCopy) },
+      { clipDurationS: 2, candidatesPerVideo: 1, headTailBufferS: 1, repoDir },
+    );
+
+    // The library keeps transformed segments, never third-party source
+    // video — ARCHITECTURE.md §5.0.
+    expect(existsSync(downloadCopy)).toBe(false);
+    expect(existsSync(`${downloadCopy}.body.mp4`)).toBe(false);
+  });
+});
+
+describe("sampleMotionWindows", () => {
+  const ranked = Array.from({ length: 10 }, (_, i) => ({ startS: i * 100, score: 1000 - i }));
+
+  it("only ever draws from the top of the ranking", () => {
+    // random() === 0.999... always reaches for the last element of the pool,
+    // so this is the worst case: even then nothing outside the shortlist can
+    // be selected.
+    const picked = sampleMotionWindows(ranked, 3, 4, () => 0.999);
+    expect(picked.every((w) => ranked.slice(0, 4).includes(w))).toBe(true);
+  });
+
+  it("never returns the same window twice", () => {
+    const picked = sampleMotionWindows(ranked, 5, 10, () => 0.5);
+    expect(new Set(picked.map((w) => w.startS)).size).toBe(5);
+  });
+
+  it("varies with the random source — the whole point of sampling", () => {
+    const first = sampleMotionWindows(ranked, 3, 10, () => 0).map((w) => w.startS);
+    const second = sampleMotionWindows(ranked, 3, 10, () => 0.99).map((w) => w.startS);
+    expect(first).not.toEqual(second);
+  });
+
+  it("widens the shortlist rather than returning fewer than asked for", () => {
+    expect(sampleMotionWindows(ranked, 5, 2, () => 0.5)).toHaveLength(5);
+  });
+
+  it("returns what it can when the ranking is shorter than the request", () => {
+    expect(sampleMotionWindows(ranked.slice(0, 2), 5, 10, () => 0.5)).toHaveLength(2);
+  });
+
+  it("returns nothing for an empty ranking rather than throwing", () => {
+    expect(sampleMotionWindows([], 3, 10, () => 0.5)).toEqual([]);
   });
 });

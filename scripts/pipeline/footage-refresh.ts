@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { eq } from "drizzle-orm";
 import { finishRun, reapStaleRuns, startRun } from "../../db/runs.ts";
 import { footageSources } from "../../db/schema.ts";
 import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
@@ -57,10 +58,22 @@ async function main(): Promise<void> {
     // under heavy transformation -- "not a claim of zero risk." The driver
     // defaults this to false precisely so the choice has to be made here,
     // deliberately, rather than assumed by a library.
-    download: new DomYtmp3DownloadDriver({ acceptCopyrightAttestation: true }),
+    download: new DomYtmp3DownloadDriver({
+      acceptCopyrightAttestation: true,
+      // 1080p, stated at the call site rather than left to the driver's
+      // default, because affording it is a property of *which channel we
+      // pull from* and not of the driver. At ~27 MB per source-minute
+      // (measured 2026-08-29), @HollowPoiint's ~1h episodes land near
+      // 1.6 GB — comfortably inside the driver's 6 GB ceiling. The 4h+
+      // candidates from the channels retired in migration 0008 did not
+      // fit, which is the whole reason this is the only source left.
+      videoQuality: "mp4-1080",
+    }),
   };
 
-  const sources = await env.db.select().from(footageSources).all();
+  // Disabled sources (db/migrations/0008) are skipped, not deleted: their
+  // existing segments stay in the library with their provenance intact.
+  const sources = await env.db.select().from(footageSources).where(eq(footageSources.enabled, 1)).all();
   let anyFailed = false;
 
   console.warn(`FOOTAGE REFRESH: ${sources.length} source(s) to process.`);

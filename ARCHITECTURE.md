@@ -10,7 +10,7 @@
 
 | Service | Permanent free? | Card-free? | Role |
 |---|---|---|---|
-| **Groq Cloud** (`openai/gpt-oss-120b` / `openai/gpt-oss-20b`; the footage browser agent on `qwen/qwen3.8-27b`) | Yes — rate-limited, no credit system. ~30 req/min, ~8k tokens/min, ~14.4k req/day, enforced per organization. **Limits are per-model, and the one that binds is tokens-per-day:** 200K for gpt-oss, 2M for qwen3.8-27b (§5.0) | **Yes** | Script generation, critique, title/description/hashtag generation, the console chat/voice agent, and the footage-acquisition browser agent (§5.0). Groq deprecated `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` on 2026-06-17; the OpenAI open-weight models replaced them everywhere in `src/**` |
+| **Groq Cloud** (`openai/gpt-oss-120b` / `openai/gpt-oss-20b`) | Yes — rate-limited, no credit system. ~30 req/min, ~8k tokens/min, ~14.4k req/day, enforced per organization. **Limits are per-model, and the one that binds is tokens-per-day:** 200K for gpt-oss | **Yes** | Script generation, critique, title/description/hashtag generation, the RESEARCH agent's tool-calling loop (§5.2.5, on the 20b model — per-model quotas mean the cheaper model's budget is a separate 200K), and the console chat/voice agent. **Not footage acquisition** — that ran a browser agent on `qwen/qwen3.8-27b` (2M TPD) until 2026-08-29 and now makes no model calls at all (§5.0), so the whole gpt-oss daily budget belongs to the render pipeline again. Groq deprecated `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` on 2026-06-17; the OpenAI open-weight models replaced them everywhere in `src/**` |
 | **Microsoft Edge "Read Aloud" TTS**, via the `edge_tts` Python library (LGPL-3.0, `rany2/edge-tts`), invoked as a subprocess | Yes, but **not an official product** — no SLA, can break without notice | **Yes** | Narration voice synthesis + word-level timestamps for captions |
 | **Cloudflare Workers static assets** | Yes | **Yes** | Hosts the operator console and its API |
 | **Cloudflare D1** | 5 GB, 5M row-reads/day | **Yes** | Pipeline state, scripts, footage/segment/render/upload records, audit log |
@@ -21,7 +21,7 @@
 | **Reddit RSS/Atom syndication feeds, News RSS** | Yes | **Yes** | Zero-key trend sources — **not** Reddit's JSON/Data API, see §5.1 |
 | **X (Twitter) API** | **No** — the free tier has no meaningful search access as of 2026 | N/A | Not in the default profile. Driver exists, disabled unless the operator has a paid tier |
 | **YouTube Community tab** | No official API | **Yes**, but unofficial/fragile | Best-effort source, same fragility contract as `yt-captions` had in the old project |
-| **Agentic footage acquisition** (Groq Cloud + headless Chromium) | Yes | **Yes** | Weekly footage-source discovery *and* download (§5.0): a bounded Groq tool-calling loop drives Playwright to search youtube.com for `"<game name>" walkthrough "<channel name>" youtube`, then convert+download the top result via `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy` (ytmp3). Replaces the YouTube Data API v3 search and yt-dlp — both removed |
+| **Browser-driven footage acquisition** (headless Chromium, no model) | Yes | **Yes** | Weekly footage-source discovery *and* download (§5.0): Playwright searches youtube.com for `"<game name>" walkthrough "<channel name>" youtube` and reads the results off the page, then convert+downloads the chosen video at **1080p** via `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy` (ytmp3) by driving that page's ids and polling its own ready/error state. One active channel (@HollowPoiint), whose ~1h episodes are what make 1080p affordable. Replaces the YouTube Data API v3 search and yt-dlp — both removed. No API key, no cookies, no tokens |
 
 **What this costs in practice:** effectively $0/month at 3 exports/day, with one caveat — Edge TTS is a free ride on an unofficial API, not a contractual guarantee. `config/providers.ts` keeps TTS behind the same driver interface as everything else specifically so a paid fallback (ElevenLabs, Groq TTS if it ships one) is a single env var away if Microsoft ever closes the endpoint off.
 
@@ -80,7 +80,7 @@
                                                                               ▼
    ┌─────────────────┐  weekly           ┌──────────────────────┐   ┌───────────────────┐
    │ WALKTHROUGH      │ ─────────────►   │ FOOTAGE REFRESH job   │   │  EXPORT: KV blob   │
-   │ CREATORS         │  agentic search  │  scene/motion scoring │   │  (mp4 + audit_json,│
+   │ CREATORS         │  browser search  │  scene/motion scoring │   │  (mp4 + audit_json,│
    │ (long-form guides)│  + ytmp3 download│  → clip candidates    │   │  3-day TTL)        │
    └──────────────────┘                  └──────────┬────────────┘   └─────────┬──────────┘
                                                       ▼                          ▼
@@ -102,7 +102,7 @@
 ```ts
 export const LLM_DRIVERS      = ['groq', 'workers-ai', 'openai-compat'] as const;
 export const TTS_DRIVERS      = ['edge-tts', 'elevenlabs', 'none'] as const;
-export const DOWNLOAD_DRIVERS = ['ytmp3-agentic'] as const;
+export const DOWNLOAD_DRIVERS = ['ytmp3-dom'] as const;
 export const RENDER_DRIVERS   = ['ffmpeg-local'] as const;
 export const EXPORT_DRIVERS   = ['kv-blob'] as const;
 export const CACHE_DRIVERS    = ['kv', 'memory'] as const;
@@ -113,7 +113,7 @@ export const CACHE_DRIVERS    = ['kv', 'memory'] as const;
 ```
 LLM_DRIVER=groq
 TTS_DRIVER=edge-tts
-DOWNLOAD_DRIVER=ytmp3-agentic
+DOWNLOAD_DRIVER=ytmp3-dom
 RENDER_DRIVER=ffmpeg-local
 EXPORT_DRIVER=kv-blob
 CACHE_DRIVER=kv
@@ -162,7 +162,7 @@ export interface ExportStoreResponse {
 
 No `UploadDriver` exists in this system. There is no automated publish path — see §9.
 
-`RenderDriver` shells out to `ffmpeg` via `node:child_process` — not an npm package, so the "run `npm view`" rule doesn't apply, but the equivalent applies: pin `ffmpeg`'s version explicitly in the GitHub Actions workflow, the same supply-chain discipline for a non-npm binary dependency. `DownloadDriver` (`src/lib/drivers/download-agentic-ytmp3.ts`) is a Playwright-driven agent instead — `playwright` is a real npm dependency (verified per the import rule: created 2015-01-23, maintained by the Playwright/Microsoft team), pinned in `package.json` like every other dependency; Playwright ties the downloaded Chromium build 1:1 to the installed npm package version, so there's no separate binary checksum to pin the way `yt-dlp` needed.
+`RenderDriver` shells out to `ffmpeg` via `node:child_process` — not an npm package, so the "run `npm view`" rule doesn't apply, but the equivalent applies: pin `ffmpeg`'s version explicitly in the GitHub Actions workflow, the same supply-chain discipline for a non-npm binary dependency. `DownloadDriver` (`src/lib/drivers/download-ytmp3-dom.ts`) is Playwright-driven instead — `playwright` is a real npm dependency (verified per the import rule: created 2015-01-23, maintained by the Playwright/Microsoft team), pinned in `package.json` like every other dependency; Playwright ties the downloaded Chromium build 1:1 to the installed npm package version, so there's no separate binary checksum to pin the way `yt-dlp` needed.
 
 ---
 
@@ -203,12 +203,34 @@ CREATE TABLE scripts (
   created_at    TEXT NOT NULL                -- drives "today's diversity" queries, §5.3/§5.6
 );
 
+CREATE TABLE research_briefs (                -- RESEARCH (§5.2.5): what SCRIPT was grounded in
+  id            TEXT PRIMARY KEY,
+  signal_id     TEXT NOT NULL REFERENCES signals(id) ON DELETE CASCADE,
+  summary       TEXT NOT NULL,
+  key_points_json TEXT NOT NULL,              -- JSON string[]
+  citations_json  TEXT NOT NULL,              -- JSON [{signal_id, claim, title, url, source_kind}]
+  model         TEXT NOT NULL,                -- which model produced the brief
+  tool_calls_json TEXT NOT NULL,              -- JSON string[] — the tools it actually ran
+  created_at    TEXT NOT NULL
+);
+-- Its own table rather than columns on `scripts` because it is evidence,
+-- not draft content: §9 requires the export to show a reviewer what the
+-- script was grounded in, and a brief outlives a rewritten script. A signal
+-- with no row here was scripted ungrounded — a supported, flagged state.
+
 CREATE TABLE footage_sources (                -- tracked long-form walkthrough channels
   id            TEXT PRIMARY KEY,
   channel_url   TEXT NOT NULL,
   game          TEXT NOT NULL,                -- 'minecraft' | 'subway-surfers' | 'gta-v' | ...
-  license_note  TEXT NOT NULL                 -- operator's own recording, explicit reuse grant, etc.
+  license_note  TEXT NOT NULL,                -- operator's own recording, explicit reuse grant, etc.
+  enabled       INTEGER NOT NULL DEFAULT 1    -- retire a channel by flipping this, never by DELETE
 );
+-- `enabled` mirrors `sources.enabled`. Deleting a footage_sources row would
+-- either fail against renders' restricting FK or destroy the provenance of
+-- exports the operator has already reviewed, which §9 forbids. Both FOOTAGE
+-- REFRESH (§5.0) and FOOTAGE SELECT (§5.5) filter on it, and so does the
+-- console's footage-health count — a retired channel's segments are not
+-- inventory, because nothing can claim them.
 
 CREATE TABLE footage_segments (                -- clips extracted by the weekly refresh job
   id            TEXT PRIMARY KEY,
@@ -332,26 +354,51 @@ a schema that will.
 ### 0. FOOTAGE REFRESH (weekly cron — the only stage that touches third-party video)
 
 **Browser-driven video acquisition** — built, not proposed. A real headless
-Chromium (`src/lib/drivers/browser-agent-core.ts`) replaces the YouTube Data
+Chromium (`src/lib/drivers/browser-session.ts`) replaces the YouTube Data
 API v3 search and `yt-dlp` — both removed, along with `YOUTUBE_API_KEY` and
 `YOUTUBE_COOKIES`. The prior `yt-dlp` driver's last several commits were all
 fighting YouTube's bot-check with no durable fix; this replaces the
 mechanism rather than patching it further.
 
-**The two legs are split on whether the work is actually ambiguous** (revised
-2026-08-29, operator directive). Reading a results page has exactly one right
-answer, so it is plain code. Driving a third-party converter genuinely varies
-— shifting layout, ad interstitials, a conversion to wait out — so it keeps
-the model. The model is spent only where judgment is required.
-
-This split was not a cost optimization; it fixed the leg outright. Per-action
+**Both legs are deterministic. This job makes no model calls at all**
+(revised 2026-08-29, operator directive). Search went first, when per-action
 logging showed the agentic searcher calling `browser_list_links` and getting
 **340 bytes — an empty list** — because navigation waited for
 `domcontentloaded` while YouTube renders results client-side *after* it. It
 was spending four Groq calls per source, each carrying a page snapshot and
-~960 tokens of tool schemas against the tokens-per-minute quota that is this
-tier's binding constraint (§10), to look at a page with nothing on it. Search
-now costs **zero tokens** and reports a real failure instead of a guess.
+~960 tokens of tool schemas against the quota that binds this tier (§10), to
+look at a page with nothing on it.
+
+The download leg was kept agentic at the time on the theory that driving a
+third-party converter genuinely varies. Driving the live page by hand showed
+otherwise: `media.ytmp3.gg` is a small, id-addressed state machine with one
+right answer at every step, and "wait for the conversion" is a poll on the
+page's own status, not a judgement call. So the model came out of that leg
+too, and `browser-agent-core.ts` / `download-agentic-ytmp3.ts` were deleted
+rather than left dormant. FOOTAGE REFRESH now costs **zero tokens end to
+end**, and reports real, typed failures instead of a confident guess.
+
+**What the page actually is** (read off the live site with a real browser on
+2026-08-29 and exercised end to end, which is where every selector below
+comes from):
+
+```
+#videoUrl + .format-btn (MP3|MP4) + #quality-select + #copyright-consent-checkbox
+     │  #submit-button
+     ▼
+.status   "Checking copyright protection…" → "Preparing the video…" →
+          "Checking video source…" → "Analyzing video details…" →
+          "Processing... 59%" → "Merging... 100%" → "Ready to download"
+     │
+     ├──► #download-btn[data-url][data-duration][data-filename]   ready
+     └──► .status--error + #retry-btn                             failed
+```
+
+Measured: ~3.5–10s when ytmp3 has the conversion cached, **~197s for a fresh
+4h37m source**, and a *bad* video id sits silent for ~20s before the page
+admits the failure. That last one is why the wait is a bounded poll on the
+page's own state and not a fixed sleep — and why a timeout is a first-class,
+typed outcome rather than a hang.
 
 1. For each `footage_sources` row, `DomYoutubeSearchDriver`
    (`youtube-search-dom.ts`) navigates to
@@ -365,59 +412,119 @@ now costs **zero tokens** and reports a real failure instead of a guess.
    awkward to test. No model call, no API key, no cookies. Every id is still
    verified against `extractYoutubeVideoId` before being trusted: scraped
    page data is untrusted input exactly as model output was.
-2. `AgenticYtmp3DownloadDriver` skips a candidate whose video id is already
-   in `footage_segments` (unchanged behavior), otherwise navigates to
-   `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy`, has the
-   model fill the YouTube URL, click convert, wait for the conversion, click
-   download, and save the file.
-3. The downloaded file is validated with `ffprobe` before it's trusted at
-   all — must have a real video stream and a finite duration — and
-   `maxDurationS` is enforced against that measured duration (unlike
-   `yt-dlp`'s `--dump-json` pre-flight check, ytmp3.gg gives no metadata
-   call to check before downloading, so the check moved after).
-4. FFmpeg motion-scoring pass (frame-difference/`signalstats` over a sliding
-   window) ranks candidate windows; the job clips the top-N into 15–30s
-   segments, writes them to the `assets-library` orphan branch with commit
-   metadata (source video id, channel, timestamp range), and inserts
-   `footage_segments` rows. The full downloaded source is deleted after
-   clipping — the library holds only the trimmed, transformed segments,
-   never the source video itself.
+2. `DomYtmp3DownloadDriver` (`download-ytmp3-dom.ts`) skips a candidate
+   whose video id is already in `footage_segments` (unchanged behavior),
+   otherwise navigates to
+   `https://media.ytmp3.gg/tools/youtube-to-mp4-converter/dbismy` and drives
+   it by id: select **MP4** (the page defaults to MP3 — without this step the
+   pipeline would download audio and fail the video-stream check below),
+   pick the video quality through the visible dropdown and *assert the app
+   followed* by reading `#quality-select` back, tick the copyright
+   attestation (see below), fill `#videoUrl`, submit, then poll until the
+   page publishes a file URL or shows its error state. Each new `.status`
+   line is logged once — this job's only evidence is CI stdout, and
+   "Merging... 100%" every few seconds is what distinguishes a slow
+   conversion from a hang.
+3. **Pre-flight duration check, then ffprobe.** The ready state's
+   `data-duration` attribute is the source's length in seconds (matched a
+   known 634.6s video to within one second), so a candidate over
+   `maxDurationS` is rejected **before a byte is downloaded** — something the
+   agentic driver could not do, and which matters because a multi-hour
+   walkthrough at 1080p is measured at ~27 MB per minute of source. The file
+   is then downloaded by streaming `fetch` straight to disk (never buffered
+   in memory, and never through a browser click: ytmp3 serves each conversion
+   from a fresh throwaway host that the navigation allowlist would correctly
+   abort), under a hard byte ceiling, and validated with `ffprobe` before
+   it's trusted at all — a real video stream and a finite duration —
+   with `maxDurationS` enforced again against that *measured* duration.
+   Everything the page says stays untrusted until the file itself agrees.
+4. **Head/tail trim, immediately.** The first and last 10 minutes come off
+   the download the moment it lands, before anything is scored or clipped,
+   and the full source is deleted right then (`trimHeadTail` in
+   `src/lib/footage/clip.ts`). Those minutes are intro, recap, outro and
+   subscribe card on every walkthrough episode — none of it usable gameplay.
+   Doing it as a cut rather than as a bias in the window search means the
+   discarded footage is *gone from disk*, not merely unselected: nothing
+   downstream can reach it by accident. Stream-copied, so it costs seconds
+   rather than a full re-encode; the cut lands on the nearest preceding
+   keyframe, which against a 600s buffer is noise. Timestamps recorded as
+   provenance add the offset back, so `footage_segments.clip_start_s` is a
+   moment in the *source* video a reviewer can scrub to.
+5. FFmpeg motion-scoring pass (frame-difference/`signalstats` over a sliding
+   window) ranks candidate windows in the trimmed body; the job then draws
+   its clips **at random from the top-ranked shortlist** rather than always
+   taking the top few. Ranking still decides what is eligible — no loading
+   screens, no static cutscenes — and chance decides which eligible window
+   is taken, because `findTopMotionWindows` is deterministic and a channel
+   whose top video hasn't changed would otherwise yield the identical
+   moments every week. Clips are **65 seconds** (a Shorts narration runs
+   ~60s, so one clip covers a whole render without RENDER's `-stream_loop`
+   ever visibly wrapping), written to the `assets-library` orphan branch with
+   commit metadata (source video id, channel, timestamp range), and inserted
+   as `footage_segments` rows. Both the download and the trimmed body are
+   deleted afterwards — the library holds only the transformed segments,
+   never the source video.
 
-**Context budget — why this job's prompt is trimmed** (added 2026-08-29,
-after every weekly run had silently failed): the agent's prompt grows
-monotonically — each iteration appends a page snapshot or a link list, and
+**Source eligibility** (operator directive, 2026-08-30). `footage_sources`
+has exactly one enabled row: `hollowpoiint-gta` (@HollowPoiint). His episodes
+run about an hour, and that length is the whole reason 1080p is affordable —
+at the measured ~27 MB per source-minute, a 1h source is ~1.6 GB against the
+driver's 6 GB ceiling. The retired channels' top candidates measured 4h37m,
+17h25m and 14h40m: the first is ~7.6 GB and is rejected by the byte ceiling,
+the other two never download at all. So a candidate outside **1265s–7200s**
+(both 10-minute buffers plus a clip, up to 2 hours) is now rejected on the
+search result's own stated duration, before a byte moves. The retired rows
+are `enabled = 0`, not deleted — see §4.
+
+**Why this job used to hang, and what survives of that fix** (2026-08-29,
+after every weekly run had silently failed): the agent's prompt grew
+monotonically — each iteration appended a page snapshot or a link list, and
 nothing was ever dropped. `GroqDriver` prices a request at
 `maxTokens + promptChars / 4` against `TokenBucketLimiter`'s
 6,000-tokens/minute bucket, so crossing ~20,000 characters (`(6000 - 1024) * 4`)
 made every call cost a full bucket. Worse, `acquire()` waited for a budget
 `refill()` caps out of reach, so it **never resolved** — the job sat with an
 idle Chromium emitting nothing for 30 minutes until the Actions timeout
-killed it, every time. Three fixes, all load-bearing:
+killed it, every time. Removing the agent removed the prompt, but two of the
+three fixes are general and stay:
 
 - `TokenBucketLimiter.acquire()` clamps a demand larger than the whole
   per-minute budget instead of deadlocking on it. A local pacing bucket
   cannot know a provider's real per-request ceiling; it should throttle hard
-  and let Groq's own 429/413 be authoritative, never hang.
-- `browser-agent-core.ts` caps what it feeds back — 40 links (was 80) of 100
-  characters (was 200), 3,000-character snapshots — and `trimAgentHistory()`
-  elides the *content* of the oldest tool results once the conversation
-  passes 14,000 characters. It never deletes a message: the tool-calling wire
-  format requires every assistant `tool_call` to keep its matching `tool`
-  reply, so dropping either half is a 400 from Groq.
-- Both the agent loop and `scripts/pipeline/footage-refresh.ts` log per
-  action and per source. This job's only evidence is CI stdout, and it
-  previously produced none at all — a hang and slow progress were
+  and let Groq's own 429/413 be authoritative, never hang. This still guards
+  every remaining Groq caller.
+- `scripts/pipeline/footage-refresh.ts` logs per source and the download
+  driver logs every `.status` change. This job's only evidence is CI stdout,
+  and it previously produced none at all — a hang and slow progress were
   indistinguishable.
+- The third fix (snapshot/link caps and `trimAgentHistory()` in
+  `browser-agent-core.ts`) went with the module it belonged to.
 
-**Guardrails on the browser agent itself** (ytmp3.gg is a third-party,
-ad-monetized converter site): navigation is restricted to two allowed
-origins (youtube.com for search, media.ytmp3.gg for conversion) — any
-top-level navigation elsewhere (an ad redirect, a popup) is aborted before
-it loads; element targeting is by accessibility role + name via
-Playwright's `getByRole`/`ariaSnapshot`, which only ever see the main
-frame's own DOM, never a 3rd-party iframe's content; the tool-call loop is
-bounded (`maxIterations`) so a confused agent or a changed page layout
-fails typed and fast rather than hanging the job.
+**Guardrails on the browser drivers** (ytmp3.gg is a third-party,
+ad-monetized converter site): navigation is restricted to one allowed origin
+per acquisition — youtube.com for search, media.ytmp3.gg for conversion — and
+any top-level navigation elsewhere (an ad redirect, a popup) is aborted
+before it loads, popups are closed unopened; every element is addressed by id
+or class through `page.locator`, which only ever sees the main frame's own
+DOM, never a 3rd-party iframe's content; every wait is bounded
+(`actionTimeoutMs`, `conversionTimeoutMs`, `downloadTimeoutMs`) so a changed
+page layout fails typed and fast rather than hanging the job; the download is
+capped by `maxDownloadBytes` (default 6 GB) so a runaway source cannot fill
+the runner's disk; and nothing downloaded is ever executed — only probed by
+`ffprobe` and, if valid, handed to `ffmpeg`.
+
+**The copyright attestation is an operator decision, not a driver default.**
+ytmp3.gg gates its Convert button behind a checkbox reading *"I confirm that
+I have read and agree to the standards in the Copyright Disclaimer and will
+not download copyrighted content."* `DomYtmp3DownloadDriver` defaults
+`acceptCopyrightAttestation` to **false** and refuses immediately when it is
+off, because ticking it is an assertion made to a third party and this
+project's own `footage_sources.license_note` rows describe the material as
+copyrighted walkthrough footage used under an explicitly accepted risk ("not
+a claim of zero risk"). Those two statements contradict each other. It is
+enabled in exactly one place — `scripts/pipeline/footage-refresh.ts`, with
+the reasoning written at the call site — so the choice stays visible and
+deliberate.
 
 Isolating footage acquisition to one weekly, low-volume job keeps the
 library clean, curated, and dependable — same rationale as before this
@@ -439,9 +546,59 @@ change, unaffected by which acquisition mechanism runs inside that job.
 ### 2. SCORE
 - Engagement-velocity scoring (upvote/comment growth rate, freshness decay), simhash dedupe against the trailing 7-day window.
 
+### 2.5. RESEARCH (Groq, `openai/gpt-oss-20b`, tool-calling — RAG)
+
+Added 2026-08-30 by operator directive. Between SCORE and SCRIPT, the picked
+signal becomes a **grounded brief**: what is actually being said about the
+topic, and which retrieved source supports each claim.
+
+**Shape.** Groq's own tool-calling is the reasoning core; the RAG pipeline is
+wrapped as two ordinary functions behind it. No agent framework is involved —
+the loop in `src/lib/rag/research.ts` is about thirty lines, and CrewAI or
+LangGraph would add a dependency and an indirection without adding a
+capability this needs.
+
+| Tool | Backed by | Returns |
+|---|---|---|
+| `search_discourse(query, limit)` | BM25 over the `signals` corpus (`src/lib/rag/bm25.ts`, `retriever.ts`) | signal ids, titles, source kind, dates |
+| `read_source(signal_id)` | `ArticleFetchDriver` (`src/lib/drivers/article-fetch.ts`) | the page's readable text, capped at 6,000 chars |
+
+**Why BM25 and not embeddings.** Groq serves no embeddings endpoint, so a
+vector index would mean a second provider or a ~100MB local model in every
+Actions run — and `EmbedDriver`/`VectorDriver` are still honest stubs
+precisely because nobody has built the recall eval set that would say whether
+embeddings retrieve better *here*. BM25 needs no model, no network and no
+state, ranks well on the short keyword-dense titles this corpus is made of,
+and every number it produces can be checked by hand. `Retriever` is the seam
+an embedding index slots into later without the agent changing.
+
+**Two properties the stage is built around:**
+
+1. **It cannot invent a citation.** Every citation is checked against what
+   retrieval actually returned before the brief is accepted; ones that aren't
+   are dropped, and a brief left with none is rejected outright. A brief
+   whose grounding is fabricated is *worse* than no brief, because it reads
+   as sourced. A model that answers without searching therefore fails
+   closed — with nothing retrieved, nothing is citable.
+2. **It is allowed to fail.** A retrieval outage, a rate limit, or a model
+   that cannot produce a citable brief costs the render its grounding and
+   nothing else: SCRIPT falls back to writing from the signal title, AUDIT
+   SUMMARY (§9) flags the export as ungrounded, and the day's video still
+   ships. Losing it to a failed research call would be the worse trade.
+
+**The model never names a URL.** `read_source` takes a signal id and resolves
+it — and only against ids `search_discourse` returned *in that same run*, not
+against the whole table. A guessed id is a typed miss, never an outbound
+fetch. The driver's scheme/private-host checks are the second layer, for a
+`canonical_url` that is itself junk; scraped feed data is untrusted input the
+same way scraped video ids are (§5.0).
+
+Output is persisted to `research_briefs` (§4) and travels into the export's
+`audit_json`.
+
 ### 3. SCRIPT (Groq, `openai/gpt-oss-120b` — `llama-3.3-70b-versatile` deprecated by Groq 2026-06-17)
 - Structured JSON output only, `schemas/script.schema.json`. Fields: `hook` (≤3s read-aloud), `body`, `debate_question`, target 130–170 words total.
-- The prompt receives the signal's title/summary and nothing else — no general "what you know about X," same hallucination-boundary discipline as MythosEngine's DRAFT stage.
+- `prompts/script.v2.md` receives the signal's title/summary **and the RESEARCH brief** — and nothing else. That is the same hallucination boundary v1 drew, just around a larger set of *retrieved, cited* facts instead of around the title alone: rule 3 tells the writer the research block is everything it knows, and that an angle is its to invent while a fact is not. A null brief renders as an explicit "no research was available" line, never as a blank section — a blank one reads to a model like an oversight to fill in from memory, which is the exact failure RESEARCH exists to prevent.
 - Which signal gets scripted next weights `directives.compiled_json.preferred_source_ids` (favor signals from those sources) and, when `diversity_mode` is on, actively spreads the day's 3 picks across different `sources.id` values rather than always taking the single highest-`engagement_score` signal — queries today's already-`scripted` signals (via `scripts.created_at`) to know what's already been picked today.
 
 ### 4. CRITIC (Groq, second pass, adversarial, doesn't see the drafting prompt)
@@ -451,6 +608,7 @@ change, unaffected by which acquisition mechanism runs inside that job.
 
 ### 5. FOOTAGE SELECT
 - Picks a `footage_segments` row matching the directive's focus game(s), weighted away from recently-`last_used_at` segments. Increments `used_count`.
+- **Only from an enabled `footage_sources` row** (§4). A retired channel's segments stay in the library and keep backing the exports that already used them, but are never claimed again — and the console's footage-health count excludes them for the same reason, since inventory nothing can claim is not inventory.
 - When `diversity_mode` is on, the game itself is chosen first: exclude games already used by today's earlier renders (via `renders.created_at`) before calling `claimNextFootageSegment` — so a day's 3 videos default to 3 different games rather than 3 different clips of the same game.
 
 ### 6. TTS + CAPTION SYNC (Edge TTS)
@@ -515,7 +673,7 @@ Full console design: **`CONSOLE_SPEC.md`**.
 
 | Key | Where you get it | Scope |
 |---|---|---|
-| `GROQ_API_KEY` | console.groq.com | default. Also drives the FOOTAGE REFRESH job's agentic search/download loop (§5.0) — no separate key needed for that |
+| `GROQ_API_KEY` | console.groq.com | default. **Not** used by the FOOTAGE REFRESH job — that job has been model-free since 2026-08-29 (§5.0); it is still required by the shared `buildPipelineEnv()` because the daily render pipeline needs it |
 | `CLOUDFLARE_API_TOKEN` | dash.cloudflare.com | Workers/KV/D1/Turnstile edit, no `Zone:Edit`. Also what the GitHub Actions render job uses to write export blobs to KV via the REST API (§9) |
 | `VAULT_MASTER_KEY` / `SESSION_SIGNING_KEY` | `openssl rand -base64 32` | Worker secret only |
 | `TWENTYFIRST_API_KEY` | 21st.dev | dev machine only, never CI/Workers |
@@ -573,6 +731,7 @@ Checks:
 - Similarity to the last 100 scripts < 0.85 (self-repetition / templating check — flagged, not blocked).
 - A reminder that the synthetic-media disclosure (`status.containsSyntheticMedia`, confirmed against Google's current Data API v3 docs) should be set when the operator uploads manually.
 - Caption/audio duration match within tolerance (flagged if a render's captions run past the narration audio).
+- **The RESEARCH brief (§5.2.5) the script was written from** — its summary, the model that produced it, the tools it actually ran, and every citation with the source's title and URL. A render whose research failed carries `ungrounded: true` and a flag saying the script was written from the signal title alone. This is informational, like everything else here, but it is the piece that changes how much weight a reviewer should give the script's specifics: a grounded script's claims can be checked against the cited sources, and an ungrounded one's cannot.
 
 Every signal computed here is visible in the console's review queue (`CONSOLE_SPEC.md` §4) before the operator downloads or discards an export.
 
@@ -584,11 +743,13 @@ Assume 3 exports/day.
 
 | Resource | Per-day consumption | Free ceiling | Headroom |
 |---|---|---|---|
-| Groq requests | ~24 score-passes + 3 scripts + 3 critics + 3 metadata-gens + weekly footage-refresh's search/download agent turns (bounded by `maxIterations`, amortized over the week) ≈ 33/day + a small weekly bump | ~14,400/day | huge |
+| Groq requests | ~24 score-passes + 3 research turns × up to 6 iterations + 3 scripts + 3 critics + 3 metadata-gens ≈ 51/day. FOOTAGE REFRESH contributes nothing — it makes no model calls (§5.0) | ~14,400/day | huge |
 | GitHub Actions minutes | hourly WATCH × 24 (~1 min each) + 3 render jobs × ~5 min (FFmpeg is the expensive part) + weekly footage job (~15–20 min — a headless Chromium launch per candidate adds a little over the old yt-dlp job) ≈ ~40 min/day amortized | 2,000 min/mo private | fine — public repo removes the ceiling entirely |
 | KV writes | batch manifest + rate-limit counters + 3 export blobs ≈ well under 50 | 1,000/day | fine |
 | KV storage | 3 exports/day × 3-day TTL ≈ ~9 exports resident at once × (MP4 size, TBD — see §3's `ExportDriver` note) | 1GB total | needs the real render-size check before this is a settled "fine," not before |
 | Edge TTS | 3 × ~150 words ≈ 450 words/day | no formal quota — it's not a real product | **the actual risk isn't quota, it's the endpoint disappearing.** Alert loudly on TTS driver failure, don't silently fall back to a paid provider without telling the operator |
+
+RESEARCH is the one stage whose *token* cost grows with how hard it works: up to 6 iterations, each re-sending the whole conversation plus ~500 tokens of tool schemas, plus up to 6,000 characters per source read. Budgeted at roughly 15–25K tokens per render, ~75K/day for three — which is why it runs on `gpt-oss-20b`, against that model's own 200K/day, rather than eating into the 120b budget SCRIPT and CRITIC need. If it ever threatens that ceiling, the levers are `maxIterations` and `article-fetch.ts`'s `maxChars`, in that order.
 
 The two real constraints, updated from before: **KV's per-value and total storage caps** (settled once Phase 6 measures a real rendered file against them, per the open item in §3) and **Edge TTS's unofficial status** (this is a reliability risk, not a cost one — budget for it with retries and a loud alert, not with money). YouTube API quota is no longer tracked at all — there's no YouTube API key left in the system (§5.0, §7).
 

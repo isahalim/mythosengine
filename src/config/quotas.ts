@@ -20,10 +20,19 @@ export const QUOTAS = {
      * project**, and the one nothing tracked until 2026-08-29. A footage
      * run measured at ~185K tokens against gpt-oss-120b's 200K TPD, so a
      * single run could exhaust the day while the per-minute dashboard still
-     * read 0% consumed. That is why the browser agent moved to
-     * qwen/qwen3.8-27b: same 30 RPM and 8K TPM, ten times the daily budget.
+     * read 0% consumed. The browser agent moved to qwen/qwen3.8-27b for
+     * that reason (same 30 RPM and 8K TPM, ten times the daily budget) and
+     * was then deleted outright on 2026-08-29: both footage legs are plain
+     * code now, so FOOTAGE REFRESH spends no tokens whatsoever and the
+     * whole 200K gpt-oss budget belongs to SCRIPT/CRITIC/metadata again.
      * Limits are per-model, so spreading work across models spreads the
-     * daily allowance too.
+     * daily allowance too — which is exactly why the RESEARCH agent
+     * (ARCHITECTURE.md §5.2.5, added 2026-08-30) runs on gpt-oss-20b. It is
+     * the one stage whose token cost scales with how hard it works (up to 6
+     * tool iterations, each re-sending the conversation plus tool schemas,
+     * plus up to 6K characters per source read: ~15-25K tokens per render,
+     * ~75K/day for three), and putting that on the 20b model keeps it out
+     * of the 120b budget SCRIPT and CRITIC depend on.
      */
     tokensPerDayGptOss: 200_000,
     tokensPerDayQwen3: 2_000_000,

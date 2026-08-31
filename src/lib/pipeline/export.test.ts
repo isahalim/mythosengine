@@ -30,6 +30,13 @@ const auditResult: AuditResult = {
   policyFlags: [],
   footage: { segmentId: "seg1", footageSourceId: "fsrc1", sourceVideoId: "v1", clipStartS: 0, clipEndS: 20, usedCount: 1 },
   footageRecentlyUsed: true,
+  research: {
+    model: "openai/gpt-oss-20b",
+    summary: "What people are arguing about.",
+    citations: [{ signalId: "sig9", claim: "the specific thing", title: "Source headline", url: "https://example.com/1", sourceKind: "rss" }],
+    toolCallsMade: ["search_discourse"],
+  },
+  ungrounded: false,
   voiceUsedToday: false,
   scriptSimilarity: null,
   flaggedAsRepeat: false,

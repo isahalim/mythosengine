@@ -12,7 +12,13 @@ function baseInput(overrides: Partial<AuditSummaryInput> = {}): AuditSummaryInpu
     originalityScore: 0.8,
     minOriginalityScore: 0.5,
     policyFlags: [],
-    footage: { segmentId: "seg1", footageSourceId: "fsrc1", sourceVideoId: "v1", clipStartS: 0, clipEndS: 20, usedCount: 0 },
+    footage: { segmentId: "seg1", footageSourceId: "fsrc1", sourceVideoId: "v1", clipStartS: 600, clipEndS: 665, usedCount: 0 },
+    research: {
+      model: "openai/gpt-oss-20b",
+      summary: "What people are arguing about.",
+      citations: [{ signalId: "sig9", claim: "the specific thing", title: "Source headline", url: "https://example.com/1", sourceKind: "rss" }],
+      toolCallsMade: ["search_discourse", "read_source"],
+    },
     voiceUsedToday: false,
     recentScriptBodies: [],
     narrationDurationS: 45,
@@ -30,6 +36,25 @@ describe("computeAuditSummary", () => {
     expect(result.flaggedAsRepeat).toBe(false);
     expect(result.durationMatch.withinTolerance).toBe(true);
     expect(result.flags).toEqual([]);
+  });
+
+  it("carries the research provenance through to the reviewer", () => {
+    const result = computeAuditSummary(baseInput());
+    expect(result.ungrounded).toBe(false);
+    expect(result.research?.citations[0]).toMatchObject({ signalId: "sig9", url: "https://example.com/1" });
+    expect(result.research?.model).toBe("openai/gpt-oss-20b");
+  });
+
+  it("flags an ungrounded script without blocking it", () => {
+    // RESEARCH is allowed to fail (ARCHITECTURE.md §5.2.5). The reviewer has
+    // to be told, because "written from the title alone" changes how much
+    // weight the script's specifics deserve.
+    const result = computeAuditSummary(baseInput({ research: null }));
+    expect(result.ungrounded).toBe(true);
+    expect(result.flags).toContain("no research brief — script written from the signal title alone");
+    // Still not a rejection: every independent check stands on its own.
+    expect(result.schemaValid).toBe(true);
+    expect(result.clearsOriginalityFloor).toBe(true);
   });
 
   it("flags low originality but does not change schemaValid or any other independent check — never blocking", () => {

@@ -17,12 +17,27 @@ export interface FootageProvenance {
   usedCount: number;
 }
 
+/**
+ * What RESEARCH (ARCHITECTURE.md §5.2.5) contributed to this render, as the
+ * reviewer sees it. `null` means the stage failed or was skipped and the
+ * script was written from the signal title alone — a supported, degraded
+ * path that must be visible, never inferred from an absent field.
+ */
+export interface ResearchProvenance {
+  model: string;
+  summary: string;
+  citations: { signalId: string; claim: string; title: string; url: string; sourceKind: string }[];
+  toolCallsMade: string[];
+}
+
 export interface AuditSummaryInput {
   script: { hook: string; body: string; debateQuestion: string; wordCount: number };
   originalityScore: number | null;
   minOriginalityScore: number;
   policyFlags: string[];
   footage: FootageProvenance;
+  /** The brief the script was written from, or null when RESEARCH failed. */
+  research: ResearchProvenance | null;
   voiceUsedToday: boolean;
   /** Bodies of the last up-to-100 scripts, most recent first — for self-repetition detection. */
   recentScriptBodies: readonly string[];
@@ -41,6 +56,9 @@ export interface AuditResult {
   policyFlags: string[];
   footage: FootageProvenance;
   footageRecentlyUsed: boolean; // usedCount > 0 before this claim — a rotation-health signal, not a violation
+  research: ResearchProvenance | null;
+  /** True when the script was written with no retrieved grounding — informational, and the reviewer is told rather than left to notice. */
+  ungrounded: boolean;
   voiceUsedToday: boolean;
   scriptSimilarity: { maxSimilarity: number; mostSimilarIndex: number } | null;
   flaggedAsRepeat: boolean;
@@ -114,6 +132,12 @@ export function computeAuditSummary(input: AuditSummaryInput): AuditResult {
 
   if (input.voiceUsedToday) flags.push("voice already used earlier today");
 
+  // Not a failure — §5.2.5 lets RESEARCH fail without costing the day's
+  // video — but the reviewer has to know which of the two kinds of script
+  // they are reading before they judge its specifics.
+  const ungrounded = input.research === null;
+  if (ungrounded) flags.push("no research brief — script written from the signal title alone");
+
   return {
     schemaValid: wordCountInBounds && hasDebateQuestion,
     wordCountInBounds,
@@ -123,6 +147,8 @@ export function computeAuditSummary(input: AuditSummaryInput): AuditResult {
     policyFlags: input.policyFlags,
     footage: input.footage,
     footageRecentlyUsed,
+    research: input.research,
+    ungrounded,
     voiceUsedToday: input.voiceUsedToday,
     scriptSimilarity: scriptSimilarityResult,
     flaggedAsRepeat,

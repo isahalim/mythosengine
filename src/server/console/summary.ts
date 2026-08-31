@@ -191,11 +191,18 @@ export async function getConsoleSummary(db: AppDb, killswitchKv: KvLike, vaultKv
   ]);
 
   const segments = await db.select().from(footageSegments).all();
-  const sources = await db.select().from(footageSources).all();
+  // Only enabled sources count as inventory. A segment from a retired
+  // channel (db/migrations/0008) still exists and still backs the exports
+  // that used it, but FOOTAGE SELECT will never claim it again — counting it
+  // here would report a game as healthy while the pipeline could not
+  // actually render it, which is exactly the kind of confident-but-wrong
+  // dashboard number this console is supposed to not have.
+  const sources = (await db.select().from(footageSources).all()).filter((s) => s.enabled === 1);
   const gameById = new Map(sources.map((s) => [s.id, s.game]));
   const byGame = new Map<string, { count: number; totalUsed: number }>();
   for (const segment of segments) {
-    const game = gameById.get(segment.footageSourceId) ?? "unknown";
+    const game = gameById.get(segment.footageSourceId);
+    if (game === undefined) continue;
     const bucket = byGame.get(game) ?? { count: 0, totalUsed: 0 };
     bucket.count += 1;
     bucket.totalUsed += segment.usedCount;

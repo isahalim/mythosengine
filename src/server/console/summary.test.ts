@@ -75,6 +75,17 @@ describe("getConsoleSummary", () => {
     expect(summary.footageHealth).toEqual([{ game: "minecraft", segmentCount: 2, avgUsedCount: 6, lowInventory: true }]);
   });
 
+  it("counts no inventory for a retired source, since FOOTAGE SELECT can no longer claim it", async () => {
+    await ctx.db.insert(footageSources).values({ id: "fsrc1", channelUrl: "http://y", game: "minecraft", licenseNote: "owned", enabled: 0 }).run();
+    await ctx.db
+      .insert(footageSegments)
+      .values({ id: "seg1", footageSourceId: "fsrc1", sourceVideoId: "v1", clipStartS: 0, clipEndS: 65, motionScore: 1, libraryPath: "p1", usedCount: 0, fetchedAt: "2026-01-01" })
+      .run();
+
+    const summary = await getConsoleSummary(ctx.db, kv, kv, MASTER_KEY_B64);
+    expect(summary.footageHealth).toEqual([]);
+  });
+
   // Regression: an Actions job killed by its timeout leaves its row
   // `running` forever. Reporting that as the live stage is a fabricated
   // status arriving through stale data, which is exactly what the console
