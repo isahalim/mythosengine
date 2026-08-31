@@ -31,6 +31,13 @@ export interface PipelineEnv {
   accountId: string;
   apiToken: string;
   groqApiKey: string;
+  /**
+   * Optional. Absent, TTS runs on Edge — the default path (plan v2 §5). Not
+   * `requireEnv`, because a pipeline without it must keep working exactly as
+   * it did before Gemini existed rather than refusing to start for want of
+   * an upgrade.
+   */
+  geminiApiKey: string | undefined;
   discordWebhookUrl: string | undefined;
 }
 
@@ -50,7 +57,10 @@ export function buildPipelineEnv(): PipelineEnv {
   // moment it is needed.
   let rawClient: WorkerBatchClient | undefined;
 
+  const geminiApiKey = optionalEnv("GEMINI_API_KEY");
+
   return {
+    geminiApiKey,
     db: createD1HttpDb(d1Options),
     get rawClient(): RawSqlClient {
       rawClient ??= new WorkerBatchClient({

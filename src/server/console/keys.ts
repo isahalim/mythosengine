@@ -4,7 +4,7 @@ import { fetchWithRetry } from "../../lib/drivers/http.ts";
 import type { DriverError } from "../../lib/drivers/types.ts";
 import { ok, type Result } from "../../lib/result.ts";
 
-export const ROTATABLE_KEY_NAMES = ["GROQ_API_KEY", "YOUTUBE_API_KEY", "PEXELS_API_KEY"] as const;
+export const ROTATABLE_KEY_NAMES = ["GROQ_API_KEY", "YOUTUBE_API_KEY", "PEXELS_API_KEY", "GEMINI_API_KEY"] as const;
 export type RotatableKeyName = (typeof ROTATABLE_KEY_NAMES)[number];
 
 const SHAPE_VALIDATORS: Record<RotatableKeyName, z.ZodString> = {
@@ -15,6 +15,9 @@ const SHAPE_VALIDATORS: Record<RotatableKeyName, z.ZodString> = {
   // documented as stable, so this checks the alphabet and a floor and lets
   // the live check settle the rest.
   PEXELS_API_KEY: z.string().regex(/^[A-Za-z0-9]{30,}$/, "Pexels keys look like a long alphanumeric string"),
+  // AI Studio keys are `AIza` followed by 35 URL-safe characters — the same
+  // shape every Google API key has had for years.
+  GEMINI_API_KEY: z.string().regex(/^AIza[A-Za-z0-9_-]{35}$/, "Gemini keys look like AIza<35 characters>"),
 };
 
 /** CONSOLE_SPEC.md §2 step 3: call the provider with the candidate credential; a live 200 is the only thing that validates it. */
@@ -38,6 +41,23 @@ async function liveCheck(name: RotatableKeyName, candidate: string, fetchImpl?: 
     const result = await fetchWithRetry(
       "https://api.pexels.com/videos/search?query=city&per_page=1",
       { method: "GET", headers: { authorization: candidate, accept: "application/json" } },
+      { timeoutMs: 8_000, maxAttempts: 1, baseDelayMs: 0, fetchImpl },
+    );
+    return result.ok ? ok(undefined) : result;
+  }
+
+  if (name === "GEMINI_API_KEY") {
+    // The cheapest call the Interactions API offers: one token of output on
+    // the flash text model. Deliberately *not* the TTS model — a live check
+    // that spent one of ten daily TTS requests would make rotating the key
+    // cost 10% of the day's narration budget.
+    const result = await fetchWithRetry(
+      "https://generativelanguage.googleapis.com/v1beta/interactions",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-goog-api-key": candidate },
+        body: JSON.stringify({ model: "gemini-3.7-flash", input: "hi", generation_config: { max_output_tokens: 1 } }),
+      },
       { timeoutMs: 8_000, maxAttempts: 1, baseDelayMs: 0, fetchImpl },
     );
     return result.ok ? ok(undefined) : result;

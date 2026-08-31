@@ -37,6 +37,38 @@ export const QUOTAS = {
     tokensPerDayGptOss: 200_000,
     tokensPerDayQwen3: 2_000_000,
   },
+  /**
+   * Gemini free tier, from the operator's own AI Studio rate-limit export
+   * for project *Mythos Engine* (28-day window), 2026-08-31 — measured, not
+   * assumed from a pricing page.
+   *
+   * **10 requests per day is the binding limit**, and it is per day, not per
+   * run. It is what forces one TTS call per video (plan v2 §4) and rules out
+   * per-beat synthesis entirely: a 20-beat video synthesized beat-by-beat
+   * would be twice the entire daily budget. It is also why Edge TTS is the
+   * default path and this is only the upgrade — on any day with more than a
+   * few videos, or any day that burns retries, Edge is the path.
+   *
+   * Pro TTS is not on the free tier at all (0/0/0 in the same export), so
+   * the expressiveness argument for leaving Edge rests on Flash TTS.
+   *
+   * `tokensPerMinute` is **unverified against a full-length request** (plan
+   * v2 §9): output audio tokens count toward it, and the format asks for up
+   * to 180s of speech in one call. Nothing here has measured whether that
+   * fits.
+   */
+  gemini: {
+    ttsRequestsPerMinute: 3,
+    ttsTokensPerMinute: 10_000,
+    ttsRequestsPerDay: 10,
+    /**
+     * How many of the ten this pipeline will spend before falling back to
+     * Edge. Two held back: a render that fails after synthesis (FFmpeg,
+     * export) is re-run by the operator, and arriving at that re-run with a
+     * budget of zero would silently downgrade the retry's narration.
+     */
+    ttsRequestsPerDayBudget: 8,
+  },
   githubActions: {
     minutesPerMonthPrivate: 2000,
   },

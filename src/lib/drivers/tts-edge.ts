@@ -43,6 +43,16 @@ export class EdgeTtsDriver implements TtsDriver {
   }
 
   async synthesize(req: TtsRequest): Promise<Result<TtsResponse, DriverError>> {
+    // Said out loud rather than dropped. Edge's endpoint has exactly three
+    // delivery controls — rate, volume, pitch — and no way to accept a
+    // natural-language direction. A caller that set one is expecting
+    // expressiveness it is not going to get, and the difference between
+    // "flat because Gemini was unavailable" and "flat because of a bug" has
+    // to be visible in the log next to the fallback that caused it.
+    if (req.styleDirection) {
+      console.warn(`edge-tts cannot honour styleDirection (${JSON.stringify(req.styleDirection)}) — delivery will be flat. Only rate/volume/pitch apply on this path.`);
+    }
+
     for (let attempt = 0; attempt < this.maxAttempts; attempt++) {
       const isLastAttempt = attempt === this.maxAttempts - 1;
       const result = await this.attemptOnce(req);

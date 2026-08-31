@@ -34,6 +34,12 @@ async function main() {
     [extract(doc, "groq.requestsPerMinute", /~([\d.]+)\s*req\/min/), QUOTAS.groq.requestsPerMinute],
     [extract(doc, "groq.tokensPerMinute", /~([\d.]+k?)\s*tokens\/min/), QUOTAS.groq.tokensPerMinute],
     [extract(doc, "groq.requestsPerDay", /~([\d.]+k?)\s*req\/day/), QUOTAS.groq.requestsPerDay],
+    // Gemini's numbers are the ones most worth pinning to the doc: they come
+    // from a one-off AI Studio export rather than a public pricing page, so
+    // the doc's prose *is* the record of where they came from.
+    [extract(doc, "gemini.ttsRequestsPerDay", /([\d,]+[kKmM]?)\s*TTS req\/day/), QUOTAS.gemini.ttsRequestsPerDay],
+    [extract(doc, "gemini.ttsRequestsPerMinute", /([\d,]+)\s*TTS req\/min/), QUOTAS.gemini.ttsRequestsPerMinute],
+    [extract(doc, "gemini.ttsTokensPerMinute", /([\d,]+[kKmM]?)\s*TTS tokens\/min/), QUOTAS.gemini.ttsTokensPerMinute],
     [
       extract(doc, "githubActions.minutesPerMonthPrivate", /([\d,]+)\s*min\/mo private/),
       QUOTAS.githubActions.minutesPerMonthPrivate,
