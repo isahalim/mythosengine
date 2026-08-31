@@ -139,15 +139,28 @@ export async function researchSignal(
   ];
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
-    // The final iteration is spent writing the brief, not calling another
-    // tool — otherwise a model that keeps searching until the cap produces
-    // nothing at all, having done all the work.
     const isLastIteration = iteration === maxIterations - 1;
+    if (isLastIteration) {
+      // Said out loud rather than enforced by withholding the tools.
+      // Dropping `tools` from the last request looked like the tidy way to
+      // force an answer, and it is the reason the first live run 400'd:
+      // Groq validates the generation against the request and rejects
+      // "model called a tool" when no tool was on offer
+      // (`code: "tool_use_failed"`, 2026-08-31). The tools stay on the
+      // request, so a tool call is always *legal*; this message is what
+      // makes it unwanted.
+      messages.push({
+        role: "user",
+        content:
+          "That is the last research turn available. Do not call any more tools — another call will be ignored. Emit the final brief as JSON now, using only what you have already retrieved.",
+      });
+    }
 
     const completion = await llm.complete({
       model,
       messages,
-      ...(isLastIteration ? {} : { tools: TOOLS, toolChoice: "auto" as const }),
+      tools: TOOLS,
+      toolChoice: "auto",
       maxTokens: 1200,
       temperature: 0.3,
     });
@@ -156,6 +169,16 @@ export async function researchSignal(
     const call = completion.value.toolCalls?.[0];
     if (!call) {
       return finalizeBrief(completion.value.content, seen, toolCallsMade, model);
+    }
+    if (isLastIteration) {
+      // Asked for a brief, reached for a tool anyway. A typed error here is
+      // the designed outcome, not a crash: RENDER degrades to an ungrounded
+      // script and says so in the audit package (§5.2.5).
+      return err({
+        kind: "invalid_response",
+        message: `RESEARCH kept calling tools through all ${maxIterations} turns without producing a brief`,
+        retryable: false,
+      });
     }
 
     messages.push({ role: "assistant", content: completion.value.content, toolCalls: [call] });
@@ -172,7 +195,7 @@ export async function researchSignal(
     messages.push({ role: "tool", content: JSON.stringify(toolResult), toolCallId: call.id });
   }
 
-  /* v8 ignore next 5 -- unreachable: the last iteration sends no tools, so it always returns above */
+  /* v8 ignore next 5 -- unreachable: the last iteration always returns, either a brief or the error above */
   return err({
     kind: "invalid_response",
     message: `RESEARCH made ${maxIterations} tool calls without producing a brief`,

@@ -3,6 +3,14 @@ import { err, ok, type Result } from "../result.ts";
 import type { DriverError, LlmDriver, LlmMessage } from "../drivers/types.ts";
 
 /**
+ * Groq rejecting its own model's malformed JSON, rather than a fault on our
+ * side. Matched on the provider's documented error code, not on prose.
+ */
+function isJsonValidationFailure(error: DriverError): boolean {
+  return error.kind === "provider_error" && error.message.includes("json_validate_failed");
+}
+
+/**
  * Shared by SCRIPT and CRITIC (both Groq JSON-mode calls, both need
  * "validate, one repair retry, else hard fail" — AGENT_PLAYBOOK.md Phase
  * 4). `req.jsonSchema` only needs to be truthy to switch Groq into JSON
@@ -20,7 +28,22 @@ export async function requestValidatedJson<T>(
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const completion = await llm.complete({ model, messages, jsonSchema: true, maxTokens: 1024, temperature: 0.8 });
-    if (!completion.ok) return completion;
+    if (!completion.ok) {
+      // Groq's JSON mode validates the generation server-side and rejects a
+      // malformed one as HTTP 400 `json_validate_failed`. That is the model
+      // failing to produce valid JSON — precisely what the repair below
+      // exists for — but it arrives as a provider error and used to bypass
+      // it, hard-failing the stage. Observed live on 2026-08-31: SCRIPT died
+      // on a 400 whose own body said "Failed to validate JSON. Please adjust
+      // your prompt."
+      if (!isJsonValidationFailure(completion.error) || attempt > 0) return completion;
+      messages.push({
+        role: "user",
+        content:
+          "Your previous response was not valid JSON and was rejected before it reached me. Emit valid JSON only, matching the required shape — no markdown fences, no preamble, no commentary.",
+      });
+      continue;
+    }
 
     let parsed: unknown;
     try {

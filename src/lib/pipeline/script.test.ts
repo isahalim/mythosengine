@@ -131,6 +131,41 @@ describe("generateScript", () => {
     expect(result.ok).toBe(false);
   });
 
+  it("repairs once when Groq rejects its own model's malformed JSON, instead of hard-failing", async () => {
+    // Groq validates JSON-mode output server-side and returns HTTP 400
+    // `json_validate_failed`. That is the model failing to produce valid
+    // JSON — what the repair loop is for — but it arrives as a provider
+    // error, and used to bypass it. SCRIPT died on exactly this live on
+    // 2026-08-31.
+    const llm = new ScriptedLlm([
+      { ok: false, error: { kind: "provider_error", message: `HTTP 400 from https://api.groq.com/...: {"error":{"code":"json_validate_failed"}}`, retryable: false } },
+      llmResponse(VALID_SCRIPT_JSON),
+    ]);
+    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
+
+    expect(result.ok).toBe(true);
+    expect(llm.calls).toHaveLength(2);
+  });
+
+  it("gives up after a second json_validate_failed rather than looping", async () => {
+    const rejection = { ok: false as const, error: { kind: "provider_error" as const, message: `HTTP 400: {"error":{"code":"json_validate_failed"}}`, retryable: false } };
+    const llm = new ScriptedLlm([rejection, rejection]);
+    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
+
+    expect(result.ok).toBe(false);
+    expect(llm.calls).toHaveLength(2);
+    expect(ctx.db.select().from(scripts).all()).toHaveLength(0);
+  });
+
+  it("does not retry a provider error that isn't the model's JSON failing", async () => {
+    // A rate limit or an outage is not something re-prompting can fix.
+    const llm = new ScriptedLlm([{ ok: false, error: { kind: "rate_limited", message: "HTTP 429", retryable: true } }]);
+    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
+
+    expect(result.ok).toBe(false);
+    expect(llm.calls).toHaveLength(1);
+  });
+
   it("does not mutate the signal or insert a script when the LLM call itself fails", async () => {
     const llm = new ScriptedLlm([{ ok: false, error: { kind: "timeout", message: "boom", retryable: true } }]);
     const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);

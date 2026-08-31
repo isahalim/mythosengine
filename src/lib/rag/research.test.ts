@@ -223,9 +223,11 @@ describe("researchSignal", () => {
     if (!result.ok) expect(result.error.message).toContain("failed schema validation");
   });
 
-  it("stops offering tools on the final iteration, so a tool-happy model still produces a brief", async () => {
-    // A model that would search forever: every turn asks for another search,
-    // except that the last request carries no tools to ask with.
+  it("asks for the brief on the final turn, but still offers the tools", async () => {
+    // Withholding `tools` to force an answer is what 400'd live on
+    // 2026-08-31: Groq validates the generation against the request and
+    // rejects "model called a tool" when none were on offer. So the tools
+    // stay, and the instruction is what makes a call unwanted.
     const llm = scriptedLlm([
       toolCall("search_discourse", { query: "a" }, "c1"),
       toolCall("search_discourse", { query: "b" }, "c2"),
@@ -235,8 +237,23 @@ describe("researchSignal", () => {
     const result = await researchSignal(llm, stubRetriever, stubArticles, SIGNAL, { promptTemplate: PROMPT, maxIterations: 3 });
 
     expect(result.ok).toBe(true);
-    expect(llm.requests[0].tools).toBeDefined();
-    expect(llm.requests[2].tools).toBeUndefined();
+    expect(llm.requests[2].tools).toBeDefined();
+    const lastUserTurn = llm.requests[2].messages.filter((m) => m.role === "user").at(-1);
+    expect(lastUserTurn?.content).toContain("last research turn");
+  });
+
+  it("fails typed — never throws — when the model calls tools through every turn", async () => {
+    // The degraded path RENDER relies on: a research stage that never settles
+    // costs the render its grounding, not the render itself.
+    const llm = scriptedLlm([toolCall("search_discourse", { query: "again" })]);
+
+    const result = await researchSignal(llm, stubRetriever, stubArticles, SIGNAL, { promptTemplate: PROMPT, maxIterations: 2 });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.kind).toBe("invalid_response");
+      expect(result.error.message).toContain("without producing a brief");
+    }
   });
 
   it("survives a tool call with unparseable arguments", async () => {
