@@ -340,7 +340,10 @@ describe.skipIf(!hasFfmpeg())("DomYtmp3DownloadDriver", () => {
 
   it("leaves a notice it cannot recognize standing, and fails with the notice's own words", async () => {
     // Guessing at an unread button, or deleting a notice the service chose to
-    // show, are both worse than failing with the evidence attached.
+    // show, are both worse than failing with the evidence attached. What the
+    // caller must never get is "the page's layout may have changed" — that
+    // reading of a "Service Discontinued" banner cost three runs on
+    // 2026-08-31 before anyone read the overlay.
     const driver = new DomYtmp3DownloadDriver({
       toolUrl: toolUrl("?notice=stuck&delayMs=150"),
       acceptCopyrightAttestation: true,
@@ -351,7 +354,13 @@ describe.skipIf(!hasFfmpeg())("DomYtmp3DownloadDriver", () => {
     const result = await driver.fetchVideo({ url: YOUTUBE_URL });
 
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.kind).toBe("invalid_response");
+    if (!result.ok) {
+      expect(result.error.kind).toBe("provider_error");
+      expect(result.error.retryable).toBe(false);
+      expect(result.error.message).toContain("service notice");
+      expect(result.error.message).toContain("Scheduled maintenance");
+      expect(result.error.message).not.toContain("layout may have changed");
+    }
     expect(fileRequests).toEqual([]);
   });
 

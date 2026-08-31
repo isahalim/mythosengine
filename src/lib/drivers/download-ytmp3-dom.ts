@@ -303,6 +303,21 @@ export class DomYtmp3DownloadDriver implements DownloadDriver {
       await page.locator(SELECTORS.urlInput).fill(videoUrl, { timeout: actionTimeout });
       await page.locator(SELECTORS.submitButton).click({ timeout: actionTimeout });
     } catch (cause) {
+      // Before blaming the layout, ask the page whether it is telling us
+      // something. A notice can be injected *after* load, so the pre-emptive
+      // dismissal above can miss one that is up by the time a click fails —
+      // and on 2026-08-31 that cost real time: three runs reported "the
+      // page's layout may have changed" while the overlay actually said
+      // "Service Discontinued". A site that has stopped offering the service
+      // is not a selector bug, and must not read like one.
+      const notice = await readServiceNotice(page);
+      if (notice !== null) {
+        return err({
+          kind: "provider_error",
+          message: `ytmp3 is showing a service notice instead of a working form: "${notice}"`,
+          retryable: false,
+        });
+      }
       return err({
         kind: "invalid_response",
         message: `ytmp3 conversion form could not be driven (the page's layout may have changed): ${describeError(cause)}`,
@@ -596,6 +611,20 @@ const DISMISS_TEXT = /^\s*(ok(ay)?|got it|continue|accept|i agree|agree|close|di
  * deleting a notice a service is deliberately showing, are both worse than
  * failing with the evidence attached.
  */
+async function readServiceNotice(page: Page): Promise<string | null> {
+  try {
+    const overlay = page.locator(SELECTORS.serviceNotice).first();
+    if ((await page.locator(SELECTORS.serviceNotice).count()) === 0 || !(await overlay.isVisible())) return null;
+    const text = ((await overlay.textContent({ timeout: 5_000 })) ?? "").replace(/\s+/g, " ").trim();
+    return text.length > 0 ? text.slice(0, 300) : null;
+  } catch {
+    // This runs inside an error path to explain a failure. If reading the
+    // page fails too, the original failure is still reported by the caller —
+    // that is the answer, not a swallowed error.
+    return null;
+  }
+}
+
 async function dismissServiceNotice(page: Page, actionTimeout: number): Promise<void> {
   const overlay = page.locator(SELECTORS.serviceNotice).first();
   if ((await page.locator(SELECTORS.serviceNotice).count()) === 0 || !(await overlay.isVisible())) return;
