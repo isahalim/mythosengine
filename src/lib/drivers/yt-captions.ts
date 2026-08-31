@@ -94,6 +94,10 @@ export class YtCaptionsDriver implements AsrDriver {
     return ok({
       transcript: segments.map((s) => s.text).join(" ").trim(),
       segments,
+      // YouTube's caption track is cue-level, not word-level. Empty rather
+      // than approximated: ALIGN would rather have no timings than evenly
+      // spaced guesses that look real.
+      words: [],
       quotaRemaining: null,
       tokensUsed: null,
     });

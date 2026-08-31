@@ -7,6 +7,7 @@ const GROQ_TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcript
 interface GroqTranscriptionResponse {
   text?: string;
   segments?: { start?: number; end?: number; text?: string }[];
+  words?: { word?: string; start?: number; end?: number }[];
 }
 
 function isGroqTranscriptionResponse(value: unknown): value is GroqTranscriptionResponse {
@@ -54,6 +55,14 @@ export class GroqWhisperDriver implements AsrDriver {
     form.set("model", this.model);
     form.set("response_format", "verbose_json");
     form.set("file", new Blob([req.source.bytes], { type: req.source.mimeType }), "audio");
+    if (req.wordTimestamps) {
+      // Both granularities, appended rather than set: asking for `word`
+      // alone makes the provider drop `segments` from the response, and the
+      // existing transcript callers read those. Appending twice is how a
+      // repeated field is expressed in multipart form data.
+      form.append("timestamp_granularities[]", "segment");
+      form.append("timestamp_granularities[]", "word");
+    }
 
     const result = await fetchWithRetry(
       this.baseUrl,
@@ -90,6 +99,10 @@ export class GroqWhisperDriver implements AsrDriver {
     return ok({
       transcript: body.text,
       segments: (body.segments ?? []).map((s) => ({ start: s.start ?? 0, end: s.end ?? 0, text: s.text ?? "" })),
+      // Words with no text are dropped rather than defaulted to "": an empty
+      // word would occupy a position in the sequence ALIGN matches the
+      // script against, and shift every beat boundary after it.
+      words: (body.words ?? []).flatMap((w) => (typeof w.word === "string" && w.word.length > 0 ? [{ word: w.word, start: w.start ?? 0, end: w.end ?? 0 }] : [])),
       quotaRemaining: null,
       tokensUsed: null,
     });

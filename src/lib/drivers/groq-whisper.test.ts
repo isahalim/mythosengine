@@ -66,4 +66,55 @@ describe("GroqWhisperDriver", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe("invalid_response");
   });
+
+  it("asks for word granularity only when the caller wants it, and keeps segments alongside", async () => {
+    let body = "";
+    handler = (req, res) => {
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ text: "hello world", segments: [], words: [{ word: "hello", start: 0, end: 0.4 }, { word: "world", start: 0.4, end: 0.9 }] }));
+      });
+    };
+    const driver = new GroqWhisperDriver({ apiKey: "test", baseUrl, maxAttempts: 1 });
+    const result = await driver.transcribe({ ...audioRequest, wordTimestamps: true });
+
+    expect(body).toContain("timestamp_granularities[]");
+    expect(body).toContain("word");
+    // Both granularities: asking for `word` alone drops `segments`, which
+    // the transcript callers still read.
+    expect(body).toContain("segment");
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.words).toEqual([
+      { word: "hello", start: 0, end: 0.4 },
+      { word: "world", start: 0.4, end: 0.9 },
+    ]);
+  });
+
+  it("returns no words for a plain transcription, which never pays for them", async () => {
+    let body = "";
+    handler = (req, res) => {
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ text: "hello world", segments: [] }));
+      });
+    };
+    const driver = new GroqWhisperDriver({ apiKey: "test", baseUrl, maxAttempts: 1 });
+    const result = await driver.transcribe(audioRequest);
+    expect(body).not.toContain("timestamp_granularities");
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.words).toEqual([]);
+  });
+
+  it("drops a word with no text rather than shifting every beat boundary after it", async () => {
+    handler = (_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ text: "hello world", words: [{ word: "hello", start: 0, end: 0.4 }, { start: 0.4, end: 0.5 }, { word: "world", start: 0.5, end: 0.9 }] }));
+    };
+    const driver = new GroqWhisperDriver({ apiKey: "test", baseUrl, maxAttempts: 1 });
+    const result = await driver.transcribe({ ...audioRequest, wordTimestamps: true });
+    if (!result.ok) throw new Error("expected ok");
+    expect(result.value.words.map((w) => w.word)).toEqual(["hello", "world"]);
+  });
 });
