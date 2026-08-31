@@ -11,7 +11,7 @@ import * as schema from "./schema.ts";
  * API rate limit applies" — developers.cloudflare.com/d1/tutorials/
  * build-an-api-to-access-d1/, checked 2026-08-28). Deliberately not
  * followed here: this pipeline issues on the order of a few dozen D1
- * queries per run (hourly WATCH, 3x/day RENDER, weekly FOOTAGE REFRESH) —
+ * queries per run (hourly WATCH, dispatched RENDER, weekly FOOTAGE REFRESH) —
  * nowhere near the account-wide API rate limit — and a proxy Worker would
  * mean minting and guarding a second, more powerful bearer credential
  * (arbitrary SQL execution against the live database) for marginal benefit

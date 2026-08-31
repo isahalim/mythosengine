@@ -1,23 +1,44 @@
 name: RENDER
 
-# 3x/day, spread through the day (ARCHITECTURE.md §10's "3 render jobs/day"
-# quota framing) — each invocation does exactly one signal end-to-end
-# (SCRIPT -> CRITIC -> FOOTAGE SELECT -> TTS -> RENDER -> AUDIT -> EXPORT),
-# not a loop of three.
+# Operator-triggered, not scheduled. Each invocation does exactly one signal
+# end-to-end (SCRIPT -> CRITIC -> PLAN -> FOOTAGE SELECT -> TTS -> ALIGN ->
+# RENDER -> AUDIT -> EXPORT), not a loop of three.
+#
+# The 3x/day cron was removed 2026-08-31. It was never the right shape for
+# this system and the self-hosted runner is what settled it: footage only
+# reaches the library from a residential IP (see footage-refresh.yml's
+# comment), so the operator's machine is already a required participant in
+# making a video. A cron that fires while that machine is asleep produces
+# nothing, and a cron that fires while the operator is not watching produces
+# a video nobody asked for — the console's guided run (plan v2 §7) exists
+# precisely because the operator is present for the whole run and chooses
+# what it makes. Dispatch is the honest trigger for work that needs a human
+# and their laptop both.
 on:
-  schedule:
-    - cron: "0 14 * * *"
-    - cron: "0 18 * * *"
-    - cron: "0 22 * * *"
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
+# One render at a time on the shared runner. `cancel-in-progress: false`
+# because a half-finished render has already claimed a footage segment and a
+# run pick; killing it strands both.
+concurrency:
+  group: pipeline-render
+  cancel-in-progress: false
+
 jobs:
   render:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Same machine and label as FOOTAGE REFRESH. RENDER itself is not
+    # IP-gated — it makes no third-party video request — but it is pointless
+    # anywhere else: the operator is present for the run by design, and the
+    # clips it composites were sourced on this machine. Until the runner is
+    # registered (PROVISIONED.md) a dispatch queues rather than failing.
+    runs-on: [self-hosted, mythos-footage]
+    # 15 was sized for a 47-second video on a GitHub-hosted runner. v2's
+    # ceiling is 180s of narration plus a character composite, and a laptop
+    # is not a dedicated CI box.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -36,18 +57,34 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # Same shape as footage-refresh.yml's ffmpeg step, and for the same
+      # reason: a self-hosted macOS runner has no apt-get, and the tool is
+      # usually already installed on a machine someone actually uses.
       - name: Install Edge TTS (edge_tts_synth.py's only Python dependency)
-        run: pip install --user edge-tts
+        run: |
+          if python3 -c "import edge_tts" 2>/dev/null; then
+            echo "edge_tts already present on this runner."
+          else
+            # Homebrew/system Pythons mark themselves externally-managed
+            # (PEP 668) and refuse a plain --user install; --break-system-packages
+            # is scoped to --user here, so it touches the user site directory
+            # and never the system one.
+            pip3 install --user edge-tts || pip3 install --user --break-system-packages edge-tts
+          fi
+          python3 -c "import edge_tts; print('edge_tts', edge_tts.__version__)"
 
-      # Not actually preinstalled on the current ubuntu-latest image, despite
-      # GitHub's runner-images docs listing it (confirmed by a live run
-      # failing with "ffmpeg: command not found", 2026-08-29) -- installed
-      # explicitly instead of assumed.
       - name: Install ffmpeg
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg
-          ffmpeg -version && ffprobe -version
+          if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+            echo "ffmpeg already present on this runner."
+          elif command -v apt-get >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          else
+            echo "::error::ffmpeg/ffprobe not found and no apt-get to install them. Install ffmpeg on this self-hosted runner (e.g. 'brew install ffmpeg')."
+            exit 1
+          fi
+          ffmpeg -version | head -1 && ffprobe -version | head -1
 
       - name: Run RENDER
         run: npx tsx scripts/pipeline/render.ts
@@ -55,6 +92,11 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # Optional. Absent, TTS runs on Edge — the default path, which
+          # emits word timings natively and needs no ALIGN call. Present, the
+          # narration is upgraded to Gemini within its 10-requests-per-day
+          # budget (src/lib/pipeline/tts-select.ts).
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # Multi-statement writes go through the Worker's real D1 .batch()
           # (src/server/internal/d1-batch.ts); D1's REST API cannot do
           # parameterized and atomic in one call.
