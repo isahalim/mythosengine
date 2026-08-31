@@ -10,7 +10,7 @@ import {
   type RegistrationResponseJSON,
   type WebAuthnCredential,
 } from "@simplewebauthn/server";
-import type { AppDb } from "../../../db/client.ts";
+import { getOne, type AppDb } from "../../../db/client.ts";
 import { credentials } from "../../../db/schema.ts";
 import { consumeChallenge, storeChallenge } from "./challenge-store.ts";
 
@@ -155,7 +155,7 @@ async function finishCeremony(
   const pending = await consumeChallenge(db, challengeId, purpose, now);
   if (pending === null) return { kind: "invalid_challenge" };
 
-  const stored = await db.select().from(credentials).where(eq(credentials.credentialId, response.id)).get();
+  const stored = await getOne(db.select().from(credentials).where(eq(credentials.credentialId, response.id)));
   if (!stored) return { kind: "unknown_credential" };
 
   const credential: WebAuthnCredential = {

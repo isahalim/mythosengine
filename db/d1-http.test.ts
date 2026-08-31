@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { createD1HttpDb, D1HttpRawClient } from "./d1-http.ts";
-import { execAtomic } from "./client.ts";
+import { execAtomic, getOne } from "./client.ts";
 import { sources } from "./schema.ts";
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => void;
@@ -73,6 +73,40 @@ describe("createD1HttpDb", () => {
 
     const row = await db.select().from(sources).where(eq(sources.id, "src-1")).get();
     expect(row?.id).toBe("src-1");
+  });
+
+  it("returns undefined from getOne when nothing matched — not a row of undefined fields", async () => {
+    // The regression this helper exists for. drizzle's sqlite-proxy
+    // `mapGetResult` only short-circuits on a *falsy* `rows`, and the empty
+    // array this callback returns for a miss is truthy — so `.get()` builds
+    // a ghost row and every `if (!row)` guard in the codebase stops working.
+    // RENDER failed on every scheduled run from 2026-08-29 to 2026-08-31 on
+    // exactly this, with `"undefined" is not valid JSON`.
+    mock.queue(jsonResult([]));
+    const db = createD1HttpDb({ accountId: "acct", databaseId: "db", apiToken: "token", baseUrl: await mock.baseUrl, maxAttempts: 1, timeoutMs: 2000 });
+
+    const row = await getOne(db.select().from(sources).where(eq(sources.id, "nope")));
+    expect(row).toBeUndefined();
+  });
+
+  it("still finds the row through getOne when there is one", async () => {
+    mock.queue(jsonResult([{ id: "src-1", kind: "rss", url: "https://example.com/feed", enabled: 1, last_seen_at: null, etag: null, last_modified: null }]));
+    const db = createD1HttpDb({ accountId: "acct", databaseId: "db", apiToken: "token", baseUrl: await mock.baseUrl, maxAttempts: 1, timeoutMs: 2000 });
+
+    const row = await getOne(db.select().from(sources).where(eq(sources.id, "src-1")));
+    expect(row?.id).toBe("src-1");
+  });
+
+  it("drizzle's own .get() still returns a truthy ghost row on a miss — why getOne exists", async () => {
+    // Pinning the upstream behaviour rather than describing it: if a future
+    // drizzle release fixes this, this test fails and getOne can be
+    // reconsidered. Until then it is the reason .get() is banned on AppDb.
+    mock.queue(jsonResult([]));
+    const db = createD1HttpDb({ accountId: "acct", databaseId: "db", apiToken: "token", baseUrl: await mock.baseUrl, maxAttempts: 1, timeoutMs: 2000 });
+
+    const ghost = await db.select().from(sources).where(eq(sources.id, "nope")).get();
+    expect(ghost).not.toBeUndefined();
+    expect(ghost?.id).toBeUndefined();
   });
 
   it("sends the real sql/params body Cloudflare's D1 REST API expects", async () => {

@@ -36,6 +36,36 @@ export function createD1Db(d1: D1Database): DrizzleD1Database<typeof schema> {
  */
 export type AppDb = BetterSQLite3Database<typeof schema> | DrizzleD1Database<typeof schema> | SqliteRemoteDatabase<typeof schema>;
 
+/**
+ * Single-row read for `AppDb`. **Use this instead of drizzle's `.get()`.**
+ *
+ * `.get()` is not portable across the three dialects this codebase runs on.
+ * Over the D1 HTTP client (db/d1-http.ts, the GitHub Actions arm), a query
+ * matching no rows hands drizzle's sqlite-proxy dialect an empty array, and
+ * `mapGetResult` only short-circuits on a *falsy* `rows` — `[]` is truthy,
+ * so it builds a row object with every field `undefined` instead of
+ * returning `undefined`. A miss therefore comes back **truthy**, and every
+ * `if (!row) return null` guard in this codebase silently stopped working
+ * the moment the pipeline moved to D1-over-HTTP.
+ *
+ * That was not theoretical: RENDER failed on every scheduled run from
+ * 2026-08-29 to 2026-08-31 with `"undefined" is not valid JSON`, because
+ * `getSettings` passed a ghost row's `compiledJson` to `JSON.parse`. That
+ * one was loud. The others — an unmatched credential, an unmatched MCP
+ * token, an unmatched export — were not.
+ *
+ * The proxy callback cannot express "no row" without lying to drizzle's
+ * declared `rows: any[]` type, so the fix is here rather than there: `.all()`
+ * maps an empty result to `[]` identically on all three dialects, and
+ * indexing it gives a real `undefined`.
+ */
+export async function getOne<T>(query: { all: () => T[] | Promise<T[]> }): Promise<T | undefined> {
+  // `T[] | Promise<T[]>` because the dialects genuinely differ: better-sqlite3
+  // is synchronous and the two D1 arms are not. Awaiting covers both.
+  const rows = await query.all();
+  return rows[0];
+}
+
 /** The underlying binding/connection beneath AppDb — needed only for execAtomic below. */
 export type RawSqlClient = D1Database | Database.Database | D1HttpRawClient;
 

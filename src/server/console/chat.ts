@@ -1,5 +1,5 @@
 import { desc, eq } from "drizzle-orm";
-import type { AppDb } from "../../../db/client.ts";
+import { getOne, type AppDb } from "../../../db/client.ts";
 import { chatMessages, chatSessions } from "../../../db/schema.ts";
 
 export type ChatRole = "user" | "assistant" | "tool";
@@ -25,7 +25,7 @@ export async function createChatSession(db: AppDb, now: () => number = Date.now)
 export type DeleteChatSessionResult = { kind: "ok" } | { kind: "not_found" };
 
 export async function deleteChatSession(db: AppDb, id: string): Promise<DeleteChatSessionResult> {
-  const existing = await db.select().from(chatSessions).where(eq(chatSessions.id, id)).get();
+  const existing = await getOne(db.select().from(chatSessions).where(eq(chatSessions.id, id)));
   if (!existing) return { kind: "not_found" };
   await db.delete(chatSessions).where(eq(chatSessions.id, id)).run();
   return { kind: "ok" };
@@ -80,7 +80,7 @@ export async function appendChatMessage(
     })
     .run();
 
-  const session = await db.select().from(chatSessions).where(eq(chatSessions.id, sessionId)).get();
+  const session = await getOne(db.select().from(chatSessions).where(eq(chatSessions.id, sessionId)));
   const isFirstUserMessage = role === "user" && session?.title === "New chat";
   await db
     .update(chatSessions)

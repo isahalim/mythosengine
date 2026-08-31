@@ -314,6 +314,8 @@ CREATE INDEX idx_scripts_created  ON scripts(created_at);   -- today's-diversity
 CREATE UNIQUE INDEX idx_directive_active ON directives(status) WHERE status = 'active';
 ```
 
+**Reading one row: `getOne()`, never `.get()`.** `AppDb` spans three dialects, and drizzle's `.get()` does not behave the same on all of them. Over the D1 HTTP client (the GitHub Actions arm), a query matching nothing hands the sqlite-proxy dialect an empty array; `mapGetResult` only short-circuits on a *falsy* `rows`, and `[]` is truthy, so it builds a row object with every field `undefined`. A miss therefore comes back truthy and every `if (!row)` guard stops working. RENDER failed on every scheduled run from 2026-08-29 to 2026-08-31 with `"undefined" is not valid JSON` — `getSettings` handing a ghost row's `compiledJson` to `JSON.parse` — and the quieter cases (an unmatched credential, MCP token, or export) were failing the whole time without saying so. `db/client.ts`'s `getOne()` uses `.all()[0]`, which maps an empty result identically on all three dialects.
+
 Same rationale as before: natural-key `UNIQUE` gives idempotency for free, `CHECK` makes illegal states unrepresentable, `audit_log` is append-only, `footage_segments.used_count`/`last_used_at` is what lets FOOTAGE SELECT (§5.5) rotate clips instead of reusing the same 15 seconds every day, and `renders.created_at`/`scripts.created_at` are what let the diversity logic (§5.3/§5.5/§5.6) know what's already run today without a separate tracking table.
 
 The block above is the pipeline's core; the console added more tables as it

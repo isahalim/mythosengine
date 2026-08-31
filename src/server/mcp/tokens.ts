@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import type { AppDb } from "../../../db/client.ts";
+import { getOne, type AppDb } from "../../../db/client.ts";
 import { mcpTokens } from "../../../db/schema.ts";
 
 // High-entropy random bearer tokens for external MCP clients (Claude
@@ -55,7 +55,7 @@ export async function listMcpTokens(db: AppDb): Promise<McpTokenSummary[]> {
 export type RevokeMcpTokenResult = { kind: "ok" } | { kind: "not_found" };
 
 export async function revokeMcpToken(db: AppDb, id: string, now: () => number = Date.now): Promise<RevokeMcpTokenResult> {
-  const existing = await db.select().from(mcpTokens).where(eq(mcpTokens.id, id)).get();
+  const existing = await getOne(db.select().from(mcpTokens).where(eq(mcpTokens.id, id)));
   if (!existing || existing.revokedAt) return { kind: "not_found" };
   await db
     .update(mcpTokens)
@@ -68,7 +68,7 @@ export async function revokeMcpToken(db: AppDb, id: string, now: () => number = 
 /** Hashes `candidate`, looks up a live (non-revoked) token, and bumps lastUsedAt. Returns the token's id, or null if unknown/revoked. */
 export async function verifyMcpToken(db: AppDb, candidate: string, now: () => number = Date.now): Promise<string | null> {
   const hash = await sha256Hex(candidate);
-  const row = await db.select().from(mcpTokens).where(eq(mcpTokens.hash, hash)).get();
+  const row = await getOne(db.select().from(mcpTokens).where(eq(mcpTokens.hash, hash)));
   if (!row || row.revokedAt) return null;
 
   await db

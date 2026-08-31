@@ -1,5 +1,5 @@
 import { desc, gte } from "drizzle-orm";
-import type { AppDb } from "../../../db/client.ts";
+import { getOne, type AppDb } from "../../../db/client.ts";
 import { footageSegments, footageSources, renders, runs, signals } from "../../../db/schema.ts";
 import { STALE_RUN_THRESHOLD_MS } from "../../../db/runs.ts";
 import { isPipelineEnabled } from "./killswitch.ts";
@@ -176,7 +176,7 @@ export async function getConsoleSummary(db: AppDb, killswitchKv: KvLike, vaultKv
   // pipeline sweeps these rows on its next run (db/runs.ts's reapStaleRuns);
   // this guard means the dashboard stops lying immediately rather than
   // waiting for that to happen.
-  const liveRunRow = await db.select().from(runs).where(gte(runs.startedAt, since)).orderBy(desc(runs.startedAt)).limit(1).get();
+  const liveRunRow = await getOne(db.select().from(runs).where(gte(runs.startedAt, since)).orderBy(desc(runs.startedAt)).limit(1));
   const liveRunIsFresh = liveRunRow !== undefined && now() - Date.parse(liveRunRow.startedAt) < STALE_RUN_THRESHOLD_MS;
   const liveRun = liveRunRow && liveRunRow.status === "running" && liveRunIsFresh ? { stage: liveRunRow.stage, startedAt: liveRunRow.startedAt } : null;
 

@@ -1,5 +1,5 @@
 import { desc, eq } from "drizzle-orm";
-import type { AppDb } from "../../../db/client.ts";
+import { getOne, type AppDb } from "../../../db/client.ts";
 import { researchBriefs } from "../../../db/schema.ts";
 import type { ResearchBrief, ResearchCitation } from "./research.ts";
 
@@ -49,13 +49,9 @@ export async function saveResearchBrief(
  * and says so on the way past.
  */
 export async function getLatestResearchBrief(db: AppDb, signalId: string): Promise<StoredResearchBrief | null> {
-  const row = await db
-    .select()
-    .from(researchBriefs)
-    .where(eq(researchBriefs.signalId, signalId))
-    .orderBy(desc(researchBriefs.createdAt))
-    .limit(1)
-    .get();
+  const row = await getOne(
+    db.select().from(researchBriefs).where(eq(researchBriefs.signalId, signalId)).orderBy(desc(researchBriefs.createdAt)).limit(1),
+  );
   if (!row) return null;
 
   let keyPoints: string[];

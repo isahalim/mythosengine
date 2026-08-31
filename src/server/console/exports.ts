@@ -1,5 +1,5 @@
 import { desc, eq } from "drizzle-orm";
-import type { AppDb } from "../../../db/client.ts";
+import { getOne, type AppDb } from "../../../db/client.ts";
 import { exports as exportsTable, footageSources, footageSegments, renders, scripts } from "../../../db/schema.ts";
 
 // Matches src/console/lib/types.ts's ExportListItem/ExportStatus exactly —
@@ -24,10 +24,10 @@ export interface ExportListItem {
 }
 
 async function toListItem(db: AppDb, row: typeof exportsTable.$inferSelect): Promise<ExportListItem> {
-  const render = await db.select().from(renders).where(eq(renders.id, row.renderId)).get();
-  const script = render ? await db.select().from(scripts).where(eq(scripts.id, render.scriptId)).get() : undefined;
-  const segment = render ? await db.select().from(footageSegments).where(eq(footageSegments.id, render.footageSegmentId)).get() : undefined;
-  const source = segment ? await db.select().from(footageSources).where(eq(footageSources.id, segment.footageSourceId)).get() : undefined;
+  const render = await getOne(db.select().from(renders).where(eq(renders.id, row.renderId)));
+  const script = render ? await getOne(db.select().from(scripts).where(eq(scripts.id, render.scriptId))) : undefined;
+  const segment = render ? await getOne(db.select().from(footageSegments).where(eq(footageSegments.id, render.footageSegmentId))) : undefined;
+  const source = segment ? await getOne(db.select().from(footageSources).where(eq(footageSources.id, segment.footageSourceId))) : undefined;
 
   let suggestedTags: string[];
   try {
@@ -62,7 +62,7 @@ export async function listExports(db: AppDb, status?: ExportStatus): Promise<Exp
 }
 
 export async function getExport(db: AppDb, id: string) {
-  return db.select().from(exportsTable).where(eq(exportsTable.id, id)).get();
+  return getOne(db.select().from(exportsTable).where(eq(exportsTable.id, id)));
 }
 
 export type MutateExportResult = { kind: "ok" } | { kind: "not_found" };

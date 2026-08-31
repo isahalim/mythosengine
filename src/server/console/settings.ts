@@ -1,5 +1,5 @@
 import { desc, eq } from "drizzle-orm";
-import { execAtomic, type AppDb, type RawSqlClient } from "../../../db/client.ts";
+import { execAtomic, getOne, type AppDb, type RawSqlClient } from "../../../db/client.ts";
 import { directives, signals } from "../../../db/schema.ts";
 import { DEFAULT_DIRECTIVE, DirectiveSchema, type Directive } from "./directive-schema.ts";
 
@@ -11,7 +11,7 @@ export interface ActiveSettings {
 }
 
 export async function getSettings(db: AppDb): Promise<ActiveSettings | null> {
-  const row = await db.select().from(directives).where(eq(directives.status, "active")).get();
+  const row = await getOne(db.select().from(directives).where(eq(directives.status, "active")));
   if (!row) return null;
   return { version: row.version, directive: DirectiveSchema.parse(JSON.parse(row.compiledJson)), rawText: row.rawText, createdAt: row.createdAt };
 }
@@ -83,7 +83,7 @@ async function activateCompiledDirective(
     },
   ]);
 
-  const row = await db.select().from(directives).where(eq(directives.status, "active")).get();
+  const row = await getOne(db.select().from(directives).where(eq(directives.status, "active")));
   if (!row) throw new Error("activateCompiledDirective: no active directive row after activation — this should be unreachable");
   return { version: row.version, directive, rawText: row.rawText, createdAt: row.createdAt };
 }
