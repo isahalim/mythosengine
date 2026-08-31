@@ -81,20 +81,18 @@ async function main(): Promise<void> {
   const since = todayStartIso();
 
   // ---- pick a signal: weight by preferredSourceIds, then diversity_mode excludes today's already-picked sources ----
-  // Note: .select() here is deliberately bare (no field-picking object) —
-  // TypeScript collapses drizzle's field-mapping select overload to 0
-  // arguments when the receiver is typed as AppDb (a union of three
-  // dialects' distinct builder classes), so `.select({...})` fails to
-  // typecheck even though it runs fine. A join without field-picking
-  // returns one nested object per table (`row.signals.sourceId`, not
-  // `row.sourceId`) — that nesting is what the `.map` below relies on.
-  const todaysScriptSources = await env.db
-    .select()
-    .from(scripts)
-    .innerJoin(signals, eq(signals.id, scripts.signalId))
-    .where(gte(scripts.createdAt, since))
-    .all();
-  const sourceIdsUsedToday = todaysScriptSources.map((r) => r.signals.sourceId);
+  // Two queries and a Map rather than a SQL join, for the reason spelled out
+  // in src/lib/rag/retriever.ts: a drizzle join over the D1 HTTP client
+  // returns corrupted rows, because the generated select list is unaliased
+  // and D1's column-keyed JSON collapses the two `id` columns into one —
+  // shifting every field after the collision. Confirmed against the live
+  // database, 2026-08-31. Both result sets here are one day's worth of rows.
+  const todaysScripts = await env.db.select().from(scripts).where(gte(scripts.createdAt, since)).all();
+  const todaysSignalIds = todaysScripts.map((row) => row.signalId);
+  const sourceIdsUsedToday =
+    todaysSignalIds.length === 0
+      ? []
+      : (await env.db.select().from(signals).where(inArray(signals.id, todaysSignalIds)).all()).map((row) => row.sourceId);
   const eligibleSourceIds = [...new Set(scoredSignals.map((s) => s.sourceId))];
   const rankedSourceIds = weightSourcesForToday(
     eligibleSourceIds,
@@ -155,21 +153,22 @@ async function main(): Promise<void> {
 
   // ---- FOOTAGE SELECT ----
   const todaysRenders = await env.db.select().from(renders).where(gte(renders.createdAt, since)).all();
-  const todaysGameRows =
+  // Same in-memory join, same reason as above.
+  const todaysSegments =
     todaysRenders.length === 0
       ? []
-      : await env.db
-          .select()
-          .from(footageSegments)
-          .innerJoin(footageSources, eq(footageSources.id, footageSegments.footageSourceId))
-          .where(inArray(footageSegments.id, todaysRenders.map((r) => r.footageSegmentId)))
-          .all();
-  const gamesUsedToday = todaysGameRows.map((r) => r.footage_sources.game);
+      : await env.db.select().from(footageSegments).where(inArray(footageSegments.id, todaysRenders.map((r) => r.footageSegmentId))).all();
+  const allFootageSources = await env.db.select().from(footageSources).all();
+  const gameBySourceId = new Map(allFootageSources.map((row) => [row.id, row.game]));
+  const gamesUsedToday = todaysSegments.flatMap((row) => {
+    const game = gameBySourceId.get(row.footageSourceId);
+    return game === undefined ? [] : [game];
+  });
 
   // Only enabled sources (db/migrations/0008) — a game whose every channel
   // has been retired must not be ranked as a candidate, or FOOTAGE SELECT
   // spends a claim attempt on a game it can never satisfy.
-  const allGames = [...new Set((await env.db.select().from(footageSources).where(eq(footageSources.enabled, 1)).all()).map((r) => r.game))];
+  const allGames = [...new Set(allFootageSources.filter((row) => row.enabled === 1).map((row) => row.game))];
   const eligibleGames = directive.focusGames.length > 0 ? directive.focusGames.filter((g) => allGames.includes(g)) : allGames;
   const rankedGames = pickGamesForToday(eligibleGames, gamesUsedToday, directive.diversityMode);
 

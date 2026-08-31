@@ -40,6 +40,7 @@ Re-read this block before writing any file that touches secrets, auth, the datab
 - Never write an empty `catch` block, swallow an error, or return fallback data on failure.
 - Never perform a multi-step database mutation outside a transaction.
 - Never call drizzle's `.get()` on an `AppDb` — use `getOne()` from `db/client.ts`. Over the D1 HTTP client a `.get()` that matches nothing returns a **truthy** row of `undefined` fields, so every `if (!row)` guard silently stops working. That broke every scheduled RENDER from 2026-08-29 to 2026-08-31.
+- Never `.innerJoin()`/`.leftJoin()` on an `AppDb`. Query each table and join in memory. Drizzle emits an unaliased select list, D1's REST response is a column-keyed JSON object, and two tables that both have an `id` collapse into one key — the row comes back a value short and every field after the collision is shifted. Confirmed against the live database, 2026-08-31.
 - Never call `fetch` without an `AbortSignal` timeout.
 - Never let `vault.get()` be called outside `src/lib/drivers/**`.
 - Never give this system a YouTube upload credential, OAuth scope, or refresh token, and never call a YouTube upload endpoint from any component. There is no automated publish path, by design — see §9 of `ARCHITECTURE.md`.

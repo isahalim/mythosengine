@@ -1,4 +1,4 @@
-import { desc, eq } from "drizzle-orm";
+import { desc } from "drizzle-orm";
 import type { AppDb } from "../../../db/client.ts";
 import { signals, sources } from "../../../db/schema.ts";
 import type { DriverError } from "../drivers/types.ts";
@@ -57,26 +57,34 @@ export class SignalsBm25Retriever implements Retriever {
   private async load(): Promise<void> {
     if (this.loaded) return;
 
-    // Bare .select() (no field-picking object), for the reason documented at
-    // length in scripts/pipeline/render.ts: drizzle's field-mapping overload
-    // collapses to 0 arguments when the receiver is typed as AppDb, so the
-    // nested `row.signals` / `row.sources` shape below is the only one that
-    // typechecks across all three dialects.
-    const rows = await this.db
-      .select()
-      .from(signals)
-      .innerJoin(sources, eq(sources.id, signals.sourceId))
-      .orderBy(desc(signals.observedAt))
-      .limit(this.corpusLimit)
-      .all();
+    // Two queries and a Map, deliberately, rather than one SQL join.
+    //
+    // A drizzle join over the D1 HTTP client returns *corrupted* rows: the
+    // generated select list is unaliased (`"signals"."id", ... "sources"."id"`),
+    // D1's REST response is a column-keyed JSON object, and two columns named
+    // `id` collapse into one key — so the row arrives a value short, and
+    // `Object.values` shifts every field after the collision by one. Verified
+    // against the live database on 2026-08-31: the surviving `id` was the
+    // *source's*, not the signal's. Nothing downstream could detect that; it
+    // would just cite the wrong thing.
+    //
+    // Both tables are small and read whole here anyway, so joining in memory
+    // costs one extra round trip and removes the hazard entirely.
+    const signalRows = await this.db.select().from(signals).orderBy(desc(signals.observedAt)).limit(this.corpusLimit).all();
+    const sourceRows = await this.db.select().from(sources).all();
+    const kindBySourceId = new Map(sourceRows.map((row) => [row.id, row.kind]));
 
-    for (const row of rows) {
-      this.byId.set(row.signals.id, {
-        signalId: row.signals.id,
-        title: row.signals.title,
-        url: row.signals.canonicalUrl,
-        sourceKind: row.sources.kind,
-        observedAt: row.signals.observedAt,
+    for (const row of signalRows) {
+      const sourceKind = kindBySourceId.get(row.sourceId);
+      // A signal whose source row is gone can still be retrieved and cited —
+      // the title and URL are what ground the script, and the source's kind
+      // is only a label on the citation.
+      this.byId.set(row.id, {
+        signalId: row.id,
+        title: row.title,
+        url: row.canonicalUrl,
+        sourceKind: sourceKind ?? "unknown",
+        observedAt: row.observedAt,
         score: 0,
       });
     }

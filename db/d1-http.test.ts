@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import { createD1HttpDb, D1HttpRawClient } from "./d1-http.ts";
 import { execAtomic, getOne } from "./client.ts";
-import { sources } from "./schema.ts";
+import { signals, sources } from "./schema.ts";
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => void;
 
@@ -107,6 +107,31 @@ describe("createD1HttpDb", () => {
     const ghost = await db.select().from(sources).where(eq(sources.id, "nope")).get();
     expect(ghost).not.toBeUndefined();
     expect(ghost?.id).toBeUndefined();
+  });
+
+  it("corrupts a join whose select list repeats a column name — why joins are done in memory", async () => {
+    // Pinning the hazard, not endorsing it. drizzle emits an unaliased select
+    // list for a join (`"signals"."id", ... "sources"."id"`), and D1's REST
+    // response is a column-keyed JSON *object*, so two columns named `id`
+    // collapse into one key before we ever see them. The row then arrives a
+    // value short and Object.values shifts every field after the collision.
+    //
+    // Reproduced here with the exact shape D1 returned live on 2026-08-31:
+    // six columns selected, five keys back, and the surviving `id` is the
+    // second table's. Client-side recovery is impossible — the information is
+    // gone server-side — so src/lib/rag/retriever.ts and
+    // scripts/pipeline/render.ts join in memory instead. If a future drizzle
+    // starts aliasing its join select lists, this test fails and that
+    // workaround can be reconsidered.
+    mock.queue(jsonResult([{ id: "src-1", source_id: "src-1", title: "a headline", kind: "rss", url: "https://example.com/feed" }]));
+    const db = createD1HttpDb({ accountId: "acct", databaseId: "db", apiToken: "token", baseUrl: await mock.baseUrl, maxAttempts: 1, timeoutMs: 2000 });
+
+    const rows = await db.select().from(signals).innerJoin(sources, eq(sources.id, signals.sourceId)).all();
+
+    // The signal's own id is gone, overwritten by the source's.
+    expect(rows[0].signals.id).toBe("src-1");
+    // ...and the shift leaves later fields holding the wrong values entirely.
+    expect(rows[0].signals.canonicalUrl).toBe("a headline");
   });
 
   it("sends the real sql/params body Cloudflare's D1 REST API expects", async () => {
