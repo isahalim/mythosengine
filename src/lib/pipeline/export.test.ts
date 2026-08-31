@@ -24,6 +24,9 @@ function fakeExportDriver(behavior: "succeed" | "fail"): ExportDriver {
 const auditResult: AuditResult = {
   schemaValid: true,
   wordCountInBounds: true,
+  narration: null,
+  narrationDowngraded: false,
+  characterAbsentReason: null,
   hasDebateQuestion: true,
   originalityScore: 0.8,
   clearsOriginalityFloor: true,

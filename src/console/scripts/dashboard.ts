@@ -32,7 +32,11 @@ function setText(id: string, value: string): void {
 // (hourly signal ingestion) and FOOTAGE_REFRESH (weekly library upkeep) are
 // real stages a run can report but aren't part of this per-video funnel, so
 // they're labeled but shown as in-progress rather than plotted on it.
-const RENDER_STAGE_ORDER: string[] = ["script", "critic", "footage_select", "tts", "render", "export"];
+// Every stage a RENDER invocation writes a `runs` row for, in the order it
+// writes them. `research` and `align` were both missing: research since the
+// RAG stage landed, align since the discourse format added it. A stage absent
+// from this list reports as step -1 and the progress bar jumps backwards.
+const RENDER_STAGE_ORDER: string[] = ["research", "script", "critic", "footage_select", "tts", "align", "render", "export"];
 
 const STAGE_LABELS: Record<string, string> = {
   watch: "Scanning sources for signals",

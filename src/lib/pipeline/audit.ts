@@ -30,8 +30,47 @@ export interface ResearchProvenance {
   toolCallsMade: string[];
 }
 
+/**
+ * The narration settings **actually used**, which §9 requires the audit
+ * package to state.
+ *
+ * "Actually" is the load-bearing word. The operator's directive names a
+ * voice and a rate; what reached the audio may differ, because the Gemini
+ * upgrade can be unavailable or can fail mid-render and fall back to Edge.
+ * A reviewer listening to a flat read needs to be able to tell "the upgrade
+ * was out of budget today" from "the style direction did nothing" — and
+ * neither is recoverable from the video itself.
+ */
+interface NarrationProvenance {
+  driver: "edge-tts" | "gemini-tts";
+  voice: string;
+  rate: string | null;
+  /** The inline direction sent, or null on a path that has none. */
+  styleDirection: string | null;
+  /** Why this is not the driver the operator would otherwise have got. Null when nothing was downgraded. */
+  fallbackReason: string | null;
+  /**
+   * Fraction of the script's words ALIGN matched against the transcript, or
+   * null on the Edge path — which needs no alignment because its timings are
+   * native and exact.
+   */
+  alignMatchRatio: number | null;
+}
+
 export interface AuditSummaryInput {
   script: { hook: string; body: string; debateQuestion: string; wordCount: number };
+  /**
+   * Seconds of narration the script was written for, or null for a v1 prose
+   * script. When present, the word-count check derives its bounds from this
+   * instead of using v1's fixed 130-170 — a 180-second discourse script is
+   * *supposed* to be 500 words, and flagging it against a 47-second video's
+   * range would make the flag meaningless.
+   */
+  targetDurationS: number | null;
+  /** How the narration was actually produced. Null only for callers that predate the discourse format. */
+  narration: NarrationProvenance | null;
+  /** Why the host is not on screen, or null when she is. */
+  characterAbsentReason: string | null;
   originalityScore: number | null;
   minOriginalityScore: number;
   policyFlags: string[];
@@ -50,6 +89,10 @@ export interface AuditSummaryInput {
 export interface AuditResult {
   schemaValid: boolean;
   wordCountInBounds: boolean;
+  narration: NarrationProvenance | null;
+  /** True when the narration ran on a driver other than the best one available. */
+  narrationDowngraded: boolean;
+  characterAbsentReason: string | null;
   hasDebateQuestion: boolean;
   originalityScore: number | null;
   clearsOriginalityFloor: boolean;
@@ -69,8 +112,18 @@ export interface AuditResult {
 }
 
 const SCRIPT_SIMILARITY_FLAG_THRESHOLD = 0.85;
+/** v1's fixed range, used only when a script carries no target duration. */
 const MIN_WORD_COUNT = 130;
 const MAX_WORD_COUNT = 170;
+/** Same estimator and tolerance the SCRIPT gate uses (discourse.ts) — one ruler, so the two stages cannot disagree. */
+const WORDS_PER_MINUTE = 165;
+const DURATION_TOLERANCE = 0.25;
+
+function wordCountBounds(targetDurationS: number | null): { min: number; max: number } {
+  if (targetDurationS === null) return { min: MIN_WORD_COUNT, max: MAX_WORD_COUNT };
+  const expected = (targetDurationS / 60) * WORDS_PER_MINUTE;
+  return { min: Math.round(expected * (1 - DURATION_TOLERANCE)), max: Math.round(expected * (1 + DURATION_TOLERANCE)) };
+}
 
 /**
  * `simhash64`/`hammingDistance` (src/lib/ingest/simhash.ts) were built and
@@ -90,8 +143,17 @@ function scriptSimilarity(a: string, b: string): number {
 export function computeAuditSummary(input: AuditSummaryInput): AuditResult {
   const flags: string[] = [];
 
-  const wordCountInBounds = input.script.wordCount >= MIN_WORD_COUNT && input.script.wordCount <= MAX_WORD_COUNT;
-  if (!wordCountInBounds) flags.push(`word count ${input.script.wordCount} outside ${MIN_WORD_COUNT}-${MAX_WORD_COUNT}`);
+  const bounds = wordCountBounds(input.targetDurationS);
+  const wordCountInBounds = input.script.wordCount >= bounds.min && input.script.wordCount <= bounds.max;
+  if (!wordCountInBounds) flags.push(`word count ${input.script.wordCount} outside ${bounds.min}-${bounds.max}`);
+
+  // Flagged, not failed: a downgraded voice is a complete video the operator
+  // may well publish, but it is not the video they configured, and that
+  // difference has to be visible in review rather than only in a log line
+  // from a job that has already exited.
+  const narrationDowngraded = input.narration?.fallbackReason != null;
+  if (input.narration?.fallbackReason) flags.push(`narration on ${input.narration.driver}: ${input.narration.fallbackReason}`);
+  if (input.characterAbsentReason) flags.push(`no host on screen: ${input.characterAbsentReason}`);
 
   const hasDebateQuestion = input.script.debateQuestion.trim().length > 0;
   if (!hasDebateQuestion) flags.push("no debate question");
@@ -141,6 +203,9 @@ export function computeAuditSummary(input: AuditSummaryInput): AuditResult {
   return {
     schemaValid: wordCountInBounds && hasDebateQuestion,
     wordCountInBounds,
+    narration: input.narration,
+    narrationDowngraded,
+    characterAbsentReason: input.characterAbsentReason,
     hasDebateQuestion,
     originalityScore: input.originalityScore,
     clearsOriginalityFloor,
