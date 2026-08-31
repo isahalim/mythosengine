@@ -139,7 +139,10 @@ body {
   initial-value: 0deg;
 }
 .siri-orb {
-  --bg: #000000;
+  /* Was a hardcoded #000000. Bound to --ink so the orb's punched-through
+     dot pattern matches whichever surface it sits on — the console is white
+     as of 2026-08-31, and a black mask there read as dirt on the glass. */
+  --bg: var(--ink);
   --c1: oklch(75% 0.18 350);
   --c2: oklch(80% 0.15 200);
   --c3: oklch(78% 0.19 90);

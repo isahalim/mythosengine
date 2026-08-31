@@ -19,7 +19,13 @@ const { title } = Astro.props;
 ---
 
 <!doctype html>
-<html lang="en">
+<!--
+  data-surface="console" selects the white console palette from tokens.css.
+  It goes on <html> deliberately: :root is that same element, so redefining
+  --ink/--slate/--mercury there wins over the public black palette and is
+  picked up by global.css's @theme mapping without touching any component.
+-->
+<html lang="en" data-surface="console">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />

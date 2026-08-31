@@ -31,3 +31,58 @@
   --font-body: "Public Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 }
+
+/*
+  Console surface — white (2026-08-31, operator direction; supersedes the
+  black ground for /console/* only, see ARCHITECTURE.md §8).
+
+  The token *names* below are roles, not colours: --ink is "page ground",
+  --slate is "panel", --mercury is "primary text". Redefining those roles
+  here is what lets the whole console flip surface without touching a single
+  component — `bg-ink text-mercury` keeps meaning "ground / primary text" and
+  simply resolves light instead of dark.
+
+  This works because :root IS <html>, and ConsoleLayout.astro stamps
+  data-surface="console" on that same element. `--color-ink: var(--ink)` in
+  global.css's @theme is declared on :root too, so it substitutes the winning
+  --ink for that element. Higher specificity here (0,2,0 vs 0,1,0) wins.
+
+  The public homepage keeps the black :root palette above, untouched.
+
+  Every foreground below clears 4.5:1 against BOTH --ink (#ffffff) and
+  --slate (#f4f4f8) — the panel is the harder case, so it is the one the
+  values were picked against. Measured, not eyeballed:
+    mercury 16.4  ·  oxide 5.9  ·  sodium 5.2  ·  violet 6.2  ·  rose 5.5
+*/
+:root[data-surface="console"] {
+  --ink: #ffffff; /* the workspace the glass disperses to reveal */
+  --slate: #f4f4f8; /* panel — a faint cool cast, not a flat grey */
+  --mercury: #16161c; /* primary text, near-black with a violet bias */
+  --oxide: #0d6b4f; /* state + provenance ONLY — darkened for white */
+  --sodium: #a34e08; /* warm CTA — darkened for white */
+  --bone: #16161c; /* inverts: the rare high-contrast surface is dark here */
+
+  --violet: #5b39e0;
+  --rose: #b62f40;
+
+  /* Glass over a white ground needs to tint rather than darken: the
+     lava-lamp spheres drift behind it and the panel's job is to soften
+     them, not to black them out. */
+  --glass-bg: color-mix(in srgb, var(--slate) 62%, transparent);
+  --glass-border: color-mix(in srgb, var(--mercury) 12%, transparent);
+
+  /* The lava-lamp spheres that drift through the workspace, and that the
+     shattered-glass hero refracts. Rainbow is deliberate and is an exception
+     to the restrained oxide/sodium/violet system above — the operator asked
+     for rainbow spheres specifically, the same way they asked for a rainbow
+     Siri orb (see .siri-orb in global.css).
+
+     Pastels, not saturated hues: they are averaged together over a white
+     ground, so anything stronger stops reading as light through glass and
+     starts reading as paint. Consumed by src/shaders/shattered-glass.ts,
+     which reads them off computed style rather than repeating them. */
+  --orb-1: #ff9ec4; /* rose */
+  --orb-2: #ffd08a; /* amber */
+  --orb-3: #7fe3e0; /* teal */
+  --orb-4: #b39dff; /* violet */
+}

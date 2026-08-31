@@ -75,6 +75,17 @@ async function login(): Promise<void> {
   if (destination === "/console" || destination === "/console/") {
     window.sessionStorage.setItem("mythos-console-just-signed-in", "1");
   }
+
+  // Let the glass hero clear before navigating, so the dispersal is seen
+  // rather than cut off mid-flight by the page change. Bounded: if the
+  // shader never mounted (no WebGL, reduced motion, missing tokens) nothing
+  // answers, and the race resolves on the timeout instead of hanging here.
+  document.dispatchEvent(new CustomEvent("mythos:signed-in"));
+  await Promise.race([
+    new Promise<void>((resolve) => document.addEventListener("mythos:glass-cleared", () => resolve(), { once: true })),
+    new Promise<void>((resolve) => window.setTimeout(resolve, 1_800)),
+  ]);
+
   window.location.href = destination;
 }
 
