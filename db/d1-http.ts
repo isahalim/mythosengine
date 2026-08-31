@@ -131,8 +131,17 @@ export function createD1HttpDb(options: D1HttpOptions): SqliteRemoteDatabase<typ
  * them as one HTTP call (same D1 session, real SQL transaction semantics
  * either way), with every `?` renumbered to a globally unique `?N` so
  * per-statement placeholder numbering can't collide across the combined
- * string. Not exercised against a live D1 database in this session unless
- * noted otherwise in docs/DECISIONS.md — treat as unverified until then.
+ * string.
+ *
+ * **This does not work, and cannot be made to work as written** (exercised
+ * against the live database 2026-08-31, which is what the previous version of
+ * this comment asked for). Cloudflare answers `7400: The request is malformed:
+ * params with multiple statements is not supported` — the REST `/query`
+ * endpoint accepts either several statements or bound parameters, never both,
+ * and offers no equivalent of the Worker binding's atomic `.batch()`. So every
+ * `execAtomic` call from the GitHub Actions runner fails, `generateScript`
+ * included. See the OPEN note in ARCHITECTURE.md §4 for the three ways out;
+ * all three are decisions rather than fixes, and none has been taken.
  */
 export class D1HttpRawClient {
   constructor(private readonly options: D1HttpOptions) {}
