@@ -82,6 +82,7 @@ const SELECTORS = {
   consentCheckbox: "#copyright-consent-checkbox",
   submitButton: "#submit-button",
   retryButton: "#retry-btn",
+  serviceNotice: "#service-notice-overlay",
 } as const;
 
 export interface DomYtmp3DownloadDriverOptions {
@@ -282,6 +283,7 @@ export class DomYtmp3DownloadDriver implements DownloadDriver {
 
     try {
       await page.goto(toolUrl, { waitUntil: "domcontentloaded", timeout: this.options.navigationTimeoutMs ?? NAVIGATION_TIMEOUT_MS });
+      await dismissServiceNotice(page, actionTimeout);
 
       // The page defaults to MP3. Without this the pipeline would download
       // audio, which the ffprobe check below then rejects for having no
@@ -572,6 +574,46 @@ export function qualityOptionLabel(quality: string): string | null {
 }
 
 /** The label with surrounding whitespace tolerated and nothing else: see `qualityOptionLabel` for why a substring match is wrong here. */
+/** What a "close this dialog" control says. Anchored, so a "Close account"-style button cannot match. */
+const DISMISS_TEXT = /^\s*(ok(ay)?|got it|continue|accept|i agree|agree|close|dismiss|understood|proceed|×|✕|x)\s*$/i;
+
+/**
+ * Closes ytmp3's "service notice" modal, if one is showing.
+ *
+ * Absent when the page is loaded from a residential IP (checked by hand
+ * 2026-08-31), but it was up for all three candidates on the GitHub Actions
+ * runner, and Playwright named it precisely: a `.sn-card` inside
+ * `<div aria-modal="true" role="alertdialog" id="service-notice-overlay">`
+ * "intercepts pointer events". Every click on the form underneath timed out,
+ * so the refresh failed with "the page's layout may have changed" — true, in
+ * a way that message could not express.
+ *
+ * The dismiss control is matched by its accessible text, not by a selector,
+ * because a selector for a dialog nobody here has been served would be a
+ * guess. When nothing matches, this deliberately **leaves the overlay
+ * standing** and logs the dialog's own words, so the failure that follows
+ * carries its reason. Clicking a button whose meaning we have not read, or
+ * deleting a notice a service is deliberately showing, are both worse than
+ * failing with the evidence attached.
+ */
+async function dismissServiceNotice(page: Page, actionTimeout: number): Promise<void> {
+  const overlay = page.locator(SELECTORS.serviceNotice).first();
+  if ((await page.locator(SELECTORS.serviceNotice).count()) === 0 || !(await overlay.isVisible())) return;
+
+  const text = ((await overlay.textContent({ timeout: actionTimeout })) ?? "").replace(/\s+/g, " ").trim();
+  console.warn(`[ytmp3] a service notice is covering the form: "${text.slice(0, 300)}"`);
+
+  const dismiss = overlay.locator("button, [role=button]").filter({ hasText: DISMISS_TEXT });
+  if ((await dismiss.count()) === 0) {
+    console.warn("[ytmp3] no recognizable dismiss control in that notice — leaving it up, so the failure below says why.");
+    return;
+  }
+
+  await dismiss.first().click({ timeout: actionTimeout });
+  await overlay.waitFor({ state: "hidden", timeout: actionTimeout });
+  console.warn("[ytmp3] service notice dismissed.");
+}
+
 function exactLabelPattern(label: string): RegExp {
   return new RegExp(`^\\s*${label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`);
 }

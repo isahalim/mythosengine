@@ -416,6 +416,11 @@ typed outcome rather than a hang.
    awkward to test. No model call, no API key, no cookies. Every id is still
    verified against `extractYoutubeVideoId` before being trusted: scraped
    page data is untrusted input exactly as model output was.
+**Two things the live site does that the fixture had to learn** (both found on 2026-08-31, the first real run on the deterministic driver):
+
+- A **service notice** — `<div aria-modal="true" role="alertdialog" id="service-notice-overlay">` — is served to the GitHub Actions runner (but not to a residential IP) and intercepts every pointer event on the form beneath it. All three candidates failed with "the page's layout may have changed", which was true but useless. The driver now closes it, matching the dismiss control by its **accessible text** rather than by a selector for a dialog nobody here has been served. When nothing matches it leaves the overlay standing and logs the notice's own words: clicking an unread button, or deleting a notice a service chose to show, are both worse than failing with the evidence attached.
+- A failed conversion renders `.status--error` **beside `#retry-btn`** — the site's own signal that the failure is transient. The driver takes that offer up to `maxConversionAttempts` (3). A *timeout* is not retried: the conversion is still running somewhere, and restarting only spends the budget twice.
+
 2. `DomYtmp3DownloadDriver` (`download-ytmp3-dom.ts`) skips a candidate
    whose video id is already in `footage_segments` (unchanged behavior),
    otherwise navigates to

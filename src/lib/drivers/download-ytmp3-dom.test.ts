@@ -66,6 +66,12 @@ const FIXTURE_HTML = `<!doctype html>
   <input type="checkbox" id="copyright-consent-checkbox" />
   <button type="submit" id="submit-button">Convert</button>
 </form>
+<div id="service-notice-overlay" aria-modal="true" role="alertdialog" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5)">
+  <div class="sn-card" style="position:fixed;inset:0">
+    <p>Scheduled maintenance: conversions may be slower than usual.</p>
+    <button id="sn-dismiss" onclick="document.getElementById('service-notice-overlay').style.display='none'">Got it</button>
+  </div>
+</div>
 <div id="result" style="display:none">
   <div class="status" id="status-el"></div>
   <button id="retry-btn" style="display:none" onclick="runConversion()">Retry</button>
@@ -73,6 +79,13 @@ const FIXTURE_HTML = `<!doctype html>
 </div>
 <script>
   var params = new URLSearchParams(location.search);
+  // A notice=1 query param reproduces the modal the live site served the
+  // Actions runner on 2026-08-31; notice=stuck serves one with no
+  // recognizable dismiss control.
+  if (params.get('notice')) {
+    document.getElementById('service-notice-overlay').style.display = 'block';
+    if (params.get('notice') === 'stuck') document.getElementById('sn-dismiss').textContent = 'Read the full announcement';
+  }
   function pickFormat(btn) {
     var all = document.querySelectorAll('.format-btn');
     for (var i = 0; i < all.length; i++) all[i].className = 'format-btn';
@@ -306,6 +319,39 @@ describe.skipIf(!hasFfmpeg())("DomYtmp3DownloadDriver", () => {
       expect(result.error.retryable).toBe(true);
       expect(result.error.message).toContain("An error occurred");
     }
+    expect(fileRequests).toEqual([]);
+  });
+
+  it("dismisses a service notice covering the form, then converts normally", async () => {
+    // The live blocker on 2026-08-31: an aria-modal alertdialog over the
+    // form meant every click on it timed out, and all three candidates
+    // failed with "the page's layout may have changed".
+    const driver = new DomYtmp3DownloadDriver({
+      toolUrl: toolUrl("?notice=1&delayMs=150&durationAttr=3"),
+      acceptCopyrightAttestation: true,
+      pollIntervalMs: 100,
+    });
+
+    const result = await driver.fetchVideo({ url: YOUTUBE_URL });
+
+    expect(result.ok).toBe(true);
+    expect(fileRequests).toEqual(["/files/real.mp4"]);
+  });
+
+  it("leaves a notice it cannot recognize standing, and fails with the notice's own words", async () => {
+    // Guessing at an unread button, or deleting a notice the service chose to
+    // show, are both worse than failing with the evidence attached.
+    const driver = new DomYtmp3DownloadDriver({
+      toolUrl: toolUrl("?notice=stuck&delayMs=150"),
+      acceptCopyrightAttestation: true,
+      actionTimeoutMs: 2_000,
+      pollIntervalMs: 100,
+    });
+
+    const result = await driver.fetchVideo({ url: YOUTUBE_URL });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.kind).toBe("invalid_response");
     expect(fileRequests).toEqual([]);
   });
 
