@@ -200,6 +200,7 @@ CREATE TABLE scripts (
   word_count    INTEGER NOT NULL,
   originality_score REAL,                    -- critic-assigned, advisory — see §9
   status        TEXT NOT NULL CHECK (status IN ('draft','approved','rejected')),
+  trace_id      TEXT,                        -- the runs.trace_id that wrote it; the console's run view hangs a run's videos off this (§6). Nullable: pre-2026-08-31 scripts have none
   created_at    TEXT NOT NULL                -- drives "today's diversity" queries, §5.3/§5.6
 );
 
@@ -280,6 +281,17 @@ CREATE TABLE runs (                          -- observability, same shape as bef
   stage         TEXT NOT NULL, status TEXT NOT NULL,
   tokens_in     INTEGER DEFAULT 0, tokens_out INTEGER DEFAULT 0,
   error_class   TEXT, trace_id TEXT NOT NULL
+);
+
+CREATE TABLE run_picks (                     -- the operator's guided-run picks (§6); RENDER claims them in order
+  id            TEXT PRIMARY KEY,
+  plan_id       TEXT NOT NULL,               -- one submission of the run form
+  position      INTEGER NOT NULL,            -- the operator's ordering within that plan
+  topic         TEXT NOT NULL,               -- one of ideas.ts's TOPICS; deliberately not a CHECK — the topic list is a product decision that will move
+  signal_id     TEXT NOT NULL REFERENCES signals(id) ON DELETE CASCADE,
+  status        TEXT NOT NULL CHECK (status IN ('queued','claimed','cancelled')),
+  claimed_trace_id TEXT, claimed_at TEXT,    -- which run took it
+  created_at    TEXT NOT NULL
 );
 
 CREATE TABLE audit_log (                     -- append-only; never UPDATE, never DELETE
@@ -700,6 +712,12 @@ Output is persisted to `research_briefs` (§4) and travels into the export's
 | `GET /console/mcp-tokens` | list issued MCP access tokens (label, timestamps — never the token itself) | session |
 | `POST /console/mcp-tokens` | issue a new MCP access token, shown once | session + reauth (< 5 min old) — credential-equivalent, same bar as key rotation |
 | `DELETE /console/mcp-tokens/:id` | revoke an MCP access token | session |
+| `GET /console/ideas?topic=&limit=&exclude=` | ranked candidate signals for one topic — BM25 over `signals` plus engagement, **no model call** (`src/server/console/ideas.ts`); the guided run's step 3 | session |
+| `GET /console/run-plan` / `POST /console/run-plan` | list / queue the operator's picks (`run_picks`); RENDER claims them in order. Queueing never triggers a render | session + schema validation |
+| `DELETE /console/run-plan/:id` | cancel a still-queued pick (a claimed one is being rendered, and is not cancellable) | session |
+| `GET /console/runs` | recent runs, grouped by `runs.trace_id` | session |
+| `GET /console/runs/:traceId` | one run's stages and the videos it produced (`scripts.trace_id` → render → export) | session |
+| `GET /console/runs/:traceId/montage` | Pexels **preview** clips for each video's script keywords — cached per keyword in KV for a day. Never footage for the render | session |
 | `POST /console/voice/transcribe` | speech-to-text via Groq Whisper for the voice control surface | session |
 | `POST /console/voice/turn` | one voice turn — transcript in, tool calls dispatched through `POST /console/mcp`'s exact contract (actor `mcp` in `audit_log`, not `agent`) | session |
 
@@ -717,6 +735,7 @@ Full console design: **`CONSOLE_SPEC.md`**.
 | `CLOUDFLARE_API_TOKEN` | dash.cloudflare.com | Workers/KV/D1/Turnstile edit, no `Zone:Edit`. Also what the GitHub Actions render job uses to write export blobs to KV via the REST API (§9) |
 | `VAULT_MASTER_KEY` / `SESSION_SIGNING_KEY` | `openssl rand -base64 32` | Worker secret only |
 | `TWENTYFIRST_API_KEY` | 21st.dev | dev machine only, never CI/Workers |
+| `PEXELS_API_KEY` | pexels.com/api | Worker only, and **optional**. Buys the run view's preview montage (§6) and nothing else — the pipeline never reads it, and an unset key degrades one screen rather than failing anything. Vault-first, Worker-secret fallback, same resolution as `GROQ_API_KEY` |
 
 Edge TTS needs no key at all — that's the entire appeal and the entire risk (§0).
 

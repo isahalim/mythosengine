@@ -308,6 +308,58 @@ itself conceptually instead of watching a spinner. The clips shown are drawn
 from the same Pexels source the video will use, so this is a preview, not a
 decoration.
 
+### Built, 2026-08-31 — all five steps
+
+`/console/run` hosts the whole sequence: the plan form (1–3), the waiting
+screen (4), and review (5), on one page with a rail that follows whichever
+half the operator is in.
+
+**Steps 1–3 — the plan form.**
+
+- **A count, then a topic each, then an idea each**, revealed as the
+  decision above it is made. One form, not three pages: the operator is
+  present for the whole run, and a page load between "three videos" and
+  "which three" would throw away the state they are building.
+- **Ideas are ranked by retrieval, not by a model.** `GET /console/ideas`
+  blends BM25 relevance over `signals`, engagement, and topic-term overlap
+  (`src/server/console/ideas.ts`). §5.2.5 already makes retrieval plain
+  code; the RESEARCH agent still spends its tokens per video inside the
+  render, where the grounding actually matters. Each candidate shows the
+  numbers behind its rank, so the ordering is inspectable.
+- **The picks are a queue, not a trigger.** `POST /console/run-plan` writes
+  `run_picks` (migration 0011) and RENDER claims the oldest queued pick
+  atomically at the top of its run (`db/run-picks.ts`), overriding its own
+  diversity weighting for that invocation. Nothing in the console can start
+  a render — there is still no `workflow_dispatch` credential — so the form
+  says what will consume the picks rather than implying it just ran them.
+- **A pick is only ever offered once.** Already-queued and already-picked
+  signals are excluded from the next ranking, and a signal past `scored` is
+  refused at the API boundary: picking by hand must not be a way around the
+  diversity rule (§5.3).
+
+**Steps 4 and 5.**
+
+- **A run is one `runs.trace_id`.** The pipeline already stamped every stage
+  row of an invocation with it; `scripts.trace_id` (migration 0010) is the
+  new half — it hangs that invocation's videos off the run, and it sits on
+  `scripts` rather than `renders` because the waiting screen needs the link
+  seconds in, not minutes in when the render row is written.
+- **Nothing is synthesized.** Stages, statuses and videos are rows. A run
+  the console dispatched but could not trigger (no `workflow_dispatch`
+  credential — `PROVISIONED.md`) reports `not_triggered` and says why,
+  instead of spinning.
+- **The montage is lit.** `GET /console/runs/:trace/montage` searches Pexels
+  for keywords extracted from the script itself
+  (`src/lib/pipeline/keywords.ts`, no model call) and the card cross-fades
+  the results. These are **previews only** — the rendered video's footage
+  still comes from the maintained library, and the page says so. Needs
+  `PEXELS_API_KEY`, in the vault (Keys card) or as a Worker secret; with no
+  key the montage reports itself off rather than showing an empty frame.
+  Clips are cached per keyword in KV for a day against the free tier's 200
+  requests/hour.
+- **Step 5 is the same export API the queue uses** — download, mark
+  reviewed, discard, on the run's own cards. No second write path.
+
 ### Visual direction
 
 Operator-specified, and followed exactly:
@@ -332,7 +384,7 @@ intersections is the whole point of the metaphor.
 Phase A (runner, auto-delete) is absorbed: sourcing happens during the
 operator's walkthrough, and cleanup happens once a video is built.
 
-1. **Console overhaul** — the shell, the five steps, the visual direction.
+1. ~~**Console overhaul** — the shell, the five steps, the visual direction.~~ **Done 2026-08-31** (§7's "Built" note).
 2. **Discourse format** — script beats with `move`, single-speaker TTS, Whisper alignment (words *and* beat boundaries), one-character composite.
 3. **News + Pexels** — the two new footage drivers, stitching, cookies.
 4. **PLAN stage** — shot list, keyword highlighting, transitions.
