@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { buildAssSubtitles } from "./ass-subtitles.ts";
-import type { DriverError, RenderDriver, RenderRequest, RenderResponse } from "./types.ts";
+import type { CharacterOverlay, DriverError, RenderDriver, RenderRequest, RenderResponse } from "./types.ts";
 import { err, ok, type Result } from "../result.ts";
 
 const execFileAsync = promisify(execFile);
@@ -49,6 +49,7 @@ export class FfmpegRenderDriver implements RenderDriver {
     try {
       await writeFile(assPath, buildAssSubtitles(req.captionCues, OUTPUT_WIDTH, OUTPUT_HEIGHT), "utf8");
 
+      const overlay = req.characterOverlay;
       await execFileAsync(
         this.ffmpegBin,
         [
@@ -59,9 +60,12 @@ export class FfmpegRenderDriver implements RenderDriver {
           req.footageClipPath,
           "-i",
           req.narrationAudioPath,
+          // The character loop is shorter than the narration (5.6s against
+          // up to 180s), so it loops too. `-ignore_loop 0` is the GIF
+          // demuxer's own flag; `-stream_loop -1` does not apply to it.
+          ...(overlay ? ["-ignore_loop", "0", "-i", overlay.filePath] : []),
           "-filter_complex",
-          `[0:v]scale=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT}:force_original_aspect_ratio=increase,` +
-            `crop=${OUTPUT_WIDTH}:${OUTPUT_HEIGHT},setsar=1,ass=${escapeFilterPath(assPath)}[v]`,
+          buildFilterGraph(assPath, overlay),
           "-map",
           "[v]",
           "-map",
@@ -112,6 +116,42 @@ export class FfmpegRenderDriver implements RenderDriver {
       return err(classifyError(cause));
     }
   }
+}
+
+/**
+ * The filtergraph, with or without the character.
+ *
+ * Order matters and is not arbitrary: the footage is cropped to frame first,
+ * the keyed character is composited over it second, and the captions are
+ * burned in last. Captions on top is the only arrangement in which the
+ * character can never cover a word — she is anchored bottom-centre, which is
+ * where the captions live, and a composite done after the burn-in would
+ * occlude them.
+ *
+ * `colorkey` rather than `chromakey`: the asset's background is a flat sRGB
+ * fill, which is exactly what colorkey's RGB distance handles, and
+ * chromakey's YUV comparison would treat her face (same red channel as the
+ * background) as closer to the key than it actually is.
+ */
+export function buildFilterGraph(assPath: string, overlay: CharacterOverlay | undefined, outputWidth = OUTPUT_WIDTH, outputHeight = OUTPUT_HEIGHT): string {
+  const framed =
+    `[0:v]scale=${outputWidth}:${outputHeight}:force_original_aspect_ratio=increase,` +
+    `crop=${outputWidth}:${outputHeight},setsar=1`;
+
+  if (!overlay) {
+    return `${framed},ass=${escapeFilterPath(assPath)}[v]`;
+  }
+
+  const characterHeight = Math.round(outputHeight * overlay.heightRatio);
+  return (
+    `${framed}[bg];` +
+    // -1 preserves the asset's aspect ratio from its measured 800x600.
+    `[2:v]scale=-1:${characterHeight},colorkey=${overlay.keyColor}:${overlay.similarity}:${overlay.blend}[ch];` +
+    // Centred horizontally, sitting on the bottom edge. `shortest=0` so the
+    // overlay never truncates the video — the narration decides the length.
+    `[bg][ch]overlay=(W-w)/2:H-h:shortest=0[composited];` +
+    `[composited]ass=${escapeFilterPath(assPath)}[v]`
+  );
 }
 
 function escapeFilterPath(path: string): string {

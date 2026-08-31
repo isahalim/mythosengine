@@ -70,8 +70,24 @@ export interface LlmDriver {
 }
 
 export interface AsrRequest {
+  /** Ask for per-word timings as well as segments. ALIGN needs them; a plain transcription does not. */
+  wordTimestamps?: boolean;
   /** Raw audio bytes, or a YouTube video id for caption-based drivers. */
   source: { kind: "audio"; bytes: Uint8Array<ArrayBuffer>; mimeType: string } | { kind: "youtube"; videoId: string };
+}
+
+/**
+ * A single word with its timing, from Whisper's word-level granularity.
+ *
+ * This is what makes Gemini TTS usable at all (plan v2 §4's ALIGN stage):
+ * Gemini returns audio and no timings, and the word-level captions this
+ * system is built around came entirely from Edge TTS's `WordBoundary`
+ * events. Force-aligning the audio is how they are recovered.
+ */
+export interface AsrWord {
+  word: string;
+  start: number;
+  end: number;
 }
 
 export interface AsrSegment {
@@ -81,6 +97,12 @@ export interface AsrSegment {
 }
 
 export interface AsrResponse extends Quota {
+  /**
+   * Word-level timings, present only when the request asked for them
+   * (`wordTimestamps`) and the provider returned them. Empty otherwise — a
+   * transcript-only call has no reason to pay for them.
+   */
+  words: AsrWord[];
   transcript: string;
   segments: AsrSegment[];
 }
@@ -95,6 +117,18 @@ export interface TtsRequest {
   rate?: string; // e.g. "+0%"
   volume?: string; // e.g. "+0%"
   pitch?: string; // e.g. "+0Hz"
+  /**
+   * Natural-language delivery direction, e.g. "Read this as someone
+   * thinking out loud, catching herself mid-thought." Gemini TTS accepts one
+   * and it is the entire reason that driver exists (plan v2 §4).
+   *
+   * **Edge TTS cannot honour this**, and `EdgeTtsDriver` says so out loud
+   * rather than ignoring the field: `rate`/`volume`/`pitch` are the only
+   * delivery controls that endpoint has. A caller that sets this and lands
+   * on the Edge path gets flat delivery, and the audit package records which
+   * driver actually spoke (ARCHITECTURE.md §9).
+   */
+  styleDirection?: string;
 }
 
 export interface TtsWordTiming {
@@ -106,6 +140,17 @@ export interface TtsWordTiming {
 export interface TtsResponse extends Quota {
   audio: Uint8Array<ArrayBuffer>;
   mimeType: string;
+  /**
+   * Per-word timings, or an **empty array** when the driver cannot produce
+   * them — which is the single most important technical fact in plan v2.
+   *
+   * Edge TTS emits them natively via `WordBoundary`. Gemini TTS returns
+   * audio and nothing else, so its driver returns `[]` and the caller must
+   * recover timings by force-aligning the audio (ALIGN, src/lib/pipeline/
+   * align.ts). Empty here therefore means "ask ALIGN", never "this audio has
+   * no words" — a caller that treats it as the latter silently deletes the
+   * word-level captions this system is built around.
+   */
   wordTimings: TtsWordTiming[];
 }
 
@@ -133,6 +178,44 @@ export interface CaptionCue {
   text: string;
   startMs: number;
   endMs: number;
+  /**
+   * The cue's individual words with their own timings, when the caller has
+   * them — which enables per-word highlighting (plan v2 §1: "word-level +
+   * keyword highlighting").
+   *
+   * Optional because the cue is still perfectly renderable without it: the
+   * whole group appears for its whole span, which is what v1 did. A caller
+   * that has word timings and omits these gets the v1 look, not a broken
+   * one.
+   */
+  words?: { text: string; startMs: number; endMs: number }[];
+  /**
+   * Normalized words in this cue that carry the meaning — rendered in the
+   * accent colour for the cue's whole life, not just while spoken.
+   */
+  keywords?: string[];
+}
+
+/**
+ * A looping character composited over the footage, chroma-keyed.
+ *
+ * The key values are measured, not guessed (plan v2 §2): the asset's
+ * background is a flat `#e5505c` and her face is `#e48080` — the same red
+ * channel, 48/36 apart in green and blue. `similarity` 0.10 removes the
+ * background with her face, blush, glasses and hair intact; **0.14 begins
+ * eating her face and 0.20 destroys it**, so 0.10 is the ceiling rather than
+ * a starting point.
+ */
+export interface CharacterOverlay {
+  /** Path to the character loop (a GIF or video file ffmpeg can read). */
+  filePath: string;
+  /** Key colour in ffmpeg's `0xRRGGBB` form. */
+  keyColor: string;
+  /** colorkey similarity. Treat 0.10 as a ceiling for the measured asset. */
+  similarity: number;
+  blend: number;
+  /** Fraction of the output height the character occupies. */
+  heightRatio: number;
 }
 
 export interface RenderRequest {
@@ -140,6 +223,8 @@ export interface RenderRequest {
   narrationAudioPath: string;
   captionCues: CaptionCue[];
   outputPath: string;
+  /** Absent means no character — the v1 look, and what a render falls back to when the asset is missing. */
+  characterOverlay?: CharacterOverlay;
 }
 
 export interface RenderResponse {
