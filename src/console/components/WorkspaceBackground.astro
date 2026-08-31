@@ -1,0 +1,28 @@
+---
+/*
+  The console workspace ground (plan v2 §7). Rendered by ConsoleLayout on
+  every console page except login, which shows the shattered-glass hero over
+  this same background instead.
+
+  The gradient div is the fallback, not decoration: it is what a viewer
+  without WebGL2 sees, so it has to stand on its own. It uses the same four
+  --orb-* tokens at roughly the same positions, so the difference between the
+  two is that one drifts and one does not. The canvas paints over it only
+  once the shader has mounted (data-ready), which stops a blank rectangle
+  flashing in on a failed init.
+*/
+---
+
+<div
+  class="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_38%_40%,color-mix(in_srgb,var(--orb-1)_45%,transparent),transparent_55%),radial-gradient(circle_at_63%_44%,color-mix(in_srgb,var(--orb-2)_40%,transparent),transparent_50%),radial-gradient(circle_at_52%_66%,color-mix(in_srgb,var(--orb-3)_42%,transparent),transparent_55%),radial-gradient(circle_at_45%_30%,color-mix(in_srgb,var(--orb-4)_40%,transparent),transparent_50%)]"
+>
+</div>
+<canvas
+  id="workspace-orbs"
+  aria-hidden="true"
+  class="pointer-events-none fixed inset-0 -z-10 h-full w-full opacity-0 data-[ready]:opacity-100"></canvas>
+
+<script>
+  import { initWorkspaceBackground } from "../scripts/workspace-background.ts";
+  initWorkspaceBackground();
+</script>

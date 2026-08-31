@@ -67,3 +67,36 @@ export const GLASS_BACKGROUND_UNIFORMS_GLSL = /* glsl */ `
   uniform float uOrbRadii[4];
   uniform float uOrbSpeeds[4];
 `;
+
+/** Colours the background needs, read from tokens.css by the caller. */
+export interface GlassPalette {
+  /** The workspace ground the glass disperses to reveal. */
+  ground: [number, number, number];
+  /** Four rainbow sphere tints, averaged over the ground. */
+  orbs: [number, number, number][];
+}
+
+/*
+  Sphere layout. They sit close enough to the centre that their falloffs
+  genuinely overlap — the overlap is the point, since that is where two hues
+  average into a third. Spread them to the corners and you get four separate
+  coloured blobs and no lava lamp.
+
+  Radii are large relative to the spacing for the same reason, and the drift
+  speeds are deliberately unrelated (no common factor) so the arrangement
+  never returns to the same configuration.
+
+  These live here, beside the GLSL, for the same reason the GLSL is shared:
+  the hero refracts the background it is about to disperse into. If the hero
+  and the workspace used different layouts, sign-in would dissolve one
+  arrangement of spheres and reveal a different one — and the illusion that
+  the glass was ever in front of *this* page would be gone.
+*/
+export const ORB_RADII = [0.54, 0.5, 0.58, 0.52];
+export const ORB_SPEEDS = [0.055, 0.043, 0.067, 0.038];
+export const ORB_CENTRES: [number, number][] = [
+  [0.38, 0.4],
+  [0.63, 0.44],
+  [0.52, 0.66],
+  [0.45, 0.3],
+];

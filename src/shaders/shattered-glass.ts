@@ -22,39 +22,17 @@
   three's shader-chunk injection never runs and the whole cost is the
   renderer plus this one program.
 */
+import { Vector2, Vector3 } from "three";
+
 import {
-  BufferAttribute,
-  BufferGeometry,
-  Clock,
-  GLSL3,
-  Mesh,
-  OrthographicCamera,
-  RawShaderMaterial,
-  Scene,
-  Vector2,
-  Vector3,
-  WebGLRenderer,
-} from "three";
-
-import { GLASS_BACKGROUND_GLSL, GLASS_BACKGROUND_UNIFORMS_GLSL } from "./glass-background.glsl";
-
-// No `#version` line in either shader: `glslVersion: GLSL3` below makes three
-// prepend `#version 300 es` itself, and a second one fails to compile —
-// "#version directive must occur before anything else".
-const VERTEX_SHADER = /* glsl */ `
-  precision highp float;
-
-  // A single triangle large enough to cover clip space. Cheaper than a quad
-  // (no shared edge, one fewer vertex, no diagonal seam) and it needs no
-  // camera matrices at all -- position is already in clip space.
-  in vec3 position;
-  out vec2 vUv;
-
-  void main() {
-    vUv = position.xy * 0.5 + 0.5;
-    gl_Position = vec4(position.xy, 0.0, 1.0);
-  }
-`;
+  GLASS_BACKGROUND_GLSL,
+  GLASS_BACKGROUND_UNIFORMS_GLSL,
+  ORB_CENTRES,
+  ORB_RADII,
+  ORB_SPEEDS,
+  type GlassPalette,
+} from "./glass-background.glsl";
+import { mountFullscreenShader, prefersReducedMotion } from "./fullscreen";
 
 const FRAGMENT_SHADER = /* glsl */ `
   precision highp float;
@@ -224,14 +202,6 @@ const FRAGMENT_SHADER = /* glsl */ `
   }
 `;
 
-/** Colours the shader needs, read from tokens.css by the caller. */
-export interface GlassPalette {
-  /** The workspace ground the glass disperses to reveal. */
-  ground: [number, number, number];
-  /** Four rainbow sphere tints, added over the ground. */
-  orbs: [number, number, number][];
-}
-
 export interface ShatteredGlassOptions {
   palette: GlassPalette;
   /** Where the pane breaks, in 0..1 viewport coords. Defaults to centre-top. */
@@ -249,25 +219,6 @@ export interface ShatteredGlassHandle {
   destroy(): void;
 }
 
-/*
-  Sphere layout. They sit close enough to the centre that their falloffs
-  genuinely overlap — the overlap is the point, since that is where two hues
-  average into a third. Spread them to the corners and you get four separate
-  coloured blobs and no lava lamp.
-
-  Radii are large relative to the spacing for the same reason, and the drift
-  speeds are deliberately unrelated (no common factor) so the arrangement
-  never returns to the same configuration.
-*/
-const ORB_RADII = [0.54, 0.5, 0.58, 0.52];
-const ORB_SPEEDS = [0.055, 0.043, 0.067, 0.038];
-const ORB_CENTRES: [number, number][] = [
-  [0.38, 0.4],
-  [0.63, 0.44],
-  [0.52, 0.66],
-  [0.45, 0.3],
-];
-
 /**
  * Mount the hero onto a canvas.
  *
@@ -279,30 +230,14 @@ export function mountShatteredGlass(
   canvas: HTMLCanvasElement,
   options: ShatteredGlassOptions,
 ): ShatteredGlassHandle | null {
-  let renderer: WebGLRenderer;
-  try {
-    renderer = new WebGLRenderer({ canvas, antialias: false, alpha: false, powerPreference: "low-power" });
-  } catch (cause) {
-    console.warn("shattered-glass: WebGL unavailable, keeping the static fallback", cause);
-    return null;
-  }
-
-  const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-  const scene = new Scene();
-  const camera = new OrthographicCamera();
-
-  // Clip-space triangle: (-1,-1), (3,-1), (-1,3) covers the viewport with a
-  // single primitive and no diagonal seam through the middle of the shader.
-  const geometry = new BufferGeometry();
-  geometry.setAttribute("position", new BufferAttribute(new Float32Array([-1, -1, 0, 3, -1, 0, -1, 3, 0]), 3));
+  const reducedMotion = prefersReducedMotion();
 
   const uniforms = {
     uResolution: { value: new Vector2(1, 1) },
     uTime: { value: 0 },
     uDisperse: { value: 0 },
     uImpact: { value: new Vector2(options.impact?.[0] ?? 0.5, options.impact?.[1] ?? 0.62) },
-    uMotion: { value: prefersReducedMotion ? 0 : 1 },
+    uMotion: { value: reducedMotion ? 0 : 1 },
     uAspect: { value: 1 },
     uGround: { value: new Vector3(...options.palette.ground) },
     uOrbColours: { value: options.palette.orbs.map((c) => new Vector3(...c)) },
@@ -311,88 +246,37 @@ export function mountShatteredGlass(
     uOrbSpeeds: { value: ORB_SPEEDS },
   };
 
-  const material = new RawShaderMaterial({
-    vertexShader: VERTEX_SHADER,
+  /*
+    The loop runs even under reduced motion, unlike the workspace orbs. The
+    pane still has to *disperse* on sign-in — that is a state change the
+    operator is waiting on, not decoration — and uMotion=0 already stills the
+    drift inside the shader, so what reduced motion gets is a cut to the
+    cleared workspace rather than a canvas that never updates again.
+  */
+  const shader = mountFullscreenShader(canvas, {
+    label: "shattered-glass",
     fragmentShader: FRAGMENT_SHADER,
-    glslVersion: GLSL3,
     uniforms,
-    depthTest: false,
-    depthWrite: false,
+    onResize: (width, height) => {
+      uniforms.uResolution.value.set(width, height);
+      uniforms.uAspect.value = width / Math.max(height, 1);
+    },
+    onFrame: (elapsed) => {
+      uniforms.uTime.value = elapsed;
+    },
   });
 
-  const mesh = new Mesh(geometry, material);
-  // The triangle is already in clip space, so three's frustum test would
-  // wrongly cull it.
-  mesh.frustumCulled = false;
-  scene.add(mesh);
-
-  const clock = new Clock();
-  let frame = 0;
-  let destroyed = false;
-
-  const resize = (): void => {
-    const width = canvas.clientWidth || window.innerWidth;
-    const height = canvas.clientHeight || window.innerHeight;
-    // Cap the device pixel ratio: this shader is fill-rate bound, and past 2x
-    // the extra pixels buy nothing a viewer can see.
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    renderer.setSize(width, height, false);
-    uniforms.uResolution.value.set(width, height);
-    uniforms.uAspect.value = width / Math.max(height, 1);
-  };
-
-  const tick = (): void => {
-    if (destroyed) return;
-    uniforms.uTime.value = clock.getElapsedTime();
-    renderer.render(scene, camera);
-    frame = requestAnimationFrame(tick);
-  };
-
-  const onContextLost = (event: Event): void => {
-    event.preventDefault();
-    console.warn("shattered-glass: WebGL context lost, animation stopped");
-    cancelAnimationFrame(frame);
-  };
-
-  canvas.addEventListener("webglcontextlost", onContextLost);
-  window.addEventListener("resize", resize);
-  resize();
-
-  /*
-    Prove the program actually linked before starting the loop. A shader that
-    fails to compile does not throw — three logs it and every subsequent frame
-    raises INVALID_OPERATION ("no valid shader program in use"), which spins at
-    60fps behind a canvas the viewer sees as black. Rendering one frame and
-    checking the GL error turns that silent failure into a clean fallback.
-  */
-  renderer.render(scene, camera);
-  const gl = renderer.getContext();
-  const glError = gl.getError();
-  if (glError !== gl.NO_ERROR) {
-    console.warn(`shattered-glass: shader program failed to link (GL error ${glError}), keeping the static fallback`);
-    canvas.removeEventListener("webglcontextlost", onContextLost);
-    window.removeEventListener("resize", resize);
-    geometry.dispose();
-    material.dispose();
-    renderer.dispose();
-    return null;
-  }
-
-  tick();
+  if (!shader) return null;
 
   /** Drive uDisperse from `from` to `to`, resolving when it lands. */
   const animateTo = (from: number, to: number, durationMs: number): Promise<void> => {
-    if (prefersReducedMotion || destroyed) {
+    if (reducedMotion) {
       uniforms.uDisperse.value = to;
       return Promise.resolve();
     }
     return new Promise((resolve) => {
       const started = performance.now();
       const step = (now: number): void => {
-        if (destroyed) {
-          resolve();
-          return;
-        }
         const progress = Math.min((now - started) / durationMs, 1);
         // Ease-out cubic: the shards leave fast and settle, rather than
         // drifting off at a constant speed.
@@ -410,14 +294,6 @@ export function mountShatteredGlass(
   return {
     disperse: (durationMs = 1400) => animateTo(uniforms.uDisperse.value, 1, durationMs),
     reassemble: (durationMs = 1100) => animateTo(uniforms.uDisperse.value, 0, durationMs),
-    destroy: () => {
-      destroyed = true;
-      cancelAnimationFrame(frame);
-      canvas.removeEventListener("webglcontextlost", onContextLost);
-      window.removeEventListener("resize", resize);
-      geometry.dispose();
-      material.dispose();
-      renderer.dispose();
-    },
+    destroy: () => shader.destroy(),
   };
 }

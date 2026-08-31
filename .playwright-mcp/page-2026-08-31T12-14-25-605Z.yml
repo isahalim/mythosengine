@@ -1,9 +1,0 @@
-- main [ref=f3e2]:
-  - generic [ref=f3e3]:
-    - generic [ref=f3e4]: Mythos Engine
-    - heading "Welcome back" [level=1] [ref=f3e5]
-    - paragraph [ref=f3e6]: Sign in with the passkey on this device.
-  - generic [ref=f3e7]:
-    - button "Sign in with passkey" [ref=f3e8]
-    - button "First time here? Register a passkey" [ref=f3e11]
-    - paragraph [ref=f3e12]

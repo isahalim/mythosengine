@@ -67,8 +67,25 @@
 
   /* Glass over a white ground needs to tint rather than darken: the
      lava-lamp spheres drift behind it and the panel's job is to soften
-     them, not to black them out. */
-  --glass-bg: color-mix(in srgb, var(--slate) 62%, transparent);
+     them, not to black them out.
+
+     88%, not the 62% this started at, and the number is a contrast result
+     rather than a taste call. Once the spheres actually drift behind the
+     panels (2026-08-31), the panel is no longer a flat #f4f4f8 — it is
+     #f4f4f8 composited over whatever orb is passing under it, and the
+     foreground ratios below were all measured against the flat version.
+     Worst case is --sodium over --orb-4, the darkest of the four:
+
+       panel 62% → 4.03:1  FAIL
+       panel 80% → 4.58:1  pass, no margin
+       panel 88% → 4.84:1  pass
+
+     At 88% every foreground still clears 4.5:1 in the worst case (mercury
+     15.2 · oxide 5.5 · sodium 4.8 · violet 5.7 · rose 5.1), and the orb
+     still reads through the blur as a colour cast — which is the whole
+     point of putting it back there. Below 80% the panel stops being
+     legible and starts being a tint. */
+  --glass-bg: color-mix(in srgb, var(--slate) 88%, transparent);
   --glass-border: color-mix(in srgb, var(--mercury) 12%, transparent);
 
   /* The lava-lamp spheres that drift through the workspace, and that the
@@ -79,8 +96,10 @@
 
      Pastels, not saturated hues: they are averaged together over a white
      ground, so anything stronger stops reading as light through glass and
-     starts reading as paint. Consumed by src/shaders/shattered-glass.ts,
-     which reads them off computed style rather than repeating them. */
+     starts reading as paint. Read off computed style by
+     src/console/lib/palette.ts and handed to both shaders that draw them —
+     workspace-orbs.ts (the ground) and shattered-glass.ts (which refracts
+     that same ground) — rather than repeated in either. */
   --orb-1: #ff9ec4; /* rose */
   --orb-2: #ffd08a; /* amber */
   --orb-3: #7fe3e0; /* teal */

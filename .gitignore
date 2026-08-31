@@ -7,3 +7,7 @@ dist/
 worker-configuration.d.ts
 .astro/
 coverage/
+
+# Playwright MCP scratch output (screenshots, page snapshots, console logs).
+# Committed by accident in 39fdb8a; it is debugging debris, never a build input.
+.playwright-mcp/
