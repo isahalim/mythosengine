@@ -72,6 +72,14 @@ export async function generateScript(
   research: ResearchBrief | null = null,
   now: () => number = Date.now,
   promptTemplate: string = loadPromptTemplate(),
+  /**
+   * The caller's `runs.trace_id`, stamped on the row so the console's guided
+   * run can attribute this script — and, through it, the render and export
+   * that follow — to the run the operator is watching (db/schema.ts's
+   * `scripts.trace_id`). Optional: a caller with no run context writes null
+   * rather than inventing a trace.
+   */
+  traceId: string | null = null,
 ): Promise<Result<GeneratedScript, DriverError>> {
   const systemPrompt = promptTemplate
     .replace("{{signal_title_and_summary}}", signal.title)
@@ -89,8 +97,8 @@ export async function generateScript(
 
   await execAtomic(rawClient, [
     {
-      sql: `INSERT INTO scripts (id, signal_id, hook, body, debate_question, word_count, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?)`,
-      params: [scriptId, signal.id, hook, body, debateQuestion, wc, nowIso],
+      sql: `INSERT INTO scripts (id, signal_id, hook, body, debate_question, word_count, status, trace_id, created_at) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?)`,
+      params: [scriptId, signal.id, hook, body, debateQuestion, wc, traceId, nowIso],
     },
     { sql: `UPDATE signals SET state = 'scripted' WHERE id = ?`, params: [signal.id] },
   ]);

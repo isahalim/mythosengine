@@ -66,6 +66,24 @@ export const scripts = sqliteTable(
     wordCount: integer("word_count").notNull(),
     originalityScore: real("originality_score"),
     status: text("status", { enum: ["draft", "approved", "rejected"] }).notNull(),
+    /**
+     * The `runs.trace_id` of the pipeline invocation that wrote this script
+     * — the one link between a run and the video it is producing
+     * (CONSOLE_SPEC.md's guided run, plan v2 §7 step 4).
+     *
+     * On `scripts` rather than on `renders`, and that placement is the whole
+     * point: the waiting screen has to show the operator what the run is
+     * building *while it is still building it*, and the render row does not
+     * exist until TTS and FFmpeg have both finished — minutes later. The
+     * script row appears seconds in, and `renders.script_id` /
+     * `exports.render_id` carry the trace forward from there.
+     *
+     * Nullable: every script written before 2026-08-31 has no trace, and so
+     * does any script from a pipeline entrypoint that does not pass one. A
+     * run with no scripts attributed to it renders as a run with no videos
+     * yet, which is the truth.
+     */
+    traceId: text("trace_id"),
     // Drives "today's diversity" queries (ARCHITECTURE.md §5.3) — which
     // sources/games/voices today's earlier renders already used.
     createdAt: text("created_at").notNull(),
@@ -73,6 +91,7 @@ export const scripts = sqliteTable(
   (t) => [
     check("chk_scripts_status", sql`${t.status} IN ('draft','approved','rejected')`),
     index("idx_scripts_created").on(t.createdAt),
+    index("idx_scripts_trace").on(t.traceId),
   ],
 );
 
@@ -211,6 +230,46 @@ export const runs = sqliteTable("runs", {
   errorClass: text("error_class"),
   traceId: text("trace_id").notNull(),
 });
+
+/**
+ * The operator's picks for a guided run (CONSOLE_SPEC.md's run view, plan
+ * v2 §7 steps 1-3): how many videos, which topic each one takes, and which
+ * ranked idea they chose for it.
+ *
+ * This table is what makes those three screens more than a form. RENDER
+ * normally chooses its own signal by diversity weighting
+ * (scripts/pipeline/render.ts); a queued pick overrides that choice for one
+ * invocation, and is claimed atomically so two concurrent renders cannot
+ * take the same one. A pick the operator never gets around to is simply
+ * still queued — nothing expires it, and nothing renders it twice.
+ *
+ * `plan_id` groups one submission, so "three videos, chosen together" stays
+ * legible as one plan in the console after the fact.
+ */
+export const runPicks = sqliteTable(
+  "run_picks",
+  {
+    id: text("id").primaryKey(),
+    planId: text("plan_id").notNull(),
+    /** The operator's ordering within the plan — claimed lowest-first, so the run builds the videos in the order they were chosen. */
+    position: integer("position").notNull(),
+    /** One of src/server/console/ideas.ts's TOPICS. Stored as text, not an enum check: the topic list is a product decision that will move, and a stale CHECK constraint would fail a write rather than a review. */
+    topic: text("topic").notNull(),
+    signalId: text("signal_id")
+      .notNull()
+      .references(() => signals.id, { onDelete: "cascade" }),
+    status: text("status", { enum: ["queued", "claimed", "cancelled"] }).notNull(),
+    /** The `runs.trace_id` that claimed this pick — the link back to the run view that is watching it. */
+    claimedTraceId: text("claimed_trace_id"),
+    claimedAt: text("claimed_at"),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [
+    check("chk_run_picks_status", sql`${t.status} IN ('queued','claimed','cancelled')`),
+    index("idx_run_picks_claimable").on(t.status, t.position),
+    index("idx_run_picks_plan").on(t.planId),
+  ],
+);
 
 export const auditLog = sqliteTable("audit_log", {
   id: integer("id").primaryKey({ autoIncrement: true }),

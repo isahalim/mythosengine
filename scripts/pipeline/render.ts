@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { desc, eq, gte, inArray } from "drizzle-orm";
 import { footageSegments, footageSources, renders, scripts, signals } from "../../db/schema.ts";
 import { finishRun, reapStaleRuns, startRun } from "../../db/runs.ts";
+import { claimNextRunPick } from "../../db/run-picks.ts";
 import { claimNextFootageSegment } from "../../db/footage-select.ts";
 import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
 import { getSettings } from "../../src/server/console/settings.ts";
@@ -100,9 +101,29 @@ async function main(): Promise<void> {
     sourceIdsUsedToday,
   );
 
-  const chosenSignal =
+  const weightedPick =
     rankedSourceIds.map((sourceId) => scoredSignals.filter((s) => s.sourceId === sourceId)).find((candidates) => candidates.length > 0)?.reduce((best, s) => (s.engagementScore > best.engagementScore ? s : best)) ??
     scoredSignals[0];
+
+  // ---- the operator's own pick, if they queued one (plan v2 §7 step 3) ----
+  // Claimed atomically (db/run-picks.ts), so two concurrent renders cannot
+  // take the same pick, and claimed *before* anything else in this run
+  // spends a token. A queued pick outranks the diversity weighting for this
+  // one invocation only: the operator chose this story deliberately, from a
+  // list this system ranked for them. With an empty queue — the ordinary
+  // scheduled case — nothing changes.
+  const claimedPick = await claimNextRunPick(env.db, traceId, new Date().toISOString());
+  const pickedSignal = claimedPick === null ? undefined : scoredSignals.find((s) => s.id === claimedPick.signalId);
+  if (claimedPick !== null && pickedSignal === undefined) {
+    // The claim succeeded (the signal was `scored` inside that statement)
+    // but it is not in this run's candidate list — the two reads are
+    // seconds apart and WATCH runs on its own schedule. Say so rather than
+    // silently falling back: a pick that vanished is something the operator
+    // will otherwise wait for and never see.
+    console.warn(`RUN PICK ${claimedPick.id} named signal ${claimedPick.signalId}, which is no longer among the scored candidates — falling back to the weighted pick.`);
+  }
+  const chosenSignal = pickedSignal ?? weightedPick;
+  if (pickedSignal !== undefined) console.warn(`RUN PICK: rendering the operator's queued ${claimedPick?.topic} pick — ${pickedSignal.title}`);
 
   const llm = createGroqDriverFromEnv(env.groqApiKey, createGroqLimiter());
 
@@ -133,7 +154,7 @@ async function main(): Promise<void> {
 
   // ---- SCRIPT ----
   const scriptRunId = await startRun(env.db, "script", traceId);
-  const scriptResult = await generateScript(env.rawClient, chosenSignal, llm, research);
+  const scriptResult = await generateScript(env.rawClient, chosenSignal, llm, research, Date.now, undefined, traceId);
   if (!scriptResult.ok) {
     await finishRun(env.db, scriptRunId, "failed", scriptResult.error.kind);
     throw new Error(`SCRIPT failed: ${scriptResult.error.message}`);
