@@ -17,7 +17,7 @@ Last updated: `2026-08-29`
 | Entry point | `src/index.ts` | `/healthz`, `/readyz` (probes the real D1 + KV bindings as of 2026-08-28), `/auth/*` and `/console/*` routed by `src/server/router.ts` (Phase 8), falls through to `env.ASSETS` for everything else |
 | CD | GitHub Actions (`.github/workflows/ci.yml`, `deploy` job) — push to `main`, gated on `verify` passing | Added 2026-08-27 |
 | D1 migrations | `wrangler d1 migrations apply mythosengine --remote`, run by the `deploy` job **before** `wrangler deploy` (`wrangler.toml` sets `migrations_dir = "db/migrations"`) | Added 2026-08-29. Idempotent — skips whatever the `d1_migrations` ledger already records. **Do not apply a migration by hand**; that is how `0007_mcp_tokens.sql` was missed, which 500'd every `GET /console/summary` and blacked out the whole console (ARCHITECTURE.md §4). The ledger was backfilled with `0000`–`0007` on 2026-08-29, so the first automated run is a no-op |
-| Pipeline runner | GitHub Actions, three workflows: `watch.yml` (hourly), `render.yml` (3x/day), `footage-refresh.yml` (weekly, the only one with `contents: write`) | Added 2026-08-28 (Phase 8.5). All three are also `workflow_dispatch`-triggerable. **Live status 2026-08-29:** `watch.yml` verified working (run `33239731938` — 5 sources polled, 100 signals observed, 84 scored; `reddit-trueoffmychest` was the one source that failed, which the per-source design tolerates). Its hourly `schedule` trigger had never fired on its own despite the workflow being `active` — every run so far has been a manual dispatch, so treat the cron as unproven. `footage-refresh.yml` is under test; `render.yml` has not been run and cannot succeed until the footage library has segments (`footage_segments` is still empty) |
+| Pipeline runner | GitHub Actions, three workflows: `watch.yml` (hourly), `render.yml` (operator-dispatched, self-hosted `[self-hosted, mythos-footage]` — the 3x/day cron was removed 2026-08-31). **Operator action needed:** no self-hosted runner is registered on this repository as of 2026-08-31 (`gh api repos/:owner/:repo/actions/runners` returns 0), so a RENDER dispatch will queue rather than run until the machine is registered with that label, `footage-refresh.yml` (weekly, the only one with `contents: write`) | Added 2026-08-28 (Phase 8.5). All three are also `workflow_dispatch`-triggerable. **Live status 2026-08-29:** `watch.yml` verified working (run `33239731938` — 5 sources polled, 100 signals observed, 84 scored; `reddit-trueoffmychest` was the one source that failed, which the per-source design tolerates). Its hourly `schedule` trigger had never fired on its own despite the workflow being `active` — every run so far has been a manual dispatch, so treat the cron as unproven. `footage-refresh.yml` is under test; `render.yml` has not been run and cannot succeed until the footage library has segments (`footage_segments` is still empty) |
 | Cloudflare "Workers Builds" (native git integration) | **disabled** by the operator, 2026-08-27 | Existed since `2026-08-27 18:31` (build token), undocumented here until found broken (`packages field missing or empty` + no build command — `dist/` was gitignored and never got built there). Fully redundant with the GitHub Actions CD above. Do not re-enable without giving it a real build command and resolving the `pnpm-workspace.yaml` finding |
 
 ## Cloudflare resources
@@ -32,7 +32,7 @@ Last updated: `2026-08-29`
 
 ## Worker secrets (set, unreadable, do not regenerate)
 
-`GROQ_API_KEY` · `TURNSTILE_SECRET_KEY` · `VAULT_MASTER_KEY` · `SESSION_SIGNING_KEY` · `CONSOLE_ENROLLMENT_TOKEN`
+`GROQ_API_KEY` · `TURNSTILE_SECRET_KEY` · `VAULT_MASTER_KEY` · `SESSION_SIGNING_KEY` · `CONSOLE_ENROLLMENT_TOKEN` · `GEMINI_API_KEY` (optional — added 2026-08-31)
 
 Verify with `npx wrangler secret list`. If one is missing, name it and stop.
 
@@ -55,7 +55,7 @@ The KV namespace provisioned in Phase 8 (Task 8.2) now also stores export blobs 
 
 ## GitHub Actions secrets
 
-`GROQ_API_KEY` · `CLOUDFLARE_API_TOKEN` · `CLOUDFLARE_ACCOUNT_ID` · `PIPELINE_BATCH_TOKEN`
+`GROQ_API_KEY` · `CLOUDFLARE_API_TOKEN` · `CLOUDFLARE_ACCOUNT_ID` · `PIPELINE_BATCH_TOKEN` · `GEMINI_API_KEY` (optional — added 2026-08-31; absent, TTS runs on the Edge default path)
 
 `footage-refresh.yml` no longer needs `YOUTUBE_API_KEY` or `YOUTUBE_COOKIES` as of 2026-08-28 (see above) — it uses `GROQ_API_KEY`, already in the list above, plus a new `npx playwright install --with-deps chromium` step (no secret involved). `CLOUDFLARE_API_TOKEN`/`CLOUDFLARE_ACCOUNT_ID` are also what `render.yml`/`watch.yml`/`footage-refresh.yml` use for D1-over-HTTP (`db/d1-http.ts`) and KV-over-HTTP (`src/lib/drivers/kv-http.ts`) reads/writes (REST API is used directly instead of a proxy Worker) — for *reads*, which are single statements needing no transaction. Multi-statement **writes** cannot go that way: D1's REST endpoint accepts either several statements or bound parameters, never both, so they go through the Worker's real `.batch()` via `PIPELINE_BATCH_TOKEN` (`ARCHITECTURE.md` §4). `GITHUB_TOKEN` is injected automatically per run. Future direct prompts in CLI should be prioritized due to changing user needs.
 

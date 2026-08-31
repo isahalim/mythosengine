@@ -12,6 +12,7 @@
 |---|---|---|---|
 | **Groq Cloud** (`openai/gpt-oss-120b` / `openai/gpt-oss-20b`) | Yes — rate-limited, no credit system. ~30 req/min, ~8k tokens/min, ~14.4k req/day, enforced per organization. **Limits are per-model, and the one that binds is tokens-per-day:** 200K for gpt-oss | **Yes** | Script generation, critique, title/description/hashtag generation, the RESEARCH agent's tool-calling loop (§5.2.5, on the 20b model — per-model quotas mean the cheaper model's budget is a separate 200K), and the console chat/voice agent. **Not footage acquisition** — that ran a browser agent on `qwen/qwen3.8-27b` (2M TPD) until 2026-08-29 and now makes no model calls at all (§5.0), so the whole gpt-oss daily budget belongs to the render pipeline again. Groq deprecated `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` on 2026-06-17; the OpenAI open-weight models replaced them everywhere in `src/**` |
 | **Microsoft Edge "Read Aloud" TTS**, via the `edge_tts` Python library (LGPL-3.0, `rany2/edge-tts`), invoked as a subprocess | Yes, but **not an official product** — no SLA, can break without notice | **Yes** | Narration voice synthesis + word-level timestamps for captions |
+| **Google Gemini** (`gemini-3.1-flash-tts-preview` for TTS, `gemini-3.7-flash` for text) | Yes — and **the binding limit is 10 TTS req/day**, per day rather than per run. Also 3 TTS req/min and 10K TTS tokens/min; Pro TTS is not on the free tier at all. Measured from the operator's own AI Studio rate-limit export, 2026-08-31 | **Yes** | The expressive narration *upgrade* over Edge TTS, and the model for SCRIPT and PLAN where the reasoning is the hard part (§5.3). One TTS call per video, forced by that daily ceiling. **Edge TTS remains the default path** — Gemini returns no word timings, so it also costs an ALIGN call that Edge does not (plan v2 §4). Added 2026-08-31 on explicit operator instruction |
 | **Cloudflare Workers static assets** | Yes | **Yes** | Hosts the operator console and its API |
 | **Cloudflare D1** | 5 GB, 5M row-reads/day | **Yes** | Pipeline state, scripts, footage/segment/render/upload records, audit log |
 | **Cloudflare KV** | 1 GB, 100k reads/day, **1k writes/day** | **Yes** | Hot manifests, rate-limit counters, encrypted key vault |
@@ -201,6 +202,8 @@ CREATE TABLE scripts (
   originality_score REAL,                    -- critic-assigned, advisory — see §9
   status        TEXT NOT NULL CHECK (status IN ('draft','approved','rejected')),
   trace_id      TEXT,                        -- the runs.trace_id that wrote it; the console's run view hangs a run's videos off this (§6). Nullable: pre-2026-08-31 scripts have none
+  beats         TEXT,                        -- JSON [{move, text}] (§5.3). Nullable, and the nullability IS the format boundary: a row with beats is a v2 discourse script, a row without is v1 prose. JSON rather than a child table because a beat has no identity — nothing references, updates, filters or joins on one, and the list is only ever read whole
+  target_duration_s INTEGER,                 -- seconds of narration the script was written for (60-180). Null on v1 prose rows, which were always ~47s
   created_at    TEXT NOT NULL                -- drives "today's diversity" queries, §5.3/§5.6
 );
 
@@ -649,7 +652,11 @@ Output is persisted to `research_briefs` (§4) and travels into the export's
 `audit_json`.
 
 ### 3. SCRIPT (Groq, `openai/gpt-oss-120b` — `llama-3.3-70b-versatile` deprecated by Groq 2026-06-17)
-- Structured JSON output only, `schemas/script.schema.json`. Fields: `hook` (≤3s read-aloud), `body`, `debate_question`, target 130–170 words total.
+- **v2 discourse format** (plan v2 §4, built 2026-08-31). Emits `{hook, beats: [{move, text}], open_question}`, written to a requested duration (`directives.compiled_json.target_duration_s`, 60–180s) rather than a word count. Word count becomes derived.
+- `move` is one of `question · attempt · pushback · reframe · land · open`, and it is what replaced the second speaker when the format was cut to one host. Every downstream stage varies on it: TTS delivery, caption emphasis, and where the footage cuts.
+- **The gate is structural, not just length: at minimum one `pushback` must sit between an `attempt` and a `land`.** That ordering *is* the format — a script that goes from trying an answer straight to the payoff is a lecture, which is what the single host was supposed to stop being. A draft that fails is sent back once with the specific violations quoted; failing twice fails the stage rather than shipping a lecture or silently downgrading to prose.
+- Both formats land in the same row. `scripts.beats` holds the beats; `scripts.body` holds the flattened spoken narration for **both** v1 and v2, so AUDIT SUMMARY's near-duplicate check, the export package and the console's review queue never branch on which format a script is.
+- Legacy v1 prose path (`prompts/script.v2.md`, `generateScript`) is retained for callers that predate the format: `hook` (≤3s read-aloud), `body`, `debate_question`, target 130–170 words total.
 - `prompts/script.v2.md` receives the signal's title/summary **and the RESEARCH brief** — and nothing else. That is the same hallucination boundary v1 drew, just around a larger set of *retrieved, cited* facts instead of around the title alone: rule 3 tells the writer the research block is everything it knows, and that an angle is its to invent while a fact is not. A null brief renders as an explicit "no research was available" line, never as a blank section — a blank one reads to a model like an oversight to fill in from memory, which is the exact failure RESEARCH exists to prevent.
 - Which signal gets scripted next weights `directives.compiled_json.preferred_source_ids` (favor signals from those sources) and, when `diversity_mode` is on, actively spreads the day's 3 picks across different `sources.id` values rather than always taking the single highest-`engagement_score` signal — queries today's already-`scripted` signals (via `scripts.created_at`) to know what's already been picked today.
 
@@ -663,15 +670,26 @@ Output is persisted to `research_briefs` (§4) and travels into the export's
 - **Only from an enabled `footage_sources` row** (§4). A retired channel's segments stay in the library and keep backing the exports that already used them, but are never claimed again — and the console's footage-health count excludes them for the same reason, since inventory nothing can claim is not inventory.
 - When `diversity_mode` is on, the game itself is chosen first: exclude games already used by today's earlier renders (via `renders.created_at`) before calling `claimNextFootageSegment` — so a day's 3 videos default to 3 different games rather than 3 different clips of the same game.
 
-### 6. TTS + CAPTION SYNC (Edge TTS)
+### 6. TTS + CAPTION SYNC (Edge TTS by default, Gemini as the upgrade)
 - `src/lib/drivers/tts-edge.ts` shells out to `scripts/edge_tts_synth.py`, a thin wrapper around the `edge_tts` Python library requesting `WordBoundary` events explicitly (the bare `edge-tts` CLI hard-codes sentence-level boundaries and has no flag to change that — confirmed by testing it directly, not assumed). Returns audio bytes plus one `{word, startMs, endMs}` entry per word — no separate forced-alignment step needed.
 - Word timings become `captionCues` for RENDER: rendered as bold, high-contrast text that fades word-group to word-group, matching the reference style.
 - Voice is picked from `directives.compiled_json.voice_pool` (or the full default curated pool in `src/config/voices.ts` when unset) — when `diversity_mode` is on, excluding voices already used by today's earlier renders. `rate`/`pitch` come from the directive's fixed value if set, otherwise randomized within `tts_rate_range` per render. The actual voice used is recorded on `renders.tts_voice`, both for the audit package and for tomorrow's diversity query.
+- **Gemini single-speaker TTS is the expressive upgrade, never the default** (`src/lib/drivers/tts-gemini.ts`, added 2026-08-31 on operator instruction). One request per video, forced by the free tier's **10 requests per day** — per-beat synthesis would cost one request per beat, so a 20-beat video would be twice the entire daily budget. `src/lib/pipeline/tts-select.ts` offers it while fewer than 8 of today's renders have used it, holding 2 back so an operator re-run still gets the same voice.
+- Per-beat expressiveness therefore travels *inside* that one request, as bracketed inline direction derived from each beat's `move` (`src/lib/pipeline/tts-direction.ts`). **Whether inline direction actually shifts delivery mid-utterance is unmeasured** (plan v2 §9), which is why `directives.compiled_json.per_beat_delivery` defaults to **off** — the measured-safe path is one flat style for the whole script.
+- A Gemini failure falls back to Edge and the render continues; the reason is logged and written into the audit package (`audit_json.narration.fallback_reason`), never silent. Edge failing is a real failure — there is nothing below it.
+
+### 6.5. ALIGN (Groq Whisper, word granularity — Gemini path only)
+- **Gemini TTS returns audio and no timings, and that is the single most important technical fact in the v2 format.** The word-level captions this system is built around came entirely from Edge's `WordBoundary` events, so switching narration providers naively would delete the caption feature the change was meant to enhance.
+- `src/lib/drivers/groq-whisper.ts` force-aligns the audio with `timestamp_granularities[]=word` (it requests `segment` alongside, because asking for `word` alone makes the provider drop the segments existing transcript callers read). One request per video, not per beat — a single audio file is all there is to align.
+- ALIGN is also the only source of **beat boundaries**: the beat texts are known, so mapping them onto the returned word sequence puts each beat on the clock. The mapping is an LCS alignment (`src/lib/pipeline/align.ts`), not a positional assumption — a transcript that says "gonna" where the script wrote "going to" would otherwise shift every subsequent boundary.
+- **Refuses rather than approximates.** Below a 60% word match the alignment is rejected outright: a bad alignment does not look like an error downstream, it looks like a video whose captions drift and whose cuts land mid-word, discovered minutes of render time later.
+- **The Edge path skips this stage entirely** — its timings are native and exact, and cost no call.
 
 ### 7. RENDER (FFmpeg, local to the GitHub Actions runner)
 - Crop/scale the footage segment to 1080×1920, filling ≥75% of frame height with gameplay (matches the "transformative" visual treatment the operator specified).
 - Mute the source segment's original audio entirely; mix in the narration track.
-- Burn in captions via an ASS subtitle file (word-timed fade, not a static SRT box) using FFmpeg's `ass` filter.
+- Burn in captions via an ASS subtitle file (word-timed fade, not a static SRT box) using FFmpeg's `ass` filter. Each cue is emitted one event per word so the spoken word is accented as it lands, and keywords (`src/lib/pipeline/keywords.ts`, no model call) stay accented for the cue's whole life.
+- **Composite the keyed host** over the footage (`assets/character/right_person.gif`, plan v2 §2). `colorkey=0xe5505c:0.10:0.0` — measured, not guessed, and **0.10 is a ceiling: 0.14 begins eating her face and 0.20 destroys it.** She is anchored bottom-centre and composited *before* the captions are burned in, which is the only order in which she cannot cover a word. A missing asset degrades the video to footage-plus-captions and records why in the audit package, rather than failing the render.
 - Loop or trim the footage segment to the narration's exact duration.
 - Headless export to MP4, `dist/render/<script_id>.mp4`, deleted only after a confirmed EXPORT write (§9).
 
@@ -679,7 +697,7 @@ Output is persisted to `research_briefs` (§4) and travels into the export's
 
 ### 9. EXPORT (Cloudflare KV, via `ExportDriver`)
 - LLM-generated suggested title/description/hashtags, schema-validated — suggestions for the operator's manual upload, not submitted anywhere.
-- Assembles `audit_json`: the script, the CRITIC verdict, footage provenance (segment id, source video id/channel, clip range), the TTS settings actually used (`renders.tts_voice`, rate, pitch), and the AUDIT SUMMARY result.
+- Assembles `audit_json`: the script, the CRITIC verdict, footage provenance (segment id, source video id/channel, clip range), the TTS settings actually used — **which driver actually spoke, the voice, the rate, the inline style direction sent, why the narration was downgraded if it was, and ALIGN's word-match ratio** (`audit_json.narration`) — whether the host was on screen and why not if she wasn't, and the AUDIT SUMMARY result.
 - `ExportDriver.store()` writes the rendered MP4 to KV with a 3-day TTL; inserts an `exports` row (`status = 'ready_for_review'`) pointing at the KV key. The console review queue (`CONSOLE_SPEC.md` §4) is where the operator downloads it and, eventually, uploads it to YouTube themselves.
 
 ---
@@ -735,6 +753,7 @@ Full console design: **`CONSOLE_SPEC.md`**.
 | `CLOUDFLARE_API_TOKEN` | dash.cloudflare.com | Workers/KV/D1/Turnstile edit, no `Zone:Edit`. Also what the GitHub Actions render job uses to write export blobs to KV via the REST API (§9) |
 | `VAULT_MASTER_KEY` / `SESSION_SIGNING_KEY` | `openssl rand -base64 32` | Worker secret only |
 | `TWENTYFIRST_API_KEY` | 21st.dev | dev machine only, never CI/Workers |
+| `GEMINI_API_KEY` | aistudio.google.com | Both, and **optional**. Buys the expressive narration upgrade and nothing else — absent, TTS runs on the Edge default path exactly as before it existed. Vault-first, env/Worker-secret fallback, same resolution as `GROQ_API_KEY`. Its live check deliberately calls the *text* model, never the TTS one: a rotation that spent a TTS request would cost 10% of the day's narration budget |
 | `PEXELS_API_KEY` | pexels.com/api | Worker only, and **optional**. Buys the run view's preview montage (§6) and nothing else — the pipeline never reads it, and an unset key degrades one screen rather than failing anything. Vault-first, Worker-secret fallback, same resolution as `GROQ_API_KEY` |
 
 Edge TTS needs no key at all — that's the entire appeal and the entire risk (§0).
@@ -798,12 +817,19 @@ Every signal computed here is visible in the console's review queue (`CONSOLE_SP
 
 ## 10. Quota & cost budget
 
-Assume 3 exports/day.
+Assume 3 exports/day as the ordinary case, 6 as the ceiling — the count is
+the operator's, chosen per run in the console's guided sequence, not a cron's.
+RENDER lost its 3x/day schedule on 2026-08-31: footage only reaches the
+library from the operator's own machine (§5.0), so a scheduled render could
+not assume the machine it depends on was even awake. Every render is now
+dispatched (`.github/workflows/render.yml`), which also means the budget below
+is a ceiling the operator can choose not to spend rather than a floor the
+system spends on its own.
 
 | Resource | Per-day consumption | Free ceiling | Headroom |
 |---|---|---|---|
 | Groq requests | ~24 score-passes + 3 research turns × up to 6 iterations + 3 scripts + 3 critics + 3 metadata-gens ≈ 51/day. FOOTAGE REFRESH contributes nothing — it makes no model calls (§5.0) | ~14,400/day | huge |
-| GitHub Actions minutes | hourly WATCH × 24 (~1 min each) + 3 render jobs × ~5 min (FFmpeg is the expensive part) + weekly footage job (~15–20 min — a headless Chromium launch per candidate adds a little over the old yt-dlp job) ≈ ~40 min/day amortized | 2,000 min/mo private | fine — public repo removes the ceiling entirely |
+| GitHub Actions minutes | hourly WATCH × 24 (~1 min each) + up to 6 dispatched render jobs × ~5 min (FFmpeg is the expensive part) + weekly footage job (~15–20 min — a headless Chromium launch per candidate adds a little over the old yt-dlp job) ≈ ~55 min/day amortized at the ceiling | 2,000 min/mo private | fine — public repo removes the ceiling entirely, and RENDER runs on the self-hosted runner, which bills no minutes at all |
 | KV writes | batch manifest + rate-limit counters + 3 export blobs ≈ well under 50 | 1,000/day | fine |
 | KV storage | 3 exports/day × 3-day TTL ≈ ~9 exports resident at once × (MP4 size, TBD — see §3's `ExportDriver` note) | 1GB total | needs the real render-size check before this is a settled "fine," not before |
 | Edge TTS | 3 × ~150 words ≈ 450 words/day | no formal quota — it's not a real product | **the actual risk isn't quota, it's the endpoint disappearing.** Alert loudly on TTS driver failure, don't silently fall back to a paid provider without telling the operator |

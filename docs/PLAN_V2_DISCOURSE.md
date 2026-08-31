@@ -375,7 +375,7 @@ Operator-specified, and followed exactly:
 
 `TWENTYFIRST_API_KEY` is present in `.env.local`. The spheres should be
 shader-driven rather than stacked blurred divs — a real gradient mix at the
-intersections is the whole point of the metaphor.
+intersections is the whole point of the metaphor and they need to actually move like lava lamps in the background.
 
 ---
 
@@ -385,10 +385,73 @@ Phase A (runner, auto-delete) is absorbed: sourcing happens during the
 operator's walkthrough, and cleanup happens once a video is built.
 
 1. ~~**Console overhaul** — the shell, the five steps, the visual direction.~~ **Done 2026-08-31** (§7's "Built" note).
-2. **Discourse format** — script beats with `move`, single-speaker TTS, Whisper alignment (words *and* beat boundaries), one-character composite.
+2. ~~**Discourse format** — script beats with `move`, single-speaker TTS, Whisper alignment (words *and* beat boundaries), one-character composite.~~ **Done 2026-08-31** (see below).
 3. **News + Pexels** — the two new footage drivers, stitching, cookies.
 4. **PLAN stage** — shot list, keyword highlighting, transitions.
 5. **Runner + cleanup** — launchd wake-start, auto-delete after render.
+
+---
+
+### Built, 2026-08-31 — the discourse format
+
+Gemini was authorized by explicit operator instruction the same day, which
+`CLAUDE.md` requires for any new provider; `GEMINI_API_KEY` is set as both a
+repository secret and a Worker secret.
+
+**SCRIPT.** `generateDiscourseScript` emits `{hook, beats: [{move, text}],
+open_question}` against `prompts/script.v3.md`, written to a requested
+duration rather than a word count. The gate (`src/lib/pipeline/discourse.ts`)
+enforces the one rule that makes this a format — a `pushback` between an
+`attempt` and a `land` — and it is *positional*, not a presence check: a
+pushback after the last land has nothing to push back against. A failing
+draft is returned once with the specific violations quoted; failing twice
+fails the stage rather than shipping a lecture. Beats live in `scripts.beats`
+(migration 0012) and the flattened narration still lands in `scripts.body`,
+so no existing consumer branches on format.
+
+**TTS.** Edge remains the default; Gemini is the upgrade, offered while fewer
+than 8 of today's renders have used it. The 10-per-day ceiling is enforced by
+counting today's `renders` rows, because the limit is per day rather than per
+run. A Gemini failure falls back to Edge with the reason logged and written
+into the audit package — the one considered exception to "never return
+fallback data on failure", made on the grounds that failing the render would
+discard a script, a research brief and a claimed footage segment to avoid a
+less expressive voice.
+
+**ALIGN.** New stage, Gemini path only. Word timings come back from Groq
+Whisper at word granularity; beat boundaries come from an **LCS alignment**
+of the script's words against the transcript's, not a positional assumption —
+one "gonna" for "going to" would otherwise shift every later boundary. Below
+a 60% match it refuses outright, because a bad alignment is invisible until
+review.
+
+**RENDER.** The keyed host composites at the measured `0xe5505c:0.10:0.0`,
+bottom-centre, *before* the captions burn in — the only order in which she
+cannot cover a word. Captions gained per-word accenting and keyword
+emphasis. A missing character asset degrades to v1's look and says why.
+
+**Two things are built but unmeasured, and both are §9's open questions
+rather than claims:** whether a 180-second request fits in 10K TPM, and
+whether inline per-beat direction shifts delivery at all. The second is why
+`per_beat_delivery` defaults to **off** — a default that depends on untested
+provider behaviour would make every video an experiment.
+
+**Also this session:** RENDER lost its 3x/day cron and moved to the
+self-hosted runner (operator directive). Footage only reaches the library
+from the operator's own machine, so a scheduled render could not assume the
+machine it depends on was awake — and the guided run in §7 already assumes
+the operator is present for the whole run.
+
+**Known asymmetry, not yet settled:** the host is one fixed character with
+one fixed Gemini voice, but the Edge fallback still draws from the
+directive's `voice_pool`, written for v1's anonymous narrator. A fallback
+video therefore has her face and a different voice. The audit package records
+what actually spoke; the fix is a host-voice setting in the console.
+
+**Blocked:** `right_person.gif` is not in the repository or on
+`assets-library`. The composite is built and tested against the measured key
+values, but no render can produce a host until that file is committed to
+`assets/character/right_person.gif`.
 
 ---
 
