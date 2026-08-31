@@ -19,8 +19,26 @@ concurrency:
 
 jobs:
   footage-refresh:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Self-hosted, and that is the whole point of this job's setup.
+    #
+    # Neither acquisition route works from a GitHub-hosted runner, and both
+    # fail for the same reason: the runner's IP is a datacenter address.
+    # media.ytmp3.gg answers one with a "Service Discontinued" modal;
+    # YouTube answers the other with "Sign in to confirm you're not a bot"
+    # (measured, 2026-08-31 — run 33366544395). Both serve a working
+    # response to a residential address, verified the same day. This is not
+    # something driver code can fix, so the job runs somewhere YouTube
+    # already trusts instead.
+    #
+    # Only this job needs it. RENDER and WATCH stay on GitHub-hosted
+    # runners; nothing they touch is IP-gated.
+    #
+    # The `mythos-footage` label is what keeps this off any other
+    # self-hosted runner that may exist later. Registering the machine is an
+    # operator step (PROVISIONED.md); until it is registered this job queues
+    # rather than failing.
+    runs-on: [self-hosted, mythos-footage]
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -52,17 +70,32 @@ jobs:
       # explicitly instead of assumed.
       - name: Install ffmpeg
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg
-          ffmpeg -version && ffprobe -version
+          if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+            echo "ffmpeg already present on this runner."
+          elif command -v apt-get >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          else
+            echo "::error::ffmpeg/ffprobe not found and no apt-get to install them. Install ffmpeg on this self-hosted runner (e.g. 'brew install ffmpeg')."
+            exit 1
+          fi
+          ffmpeg -version | head -1 && ffprobe -version | head -1
 
       # playwright is a real, pinned npm dependency (package.json) -- this
       # just fetches the matching Chromium build. Still needed whichever
       # acquisition route runs: the *search* leg reads youtube.com's results
       # page with a real browser either way, and the ytmp3 route drives its
       # converter with one. Both legs are deterministic and model-free.
+      # `--with-deps` installs system libraries through apt and only exists
+      # for Linux; on a macOS self-hosted runner it fails outright. The
+      # browser download itself is the part that matters on both.
       - name: Install Playwright's Chromium
-        run: npx playwright install --with-deps chromium
+        run: |
+          if command -v apt-get >/dev/null; then
+            npx playwright install --with-deps chromium
+          else
+            npx playwright install chromium
+          fi
 
       # Pinned to an exact release and checksummed, the same supply-chain
       # discipline ARCHITECTURE.md states for ffmpeg -- the other non-npm
@@ -70,16 +103,31 @@ jobs:
       # package (`yt-dlp-exec`): that is a single-maintainer republish of
       # this same binary, and CLAUDE.md's import rule exists to keep exactly
       # that out of the dependency tree.
+      #
+      # Installed into the runner's temp directory, not /usr/local/bin: a
+      # self-hosted runner is someone's actual machine, and a CI job has no
+      # business writing to its system paths or needing sudo to run. The
+      # driver is told where it landed via YT_DLP_BIN.
+      #
+      # Checksums are per-asset, so the right one is selected with the right
+      # binary; both come from the release's own SHA2-256SUMS.
       - name: Install yt-dlp (pinned)
         run: |
-          curl -sfL -o /usr/local/bin/yt-dlp \
-            https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/yt-dlp_linux
-          echo "${YT_DLP_SHA256}  /usr/local/bin/yt-dlp" | sha256sum -c -
-          chmod +x /usr/local/bin/yt-dlp
-          yt-dlp --version
+          case "$(uname -s)" in
+            Darwin) ASSET=yt-dlp_macos; SUM="$YT_DLP_SHA256_MACOS" ;;
+            Linux)  ASSET=yt-dlp_linux; SUM="$YT_DLP_SHA256_LINUX" ;;
+            *) echo "::error::unsupported runner OS $(uname -s) for the pinned yt-dlp binary"; exit 1 ;;
+          esac
+          curl -sfL -o "$YT_DLP_BIN" \
+            "https://github.com/yt-dlp/yt-dlp/releases/download/${YT_DLP_VERSION}/${ASSET}"
+          echo "${SUM}  ${YT_DLP_BIN}" | shasum -a 256 -c -
+          chmod +x "$YT_DLP_BIN"
+          "$YT_DLP_BIN" --version
         env:
+          YT_DLP_BIN: ${{ runner.temp }}/yt-dlp
           YT_DLP_VERSION: "2026.08.19"
-          YT_DLP_SHA256: "58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a"
+          YT_DLP_SHA256_LINUX: "58162f9bfdc27458ea47bfcb311cf47028f17d8154a8bf7d689861d46399230a"
+          YT_DLP_SHA256_MACOS: "0f192b7ec147ab6288885d6351d9ab67367640029b4377576ef46dd79cf7b202"
 
       - name: Run FOOTAGE REFRESH
         run: npx tsx scripts/pipeline/footage-refresh.ts
@@ -92,6 +140,7 @@ jobs:
           # tested; see buildDownloadDriver in the script for why there are
           # two and when the other one is the answer.
           FOOTAGE_DOWNLOADER: ytdlp
+          YT_DLP_BIN: ${{ runner.temp }}/yt-dlp
 
       - name: Push new clips to assets-library
         run: git push origin assets-library
