@@ -2,15 +2,17 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { execAtomic, type RawSqlClient } from "../../../db/client.ts";
 import type { signals } from "../../../db/schema.ts";
-import { ok, type Result } from "../result.ts";
+import { err, ok, type Result } from "../result.ts";
 import type { DriverError, LlmDriver } from "../drivers/types.ts";
 import { assertSignalTransition } from "../state.ts";
-import { ScriptResponseSchema } from "./script-schema.ts";
+import { DiscourseScriptResponseSchema, ScriptResponseSchema, type DiscourseBeat, type DiscourseScriptResponse } from "./script-schema.ts";
 import { requestValidatedJson } from "./request-json.ts";
+import { describeViolations, discourseWordCount, flattenBeats, validateBeatStructure } from "./discourse.ts";
 import type { ResearchBrief } from "../rag/research.ts";
 
 const SCRIPT_MODEL = "openai/gpt-oss-120b";
 const PROMPT_PATH = join(process.cwd(), "prompts", "script.v2.md");
+const DISCOURSE_PROMPT_PATH = join(process.cwd(), "prompts", "script.v3.md");
 
 export interface GeneratedScript {
   id: string;
@@ -18,10 +20,22 @@ export interface GeneratedScript {
   body: string;
   debateQuestion: string;
   wordCount: number;
+  /**
+   * The discourse beats, or null for a v1 prose script. Everything
+   * downstream that only needs the words reads `body`, which carries the
+   * spoken narration in both formats; `beats` is for the stages that vary on
+   * `move` — caption emphasis and where the footage cuts.
+   */
+  beats: DiscourseBeat[] | null;
+  targetDurationS: number | null;
 }
 
 function loadPromptTemplate(): string {
   return readFileSync(PROMPT_PATH, "utf8");
+}
+
+function loadDiscoursePromptTemplate(): string {
+  return readFileSync(DISCOURSE_PROMPT_PATH, "utf8");
 }
 
 function wordCount(hook: string, body: string, debateQuestion: string): number {
@@ -103,5 +117,107 @@ export async function generateScript(
     { sql: `UPDATE signals SET state = 'scripted' WHERE id = ?`, params: [signal.id] },
   ]);
 
-  return ok({ id: scriptId, hook, body, debateQuestion, wordCount: wc });
+  return ok({ id: scriptId, hook, body, debateQuestion, wordCount: wc, beats: null, targetDurationS: null });
+}
+
+/**
+ * How many times the structural gate may send a draft back.
+ *
+ * Two total attempts, not more. `requestValidatedJson` already spends up to
+ * two calls of its own repairing malformed JSON, so a third structural round
+ * could cost six Groq calls for one script — against an 8K-tokens/minute
+ * bucket that SCRIPT shares with CRITIC and metadata. A model that has been
+ * told twice, in specific terms, that it never wrote a `pushback` is not
+ * going to discover one on the third ask; that is a prompt bug to fix in
+ * script.v3.md, not a retry to pay for.
+ */
+const STRUCTURE_ATTEMPTS = 2;
+
+/**
+ * SCRIPT, v2 discourse format (plan v2 §4) — one host, argued in beats.
+ *
+ * Same hallucination boundary as `generateScript`: the signal title and the
+ * RESEARCH brief, and nothing else. What changes is the shape and the gate.
+ * The shape is `{move, text}` beats; the gate is `validateBeatStructure`,
+ * which enforces the one thing that makes this a discourse rather than a
+ * lecture — she has to be wrong before she is right.
+ *
+ * A draft that fails the gate is sent back with the specific violations
+ * quoted, once. If it fails again the stage fails: shipping a lecture would
+ * be shipping the exact format this plan exists to replace, and silently
+ * downgrading to the v1 prose path would hide that from the operator behind
+ * a video that looks fine.
+ *
+ * The row this writes is readable by every v1 consumer. `body` holds the
+ * flattened narration — the same string TTS is handed — so AUDIT SUMMARY's
+ * near-duplicate check, the export package, and the console's review queue
+ * all keep working without learning what a beat is.
+ */
+export async function generateDiscourseScript(
+  rawClient: RawSqlClient,
+  signal: Pick<typeof signals.$inferSelect, "id" | "title">,
+  llm: LlmDriver,
+  targetDurationS: number,
+  research: ResearchBrief | null = null,
+  now: () => number = Date.now,
+  promptTemplate: string = loadDiscoursePromptTemplate(),
+  traceId: string | null = null,
+): Promise<Result<GeneratedScript, DriverError>> {
+  const basePrompt = promptTemplate
+    .replace("{{signal_title_and_summary}}", signal.title)
+    .replace("{{research_brief}}", formatResearchBrief(research))
+    .replace("{{target_duration_s}}", String(targetDurationS));
+
+  let draft: DiscourseScriptResponse | null = null;
+  let lastViolations = "";
+
+  for (let attempt = 0; attempt < STRUCTURE_ATTEMPTS; attempt++) {
+    const systemPrompt =
+      attempt === 0
+        ? basePrompt
+        : `${basePrompt}\n\n<previous_attempt_rejected>Your last draft was rejected by the structural gate:\n${lastViolations}\n\nRewrite it. Keep the angle and the research grounding; fix the structure.</previous_attempt_rejected>`;
+
+    const validated = await requestValidatedJson(llm, SCRIPT_MODEL, systemPrompt, DiscourseScriptResponseSchema);
+    if (!validated.ok) return validated;
+
+    const violations = validateBeatStructure(validated.value, targetDurationS);
+    if (violations.length === 0) {
+      draft = validated.value;
+      break;
+    }
+    lastViolations = describeViolations(violations);
+  }
+
+  if (draft === null) {
+    return err({
+      kind: "invalid_response",
+      message: `script failed the discourse structure gate after ${STRUCTURE_ATTEMPTS} attempts:\n${lastViolations}`,
+      retryable: false,
+    });
+  }
+
+  const body = flattenBeats(draft);
+  const wc = discourseWordCount(draft);
+  const scriptId = crypto.randomUUID();
+  const nowIso = new Date(now()).toISOString();
+
+  assertSignalTransition("scored", "scripted");
+
+  await execAtomic(rawClient, [
+    {
+      sql: `INSERT INTO scripts (id, signal_id, hook, body, debate_question, word_count, status, trace_id, beats, target_duration_s, created_at) VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
+      params: [scriptId, signal.id, draft.hook, body, draft.open_question, wc, traceId, JSON.stringify(draft.beats), targetDurationS, nowIso],
+    },
+    { sql: `UPDATE signals SET state = 'scripted' WHERE id = ?`, params: [signal.id] },
+  ]);
+
+  return ok({
+    id: scriptId,
+    hook: draft.hook,
+    body,
+    debateQuestion: draft.open_question,
+    wordCount: wc,
+    beats: draft.beats,
+    targetDurationS,
+  });
 }

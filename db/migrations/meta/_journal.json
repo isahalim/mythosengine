@@ -85,6 +85,13 @@
       "when": 1788205480002,
       "tag": "0011_run_picks",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1788207547868,
+      "tag": "0012_script_beats",
+      "breakpoints": true
     }
   ]
 }

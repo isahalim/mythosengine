@@ -5,7 +5,7 @@ import { createTestDb } from "../../../db/client.ts";
 import { scripts, signals, sources } from "../../../db/schema.ts";
 import { ok, type Result } from "../result.ts";
 import type { DriverError, LlmDriver, LlmRequest, LlmResponse } from "../drivers/types.ts";
-import { formatResearchBrief, generateScript } from "./script.ts";
+import { formatResearchBrief, generateDiscourseScript, generateScript } from "./script.ts";
 
 const PROMPT_TEMPLATE = "Signal: {{signal_title_and_summary}}. Research: {{research_brief}} Output JSON only.";
 
@@ -216,5 +216,108 @@ describe("formatResearchBrief", () => {
     // URLs are omitted on purpose: the writer cannot visit them, and they
     // are pure token cost in a prompt. They live in the audit package.
     expect(rendered).not.toContain("https://");
+  });
+});
+
+describe("generateDiscourseScript", () => {
+  const DISCOURSE_PROMPT = "Signal: {{signal_title_and_summary}}. Research: {{research_brief}} Target: {{target_duration_s}}s. JSON only.";
+
+  /** ~165 words, so `estimatedReadSeconds` puts it at ~60s — the duration every test below asks for. */
+  function discourseJson(moves: readonly string[], wordsPerBeat = 38): string {
+    return JSON.stringify({
+      hook: "Nobody reads the patch notes.",
+      beats: moves.map((move, i) => ({ move, text: `${move} beat ${i} ${Array.from({ length: wordsPerBeat - 3 }, (_, w) => `w${w}`).join(" ")}` })),
+      open_question: "So who was it actually for?",
+    });
+  }
+
+  const VALID_DISCOURSE = discourseJson(["question", "attempt", "pushback", "land"]);
+  const LECTURE = discourseJson(["question", "attempt", "land", "land"]);
+
+  let ctx: ReturnType<typeof createTestDb>;
+
+  beforeEach(() => {
+    ctx = createTestDb();
+    applyMigrations(ctx.client);
+    ctx.db.insert(sources).values({ id: "src1", kind: "rss", url: "https://example.com" }).run();
+    ctx.db
+      .insert(signals)
+      .values({ id: "sig1", sourceId: "src1", canonicalUrl: "https://example.com/1", title: "Big balance patch splits the community", observedAt: "2026-08-28T00:00:00Z", engagementScore: 1, simhash: "abc", state: "scored" })
+      .run();
+  });
+
+  function generate(llm: LlmDriver, targetDurationS = 60) {
+    return generateDiscourseScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, targetDurationS, null, () => Date.parse("2026-08-28T01:00:00Z"), DISCOURSE_PROMPT);
+  }
+
+  it("stores the beats and the target duration alongside the v1 columns", async () => {
+    const result = await generate(new ScriptedLlm([llmResponse(VALID_DISCOURSE)]));
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected an ok result");
+
+    const row = ctx.db.select().from(scripts).where(eq(scripts.id, result.value.id)).get();
+    expect(row?.targetDurationS).toBe(60);
+    expect(JSON.parse(row?.beats ?? "null")).toEqual([
+      { move: "question", text: expect.stringContaining("question beat 0") },
+      { move: "attempt", text: expect.stringContaining("attempt beat 1") },
+      { move: "pushback", text: expect.stringContaining("pushback beat 2") },
+      { move: "land", text: expect.stringContaining("land beat 3") },
+    ]);
+  });
+
+  it("writes the spoken narration into `body`, so every v1 consumer keeps working", async () => {
+    const result = await generate(new ScriptedLlm([llmResponse(VALID_DISCOURSE)]));
+    if (!result.ok) throw new Error("expected an ok result");
+
+    const row = ctx.db.select().from(scripts).where(eq(scripts.id, result.value.id)).get();
+    // Hook first, every beat in order, closing question last — the exact
+    // string TTS is handed.
+    expect(row?.body).toMatch(/^Nobody reads the patch notes\. question beat 0 /);
+    expect(row?.body).toMatch(/So who was it actually for\?$/);
+    expect(row?.wordCount).toBe(row?.body.split(/\s+/).length);
+  });
+
+  it("transitions the signal to scripted", async () => {
+    await generate(new ScriptedLlm([llmResponse(VALID_DISCOURSE)]));
+    expect(ctx.db.select().from(signals).get()?.state).toBe("scripted");
+  });
+
+  it("sends a lecture back once with the specific violation, then accepts the rewrite", async () => {
+    const llm = new ScriptedLlm([llmResponse(LECTURE), llmResponse(VALID_DISCOURSE)]);
+    const result = await generate(llm);
+    expect(result.ok).toBe(true);
+    expect(llm.calls).toHaveLength(2);
+
+    const retryPrompt = llm.calls[1].messages[0].content;
+    expect(retryPrompt).toContain("previous_attempt_rejected");
+    expect(retryPrompt).toContain("makes this a lecture rather than a discourse");
+  });
+
+  it("fails the stage when the model writes a lecture twice — never silently ships one", async () => {
+    const llm = new ScriptedLlm([llmResponse(LECTURE), llmResponse(LECTURE)]);
+    const result = await generate(llm);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected a failure");
+    expect(result.error.kind).toBe("invalid_response");
+    expect(result.error.message).toContain("structure gate");
+    expect(result.error.retryable).toBe(false);
+
+    // Nothing half-written: no script row, and the signal never left `scored`.
+    expect(ctx.db.select().from(scripts).all()).toHaveLength(0);
+    expect(ctx.db.select().from(signals).get()?.state).toBe("scored");
+  });
+
+  it("puts the requested duration in the prompt, because the model writes to it", async () => {
+    const llm = new ScriptedLlm([llmResponse(discourseJson(["question", "attempt", "pushback", "land"], 114))]);
+    await generate(llm, 180);
+    expect(llm.calls[0].messages[0].content).toContain("Target: 180s.");
+  });
+
+  it("holds the same hallucination boundary as v1 — the title and the brief, nothing else", async () => {
+    const llm = new ScriptedLlm([llmResponse(VALID_DISCOURSE)]);
+    await generate(llm);
+    expect(llm.calls[0].messages[0].content).toBe(
+      "Signal: Big balance patch splits the community. Research: No research was available for this topic. Write from the signal alone (rule 5). Target: 60s. JSON only.",
+    );
   });
 });

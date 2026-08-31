@@ -84,6 +84,30 @@ export const scripts = sqliteTable(
      * yet, which is the truth.
      */
     traceId: text("trace_id"),
+    /**
+     * The discourse script's beats — a JSON array of `{move, text}` (plan v2
+     * §4, `DiscourseBeatSchema`). The `move` is what replaces the second
+     * speaker, and every downstream stage varies on it: TTS delivery,
+     * caption emphasis, and where the footage cuts.
+     *
+     * Stored as JSON text rather than a `script_beats` table, and that is a
+     * real decision rather than laziness. A beat has no identity of its own —
+     * nothing references one, nothing updates one, and no query filters or
+     * joins on `move`. The beats are read exactly once, all together, by the
+     * stage that renders the script they belong to. A child table would buy
+     * an ordering column, a cascade, and an in-memory join (this codebase
+     * cannot use SQL joins on D1 — see CLAUDE.md) to reconstruct a list that
+     * is only ever consumed whole.
+     *
+     * Nullable, and that is the format boundary: a row with `beats` is a v2
+     * discourse script, a row without is a v1 prose script. Every script
+     * written before 2026-08-31 is the latter, and the export/audit path
+     * reads `body` either way — `flattenBeats` writes the spoken narration
+     * there for both formats, so nothing downstream has to branch.
+     */
+    beats: text("beats"),
+    /** Seconds of narration this script was written for (plan v2: 60–180). Null on v1 prose rows, which were always ~47s. */
+    targetDurationS: integer("target_duration_s"),
     // Drives "today's diversity" queries (ARCHITECTURE.md §5.3) — which
     // sources/games/voices today's earlier renders already used.
     createdAt: text("created_at").notNull(),
