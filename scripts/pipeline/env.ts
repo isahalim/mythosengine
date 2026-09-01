@@ -2,6 +2,10 @@ import { createD1HttpDb } from "../../db/d1-http.ts";
 import { WorkerBatchClient } from "../../db/worker-batch.ts";
 import type { AppDb, RawSqlClient } from "../../db/client.ts";
 import { KvHttpClient } from "../../src/lib/drivers/kv-http.ts";
+import { KvExportDriver } from "../../src/lib/drivers/export-kv.ts";
+import { openLocalBackend } from "./local-backend.ts";
+import type { KvLike } from "../../src/lib/drivers/cache-kv.ts";
+import type { ExportDriver } from "../../src/lib/drivers/types.ts";
 
 // Committed, non-secret resource ids (PROVISIONED.md / wrangler.toml — same
 // values already public in that file, not something worth a GitHub Actions
@@ -24,12 +28,27 @@ export function optionalEnv(name: string): string | undefined {
   return process.env[name] || undefined;
 }
 
+/**
+ * The slice of KV the pipeline actually uses: plain string get/put. It
+ * reads the killswitch and writes cache entries; it never reads a blob
+ * back (that is the console's download path) and never deletes one (that
+ * is discard). Keeping the type this narrow is what lets a disk-backed
+ * local store satisfy it without pretending to be a KV namespace.
+ */
+export type PipelineKv = KvLike;
+
 export interface PipelineEnv {
   db: AppDb;
   rawClient: RawSqlClient;
-  hotKv: KvHttpClient;
-  accountId: string;
-  apiToken: string;
+  hotKv: PipelineKv;
+  /**
+   * Where a finished render is stored. Owned by the env rather than
+   * constructed in render.ts, because it is the one other thing (besides
+   * the database and KV) that differs between a real run and a local one.
+   */
+  exportDriver: ExportDriver;
+  /** True when this run is against the local disk-backed backend, not Cloudflare. Stages log it so a local artefact is never mistaken for a production one. */
+  local: boolean;
   groqApiKey: string;
   /**
    * Optional. Absent, TTS runs on Edge — the default path (plan v2 §5). Not
@@ -42,7 +61,34 @@ export interface PipelineEnv {
 }
 
 /** Every scripts/pipeline/*.ts entrypoint starts by building this — one place all the D1/KV-over-HTTP wiring lives. */
+/**
+ * Local end-to-end mode (`PIPELINE_LOCAL=1`).
+ *
+ * Swaps D1-over-HTTP and KV-over-HTTP for a SQLite file and a directory,
+ * and nothing else. Every pipeline stage runs the code it always runs.
+ *
+ * This exists because the default env points at the ids in wrangler.toml,
+ * which are the PRODUCTION database, KV namespace and review queue —
+ * running the pipeline on a laptop to "see if it works" would otherwise
+ * publish scripts and exports into the operator's live queue.
+ */
+function buildLocalPipelineEnv(): PipelineEnv {
+  const backend = openLocalBackend();
+  return {
+    db: backend.db,
+    rawClient: backend.rawClient,
+    hotKv: backend.hotKv,
+    exportDriver: backend.exportDriver,
+    local: true,
+    groqApiKey: requireEnv("GROQ_API_KEY"),
+    geminiApiKey: optionalEnv("GEMINI_API_KEY"),
+    discordWebhookUrl: undefined, // a local run must never page the operator
+  };
+}
+
 export function buildPipelineEnv(): PipelineEnv {
+  if (process.env.PIPELINE_LOCAL === "1") return buildLocalPipelineEnv();
+
   const accountId = requireEnv("CLOUDFLARE_ACCOUNT_ID");
   const apiToken = requireEnv("CLOUDFLARE_API_TOKEN");
   const groqApiKey = requireEnv("GROQ_API_KEY");
@@ -61,6 +107,8 @@ export function buildPipelineEnv(): PipelineEnv {
 
   return {
     geminiApiKey,
+    local: false,
+    exportDriver: new KvExportDriver({ accountId, namespaceId: HOT_KV_NAMESPACE_ID, apiToken }),
     db: createD1HttpDb(d1Options),
     get rawClient(): RawSqlClient {
       rawClient ??= new WorkerBatchClient({
@@ -70,8 +118,6 @@ export function buildPipelineEnv(): PipelineEnv {
       return rawClient;
     },
     hotKv: new KvHttpClient({ accountId, apiToken, namespaceId: HOT_KV_NAMESPACE_ID }),
-    accountId,
-    apiToken,
     groqApiKey,
     discordWebhookUrl: optionalEnv("DISCORD_WEBHOOK_URL"),
   };

@@ -55,7 +55,6 @@ function makeEnv(assetsResponse: Response): Env {
     VAULT_MASTER_KEY: "unused",
     SESSION_SIGNING_KEY: "unused",
     CONSOLE_ENROLLMENT_TOKEN: "unused",
-    GROQ_API_KEY: "unused",
   };
 }
 

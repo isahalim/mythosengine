@@ -11,3 +11,8 @@ coverage/
 # Playwright MCP scratch output (screenshots, page snapshots, console logs).
 # Committed by accident in 39fdb8a; it is debugging debris, never a build input.
 .playwright-mcp/
+
+# Local end-to-end pipeline runs (PIPELINE_LOCAL=1): a SQLite database, a
+# disk-backed KV, and the rendered MP4s. Real artefacts, but from a laptop
+# and not from a scheduled run - never a build input, never committed.
+.local-pipeline/

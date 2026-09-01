@@ -2,16 +2,22 @@ import { defineConfig } from "astro/config";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@astrojs/react";
 
-// React integration added 2026-08-28 (docs/DECISIONS.md) specifically and
-// only to mount PromptInputBox.tsx (src/console/components/) as an
-// isolated island on /console/chat — every other page/component in this
-// project stays plain Astro + vanilla TS. Astro's per-page code splitting
-// keeps React/Radix/framer-motion out of every bundle that doesn't
-// explicitly import the island.
+// One route, one island. The six-stage surface (src/app/**) is the whole
+// product and is mounted client:only from src/pages/index.astro — the
+// glass, the spheres and the stage machine are one continuous client
+// experience with nothing worth pre-rendering behind a passkey gate.
+//
+// The "one React island, everything else plain Astro + vanilla TS" rule
+// this config used to record was lifted on 2026-08-31 by operator
+// direction, when the console was replaced by that surface. React was
+// already a dependency; no framework was added.
 export default defineConfig({
   output: "static",
   outDir: "./dist",
   integrations: [react()],
+  // The toolbar sits over the stage footer, where every stage's forward
+  // action lives, and intercepts clicks on it.
+  devToolbar: { enabled: false },
   vite: {
     plugins: [tailwindcss()],
   },

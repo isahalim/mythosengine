@@ -1,116 +1,35 @@
 ---
-// Public marketing page (docs/DECISIONS.md, 2026-08-28 — a public
-// status/marketing page has always been allowed here, CLAUDE.md's stack
-// line, distinct from the console which correctly has no hero). Restyled
-// again the same day at the operator's request for a bolder, more
-// "product" composition (full-bleed hero orb behind centered text, a
-// badge pill, a two-CTA row, a feature strip) closer to the 21st.dev
-// references used for grounding — own bundle, own size-limit budget.
-import Base from "../layouts/Base.astro";
-import HeroOrb from "../components/HeroOrb.astro";
-
-const stages: [string, string][] = [
-  ["WATCH", "trending, polarizing discourse across Reddit, X, news RSS, and YouTube"],
-  ["SCRIPT", "a 130–170 word provocative narrative — hook, body, debate question"],
-  ["FOOTAGE SELECT", "a segment from a maintained, provenance-tracked gameplay library"],
-  ["RENDER", "word-level animated captions burned in over the narrated clip"],
-  ["AUDIT SUMMARY", "originality, rotation health, and caption sync checked and surfaced"],
-  ["EXPORT", "a downloadable package — video, script, rationale, full provenance"],
-];
-
-const features: [string, string][] = [
-  ["Full audit trail", "Script, critic output, provenance, and TTS settings travel with every export."],
-  ["Library-only footage", "Every clip traces back to a maintained, provenance-recorded source — nothing ad hoc."],
-  ["Manual review, always", "No upload credential exists anywhere in this system. You publish, on your judgment."],
-];
+// The whole product. One route, client-rendered: the six-stage surface is
+// a single continuous experience (the glass never remounts between
+// stages), so there is nothing for Astro to route between and no HTML
+// worth pre-rendering behind a passkey gate.
+//
+// noindex is deliberate: everything past the landing is operator-only, and
+// src/index.ts sets X-Robots-Tag to match at the header level.
+import "@fontsource/bricolage-grotesque/400.css";
+import "@fontsource/bricolage-grotesque/600.css";
+import "@fontsource/bricolage-grotesque/700.css";
+import "@fontsource/public-sans/400.css";
+import "@fontsource/public-sans/500.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "../styles/global.css";
+import App from "../app/App.tsx";
 ---
 
-<Base
-  title="Mythos Engine"
-  description="An autonomous system that watches trending discussion, writes a narrated script, and renders a fully-audited YouTube Shorts package for a human to review and publish."
->
-  <div class="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(circle_at_50%_-10%,color-mix(in_srgb,var(--violet)_18%,transparent),transparent_60%)]">
-  </div>
-
-  <header class="glass-card sticky top-4 z-20 mx-auto mt-4 flex max-w-5xl items-center justify-between px-6 py-3">
-    <span class="font-display text-base font-semibold tracking-tight text-bone">Mythos Engine</span>
-    <a
-      href="/console/login"
-      class="gradient-spin-border rounded-full bg-bone/90 px-4 py-1.5 font-body text-xs font-medium text-ink transition-colors hover:bg-bone"
-    >
-      Sign in
-    </a>
-  </header>
-
-  <main class="mx-auto max-w-5xl px-6">
-    <section class="relative flex min-h-[85vh] flex-col items-center justify-center overflow-hidden py-20 text-center">
-      <div class="pointer-events-none absolute inset-0 -z-10 flex items-center justify-center">
-        <div class="w-full max-w-3xl opacity-90">
-          <HeroOrb />
-        </div>
-      </div>
-
-      <span class="glass-card gradient-accent-border mb-6 inline-flex items-center gap-2 px-4 py-1.5 font-mono text-[0.65rem] uppercase tracking-[0.2em] text-mercury/80">
-        <span class="h-1.5 w-1.5 rounded-full bg-oxide"></span>
-        Autonomous · Human-reviewed
-      </span>
-
-      <h1 class="max-w-3xl font-display text-5xl font-semibold leading-[1.05] tracking-tight text-bone md:text-7xl">
-        One narrated <span class="gradient-text">Short</span>, fully audited, waiting for you.
-      </h1>
-      <p class="mt-6 max-w-xl font-body text-lg text-mercury/80">
-        Mythos Engine watches trending discussion, writes a narrated script, and pairs it with
-        library gameplay footage &mdash; three times a day. It never uploads anything. It hands
-        you a reviewable package instead.
-      </p>
-
-      <div class="mt-9 flex flex-wrap items-center justify-center gap-3">
-        <a
-          href="/console/login"
-          class="gradient-spin-border rounded-full bg-bone px-7 py-3.5 font-body text-sm font-medium text-ink transition-transform hover:scale-[1.02] active:scale-[0.98]"
-        >
-          Sign in to the console
-        </a>
-        <a
-          href="#how-it-works"
-          class="rounded-full border border-mercury/20 px-7 py-3.5 font-body text-sm font-medium text-mercury transition-colors hover:border-mercury/40 hover:text-bone"
-        >
-          See how it works
-        </a>
-      </div>
-    </section>
-
-    <section class="glass-card grid gap-6 p-8 sm:grid-cols-3">
-      {
-        features.map(([title, desc]) => (
-          <div class="flex flex-col gap-1.5">
-            <h3 class="font-body text-sm font-semibold text-bone">{title}</h3>
-            <p class="font-body text-sm text-mercury/60">{desc}</p>
-          </div>
-        ))
-      }
-    </section>
-
-    <section id="how-it-works" class="scroll-mt-24 border-t border-slate py-20">
-      <h2 class="font-display text-3xl font-semibold text-bone">Six stages, then it stops</h2>
-      <p class="mt-4 max-w-prose font-body text-mercury/70">
-        Every render passes through the same pipeline, in order, and ends in a review queue
-        &mdash; never a publish call.
-      </p>
-      <ol class="mt-8 space-y-3 font-mono text-sm">
-        {
-          stages.map(([name, desc]) => (
-            <li class="flex flex-col gap-1 border-l-2 border-oxide/60 py-1 pl-4 sm:flex-row sm:items-baseline sm:gap-4">
-              <span class="text-oxide">{name}</span>
-              <span class="text-mercury/70">{desc}</span>
-            </li>
-          ))
-        }
-      </ol>
-    </section>
-  </main>
-
-  <footer class="mx-auto max-w-5xl px-6 py-12 font-mono text-xs text-mercury/50">
-    Single-operator system. No public sign-ups. <a href="/console/login" class="text-mercury/70 hover:text-sodium">Operator sign-in →</a>
-  </footer>
-</Base>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>Mythos Engine — shatter into reality.</title>
+    <link rel="icon" href="data:," />
+    <!-- The pane is gated on this having decoded, so it is worth asking
+         for before the bundle has finished parsing. -->
+    <link rel="preload" as="image" href="/shards/atlas-desktop.png" />
+  </head>
+  <body>
+    <App client:only="react" />
+  </body>
+</html>

@@ -5,299 +5,216 @@
   --color-ink: var(--ink);
   --color-slate: var(--slate);
   --color-mercury: var(--mercury);
+  --color-bone: var(--bone);
+  --color-hairline: var(--hairline);
   --color-oxide: var(--oxide);
   --color-sodium: var(--sodium);
-  --color-bone: var(--bone);
-  --color-violet: var(--violet);
   --color-rose: var(--rose);
+  --color-violet: var(--violet);
 
   --font-display: var(--font-display);
   --font-body: var(--font-body);
   --font-mono: var(--font-mono);
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   background: var(--ink);
   color: var(--mercury);
   font-family: var(--font-body);
+  overflow: hidden; /* the stage machine owns the viewport; stages scroll internally */
 }
 
-/* Console-only glass panel. Pure CSS — no JS, no bundle cost. */
+/* ------------------------------------------------------------------ */
+/*  The veil.                                                          */
+/*                                                                    */
+/*  The spheres are deliberately big and saturated (board 1), which is */
+/*  wonderful behind the glass and hostile underneath 12px type. This  */
+/*  lifts the ground back toward white exactly where text lives — the  */
+/*  top and bottom bands — and stays almost clear across the middle,   */
+/*  where the glass is and where there is no small text to protect.    */
+/*  Sits above the sphere canvas and below everything else, so the     */
+/*  glass still refracts a (slightly paler) sphere rather than a flat  */
+/*  white.                                                            */
+/* ------------------------------------------------------------------ */
+.sphere-veil {
+  position: fixed;
+  inset: 0;
+  z-index: -9;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.88) 0%,
+    rgba(255, 255, 255, 0.66) 12%,
+    rgba(255, 255, 255, 0.2) 32%,
+    rgba(255, 255, 255, 0.2) 60%,
+    rgba(255, 255, 255, 0.72) 82%,
+    rgba(255, 255, 255, 0.92) 100%
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Buttons — board 1: "Make all buttons have shadows, and pop effect  */
+/*  on click."                                                        */
+/*                                                                    */
+/*  The pop is a real two-step: press drives the button DOWN into its  */
+/*  own shadow (translateY + a tighter shadow), release springs it     */
+/*  past its resting size and settles. Doing it with a transition      */
+/*  alone gives you a squash with no rebound, which reads as a dead    */
+/*  button; the keyframe is what makes it pop.                        */
+/* ------------------------------------------------------------------ */
+.btn {
+  --btn-bg: var(--ink);
+  --btn-fg: var(--mercury);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  background: var(--btn-bg);
+  color: var(--btn-fg);
+  box-shadow: var(--shadow-2);
+  cursor: pointer;
+  font-family: var(--font-body);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  transition:
+    transform 0.22s var(--ease-out),
+    box-shadow 0.22s var(--ease-out),
+    background-color 0.22s var(--ease-out),
+    opacity 0.22s var(--ease-out);
+  will-change: transform;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.btn:hover:not(:disabled) {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-3);
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(1px) scale(0.97);
+  box-shadow: var(--shadow-1);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--violet);
+  outline-offset: 3px;
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  box-shadow: var(--shadow-1);
+}
+
+/* Applied for one animation by ui/Button.tsx on pointerup, then removed. */
+.btn--pop {
+  animation: btn-pop 0.42s var(--ease-out);
+}
+
+@keyframes btn-pop {
+  0% {
+    transform: translateY(1px) scale(0.97);
+  }
+  45% {
+    transform: translateY(-3px) scale(1.055);
+  }
+  100% {
+    transform: translateY(0) scale(1);
+  }
+}
+
+.btn--primary {
+  --btn-bg: var(--mercury);
+  --btn-fg: var(--ink);
+  border-color: transparent;
+}
+
+.btn--ghost {
+  --btn-bg: transparent;
+  box-shadow: none;
+}
+
+.btn--ghost:hover:not(:disabled) {
+  background: var(--glass-bg);
+  box-shadow: var(--shadow-1);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Surfaces                                                          */
+/* ------------------------------------------------------------------ */
 .glass-card {
   background: var(--glass-bg);
   border: 1px solid var(--glass-border);
   border-radius: 1.25rem;
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
+  box-shadow: var(--shadow-2);
+  backdrop-filter: blur(20px) saturate(1.4);
+  -webkit-backdrop-filter: blur(20px) saturate(1.4);
 }
 
-/* A thin gradient hairline, used sparingly (card top edge, focus rings) —
-   not a fill, never body text. */
-.gradient-accent-border {
-  position: relative;
-}
-.gradient-accent-border::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1px;
-  background: var(--gradient-accent);
-  opacity: 0.55;
-  -webkit-mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none;
+/* The dial's scrim. A white veil is invisible over a white page, so this
+   is a cool neutral wash plus a real backdrop blur: it pushes the stage
+   behind the ring out of focus without turning the design dark. */
+.dial-scrim {
+  background: rgba(26, 26, 44, 0.26);
+  backdrop-filter: blur(10px) saturate(0.7);
+  -webkit-backdrop-filter: blur(10px) saturate(0.7);
 }
 
-/* A slowly rotating conic version of the oxide/sodium/violet gradient, for
-   a page's primary CTA. Pure CSS (@property + a custom-property animation)
-   — no JS, no bundle cost. Originally scoped to the public homepage only;
-   used on the console's sign-in button too as of the 2026-08-28 (later)
-   restyle — see docs/DECISIONS.md — since the operator asked for one
-   consistent, richer visual language across sign-in and the public page,
-   not a split "restrained console vs. expressive homepage" look. */
-@property --spin-angle {
-  syntax: "<angle>";
-  initial-value: 0deg;
-  inherits: false;
+/* ------------------------------------------------------------------ */
+/*  Board 2: "new UI elements fade in effect (image generation         */
+/*  effect)" — elements resolve out of a blur rather than sliding in,  */
+/*  the way a diffusion preview sharpens.                             */
+/* ------------------------------------------------------------------ */
+.resolve-in {
+  animation: resolve-in 0.72s var(--ease-out) backwards;
 }
-.gradient-spin-border {
-  position: relative;
-}
-.gradient-spin-border::before {
-  content: "";
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  padding: 1.5px;
-  background: conic-gradient(from var(--spin-angle), var(--oxide), var(--sodium), var(--violet), var(--oxide));
-  -webkit-mask:
-    linear-gradient(#fff 0 0) content-box,
-    linear-gradient(#fff 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  pointer-events: none;
-  animation: spin-border 6s linear infinite;
-}
-@keyframes spin-border {
-  to {
-    --spin-angle: 360deg;
+
+@keyframes resolve-in {
+  from {
+    opacity: 0;
+    filter: blur(14px) saturate(1.8);
+    transform: scale(0.965);
   }
-}
-@media (prefers-reduced-motion: reduce) {
-  .gradient-spin-border::before {
-    animation: none;
-  }
-}
-
-/* Siri Orb, sourced directly from 21st.dev (educalvolpz, id 12161 —
-   https://21st.dev/@educalvolpz/components/siri-orb). Pure CSS — the
-   original "component" is a div with inline custom properties and a
-   <style> block; ported here as a plain class since there's no framework
-   logic to preserve (CONSOLE_SPEC.md §5's "presentation only" rule applies
-   trivially when the whole component already is presentation). Rainbow
-   colors are deliberate — the operator asked for a rainbow orb specifically,
-   not this app's usual restrained oxide/sodium/violet three-hue system.
-   The voice page's idle "hold to talk" state (src/pages/console/voice.astro)
-   swaps this for the Siri Wave shader once recording starts. */
-@property --siri-orb-angle {
-  syntax: "<angle>";
-  inherits: false;
-  initial-value: 0deg;
-}
-.siri-orb {
-  /* Was a hardcoded #000000. Bound to --ink so the orb's punched-through
-     dot pattern matches whichever surface it sits on — the console is white
-     as of 2026-08-31, and a black mask there read as dirt on the glass. */
-  --bg: var(--ink);
-  --c1: oklch(75% 0.18 350);
-  --c2: oklch(80% 0.15 200);
-  --c3: oklch(78% 0.19 90);
-  display: grid;
-  grid-template-areas: "stack";
-  overflow: hidden;
-  border-radius: 50%;
-  position: relative;
-}
-.siri-orb::before,
-.siri-orb::after {
-  content: "";
-  display: block;
-  grid-area: stack;
-  width: 100%;
-  height: 100%;
-  border-radius: 50%;
-}
-.siri-orb::before {
-  background:
-    conic-gradient(from calc(var(--siri-orb-angle) * 2) at 25% 70%, var(--c3), transparent 20% 80%, var(--c3)),
-    conic-gradient(from calc(var(--siri-orb-angle) * 2) at 45% 75%, var(--c2), transparent 30% 60%, var(--c2)),
-    conic-gradient(from calc(var(--siri-orb-angle) * -3) at 80% 20%, var(--c1), transparent 40% 60%, var(--c1)),
-    conic-gradient(from calc(var(--siri-orb-angle) * 2) at 15% 5%, var(--c2), transparent 10% 90%, var(--c2)),
-    conic-gradient(from calc(var(--siri-orb-angle) * 1) at 20% 80%, var(--c1), transparent 10% 90%, var(--c1)),
-    conic-gradient(from calc(var(--siri-orb-angle) * -2) at 85% 10%, var(--c3), transparent 20% 80%, var(--c3));
-  box-shadow: inset var(--bg) 0 0 4px 0.8px;
-  filter: blur(6px) contrast(1.8);
-  animation: siri-orb-rotate 14s linear infinite;
-}
-.siri-orb::after {
-  background-image: radial-gradient(circle at center, var(--bg) 1px, transparent 1px);
-  background-size: 2px 2px;
-  backdrop-filter: blur(12px) contrast(3.6);
-  mix-blend-mode: overlay;
-  mask-image: radial-gradient(black 25%, transparent 75%);
-}
-@keyframes siri-orb-rotate {
-  to {
-    --siri-orb-angle: 360deg;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .siri-orb::before {
-    animation: none;
-  }
-}
-
-/* Gradient text, used once — the hero headline's emphasized word. */
-.gradient-text {
-  background: var(--gradient-accent);
-  background-clip: text;
-  -webkit-background-clip: text;
-  color: transparent;
-}
-
-/* Radial nav (src/console/components/RadialNav.astro) — two sizes, one
-   markup, one class swapped by src/console/scripts/radial-nav.ts. Node/ring
-   radius values here are mirrored as constants in that script (CSS can't be
-   read mid-transition without racing the animation) — keep both in sync if
-   either changes. */
-.radial-nav--collapsed {
-  position: relative;
-  margin-left: auto;
-  margin-right: auto;
-  height: 92px;
-  width: 92px;
-  transition: height 0.35s ease, width 0.35s ease;
-}
-.radial-nav--expanded {
-  position: fixed;
-  inset: 0;
-}
-.radial-nav--collapsed .radial-nav-ring {
-  width: 84px;
-  height: 84px;
-}
-.radial-nav--collapsed .radial-nav-center {
-  width: 1.5rem;
-  height: 1.5rem;
-}
-.radial-nav--collapsed .radial-node {
-  width: 2rem;
-  height: 2rem;
-}
-.radial-nav--collapsed .radial-node-label {
-  display: none;
-}
-
-.radial-nav--expanded .radial-nav-ring {
-  width: min(60vw, 60vh, 640px);
-  height: min(60vw, 60vh, 640px);
-}
-.radial-nav--expanded .radial-nav-center {
-  width: 6rem;
-  height: 6rem;
-}
-.radial-nav--expanded .radial-node {
-  width: 4.5rem;
-  height: 4.5rem;
-}
-.radial-nav--expanded .radial-node-label {
-  display: block;
-}
-
-/* @paper-design/shaders' ShaderMount sets the canvas's pixel-buffer
-   dimensions (width/height attributes, for device-pixel-ratio sharpness)
-   but relies on its own injected stylesheet for CSS sizing — which doesn't
-   reach a canvas mounted this deep in a component tree with no matching
-   selector, leaving it unstyled and rendered at native attribute size
-   instead of filling its container. Force it here rather than depend on
-   that stylesheet. */
-.radial-nav-center canvas {
-  position: absolute;
-  inset: 0;
-  width: 100% !important;
-  height: 100% !important;
-}
-
-/* Toggled on the console header while the radial nav is expanded
-   (src/console/scripts/radial-nav.ts) -- see that file's comment on
-   setExpanded() for why. */
-.radial-nav-host-expanded {
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
-}
-
-.radial-nav-ring,
-.radial-nav-center,
-.radial-node {
-  transition:
-    width 0.35s ease,
-    height 0.35s ease,
-    opacity 0.35s ease,
-    transform 0.35s ease;
-}
-@media (prefers-reduced-motion: reduce) {
-  .radial-nav-ring,
-  .radial-nav-center,
-  .radial-node {
-    transition: none;
-  }
-}
-
-
-/* "The assistant is working" indicator, rendered into the chat thread by
-   src/console/scripts/chat.ts for as long as an agent turn is in flight.
-   An agent turn is not fast — it can be several Groq round trips with tool
-   calls between them (src/server/agent/loop.ts) — and with nothing on
-   screen, a slow answer was indistinguishable from a dropped one. Three
-   dots fading in sequence, same plain-CSS-class-plus-reduced-motion-guard
-   pattern as .gradient-spin-border and .siri-orb above. */
-.thinking-dot {
-  animation: thinking-dot-fade 1.4s ease-in-out infinite;
-}
-.thinking-dot:nth-child(2) {
-  animation-delay: 0.2s;
-}
-.thinking-dot:nth-child(3) {
-  animation-delay: 0.4s;
-}
-@keyframes thinking-dot-fade {
-  0%,
-  80%,
-  100% {
-    opacity: 0.2;
-    transform: translateY(0);
-  }
-  40% {
+  60% {
     opacity: 1;
-    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0) saturate(1);
+    transform: scale(1);
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  /* Still moving, still obviously "working", just no bounce or strobe. */
-  .thinking-dot {
-    animation: thinking-dot-steady 1.4s ease-in-out infinite;
+
+.fade-out {
+  animation: fade-out 0.42s var(--ease-out) forwards;
+}
+
+@keyframes fade-out {
+  to {
+    opacity: 0;
+    filter: blur(10px);
+    transform: scale(0.98);
   }
-  @keyframes thinking-dot-steady {
-    0%,
-    100% {
-      opacity: 0.35;
-    }
-    50% {
-      opacity: 0.7;
-    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .resolve-in,
+  .fade-out,
+  .btn--pop {
+    animation: none;
+  }
+  .btn,
+  .btn:hover:not(:disabled),
+  .btn:active:not(:disabled) {
+    transform: none;
+    transition: none;
   }
 }

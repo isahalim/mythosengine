@@ -16,23 +16,18 @@ import { DirectiveSchema } from "./console/directive-schema.ts";
 import { compileDirectiveFromRawText, dryRunSettings, getSettings, resetToDefaults, updateSettings } from "./console/settings.ts";
 import { discardExport, downloadExport, exportFileName, listExports, markExportReviewed, type ExportBlobStore, type ExportStatus } from "./console/exports.ts";
 import { rotateProviderKey, ROTATABLE_KEY_NAMES, type RotatableKeyName } from "./console/keys.ts";
-import { dispatchRun } from "./console/dispatch.ts";
+import { DEFAULT_RENDER_REF, DEFAULT_RENDER_WORKFLOW, dispatchRun } from "./console/dispatch.ts";
+import { createGithubActionsDriver, type GithubActionsDriver } from "../lib/drivers/github-actions.ts";
 import { setPipelineEnabled } from "./console/killswitch.ts";
 import { approveScript } from "./console/scripts.ts";
-import { getConsoleSummary } from "./console/summary.ts";
 import { getRunProgress, listRecentRuns } from "./console/runs.ts";
 import { isTopic, rankIdeas } from "./console/ideas.ts";
 import { cancelPlanPick, listPlan, queuePlan, queuedSignalIds } from "./console/run-plan.ts";
-import { getRunMontage } from "./console/montage.ts";
-import { createChatSession, deleteChatSession, getChatMessages, listChatSessions } from "./console/chat.ts";
-import { runAgentTurn, type ToolInvoker } from "./agent/loop.ts";
-import { issueMcpToken, listMcpTokens, revokeMcpToken, verifyMcpToken } from "./mcp/tokens.ts";
+import { getExportPreviews, getRunMontage } from "./console/montage.ts";
 import { handleD1Batch } from "./internal/d1-batch.ts";
-import { callMcpTool, handleMcpRequest } from "./mcp/server.ts";
 import { log } from "./log.ts";
 import type { KvLike } from "../lib/drivers/cache-kv.ts";
 import type { VaultKv } from "../lib/vault.ts";
-import { createGroqDriverFromVault, createGroqLimiter, createGroqWhisperDriverFromVault } from "../lib/drivers/resolve-groq-driver.ts";
 
 export interface RouterEnv {
   DB: D1Database;
@@ -41,23 +36,28 @@ export interface RouterEnv {
   VAULT_MASTER_KEY: string;
   SESSION_SIGNING_KEY: string;
   CONSOLE_ENROLLMENT_TOKEN: string;
-  GROQ_API_KEY: string;
   /** Optional — Pexels supplies the run view's *preview* montage only (src/server/console/montage.ts). Unset means no montage, never a broken console. */
   PEXELS_API_KEY?: string;
   /** Shared secret for POST /internal/d1/batch. Optional in the type, fail-closed in the handler: an unset secret must close the endpoint, never open it. */
   PIPELINE_BATCH_TOKEN?: string;
+  /**
+   * Fine-grained PAT with Actions: read and write on GITHUB_REPOSITORY —
+   * the credential POST /console/dispatch needs to actually start the
+   * RENDER workflow (ARCHITECTURE.md §0: the pipeline runs in GitHub
+   * Actions, because a Worker cannot run FFmpeg).
+   *
+   * Optional, and honestly optional: without it the console records the run
+   * and reports it as `not_triggered` rather than pretending to have
+   * started one. A Worker secret, not a vault entry — it is infrastructure
+   * for this deployment, like SESSION_SIGNING_KEY, not a rotatable provider
+   * key the operator manages through the console.
+   */
+  GITHUB_DISPATCH_TOKEN?: string;
+  /** `owner/repo`, from wrangler.toml [vars]. Public configuration, not a secret. */
+  GITHUB_REPOSITORY?: string;
+  /** The git ref RENDER runs from. Defaults to `main`. */
+  GITHUB_RENDER_REF?: string;
 }
-
-// Shared across requests within one Worker isolate's lifetime — same
-// "one shared instance serializes every Groq call" reasoning
-// TokenBucketLimiter's own docstring states (src/lib/drivers/rate-limiter.ts).
-// A fresh isolate gets a fresh bucket, which is the same cold-start
-// behavior every other in-memory rate limit in a Workers app has — and the
-// reason this cannot be the only defense against a 429 (see http.ts).
-// Budget now derives from QUOTAS.groq (src/config/quotas.ts) rather than
-// the hard-coded 28/4500 that used to sit here, which had drifted from both
-// the config and Groq's real 30/8000.
-const groqLimiter = createGroqLimiter();
 
 /** The exact slice of a KV namespace the export blob store needs, layered onto plain KvLike. */
 export type HotKvLike = KvLike & ExportBlobStore;
@@ -80,9 +80,12 @@ export interface RouterDeps {
   vaultMasterKey: string;
   sessionSigningKey: string;
   consoleEnrollmentToken: string;
-  groqApiKeyFallback: string;
   pexelsApiKeyFallback: string | undefined;
   pipelineBatchToken: string | undefined;
+  /** Null when no dispatch credential is configured — POST /console/dispatch then records without triggering, and says so. */
+  actions: GithubActionsDriver | null;
+  renderWorkflow: string;
+  renderRef: string;
 }
 
 function depsFromEnv(env: RouterEnv): RouterDeps {
@@ -94,16 +97,18 @@ function depsFromEnv(env: RouterEnv): RouterDeps {
     vaultMasterKey: env.VAULT_MASTER_KEY,
     sessionSigningKey: env.SESSION_SIGNING_KEY,
     consoleEnrollmentToken: env.CONSOLE_ENROLLMENT_TOKEN,
-    groqApiKeyFallback: env.GROQ_API_KEY,
     pexelsApiKeyFallback: env.PEXELS_API_KEY,
     pipelineBatchToken: env.PIPELINE_BATCH_TOKEN,
+    actions: createGithubActionsDriver(env.GITHUB_DISPATCH_TOKEN, env.GITHUB_REPOSITORY),
+    renderWorkflow: DEFAULT_RENDER_WORKFLOW,
+    renderRef: env.GITHUB_RENDER_REF ?? DEFAULT_RENDER_REF,
   };
 }
 
 /**
  * The one route this router owns that a browser reaches by **navigating** to
- * it rather than fetching it. The console renders it as a plain `<a href>`
- * on purpose (`src/console/lib/api.ts`: "never needs a client-side fetch"),
+ * it rather than fetching it. The app renders it as a plain `<a href>`
+ * on purpose (`src/app/api.ts`: "never needs a client-side fetch"),
  * and it answers with `video/mp4` — never JSON. So it can never satisfy the
  * "does this GET actually want JSON" test below, and has to be named as an
  * exception to it.
@@ -183,13 +188,14 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
   // prefix with the console's HTML.
   if (pathname.startsWith("/internal/")) return json({ error: "not_found" }, 404);
 
-  // /console/settings is both an Astro page (src/pages/console/settings.astro)
-  // and a JSON API route (GET /console/settings, ARCHITECTURE.md §6) at the
-  // identical path — the only such collision among the routes this file
-  // owns. A GET is only ever an API call when the caller actually wants
-  // JSON; src/console/lib/api.ts's get() sends this header for exactly that
-  // reason. A plain browser navigation has no such header, so it falls
-  // through to env.ASSETS untouched.
+  // Every /console/* GET here is an API call, and the app is a single
+  // client-rendered page at "/" (src/pages/index.astro) — there are no
+  // Astro pages under /console/ any more, since the six-stage overhaul
+  // (2026-08-31) collapsed them all into that one route. The Accept test
+  // stays anyway: it is what keeps a stray browser navigation to an API
+  // path falling through to the static asset handler rather than being
+  // answered with JSON, and the download route below has to be named as
+  // an exception to it because a navigation asks for text/html.
   if (method === "GET" && !EXPORT_DOWNLOAD_PATTERN.test(pathname) && !(request.headers.get("accept") ?? "").includes("application/json")) return null;
 
   const ctx = deps;
@@ -240,32 +246,6 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
       });
     }
 
-    // POST /console/mcp accepts EITHER the console's own session cookie
-    // (same-origin use, e.g. the in-console voice surface) OR a bearer
-    // token (external MCP clients — Claude Desktop, Claude Code) verified
-    // against mcp_tokens — the one /console/* route that isn't
-    // session-only, so it's handled before the blanket requireSession gate
-    // below. Reuses ctx.hotKv/vaultKv/vaultMasterKey exactly like AGENT_TOOLS
-    // does elsewhere — no second tool implementation, no separate audit path.
-    if (pathname === "/console/mcp" && method === "POST") {
-      const authHeader = request.headers.get("authorization");
-      let callerLabel: string;
-      if (authHeader?.startsWith("Bearer ")) {
-        const tokenId = await verifyMcpToken(ctx.db, authHeader.slice("Bearer ".length));
-        if (!tokenId) return json({ error: "unauthorized" }, 401);
-        callerLabel = `token:${tokenId}`;
-      } else {
-        const mcpSession = await requireSession(request, deps);
-        if (isResponse(mcpSession)) return mcpSession;
-        callerLabel = `session:${mcpSession.sessionId}`;
-      }
-
-      const body = await readJson(request);
-      if (!body.ok) return json({ error: "invalid_json" }, 400);
-      const toolCtx = { db: ctx.db, rawClient: ctx.rawClient, hotKv: ctx.hotKv, vaultKv: ctx.vaultKv, vaultMasterKey: ctx.vaultMasterKey };
-      return handleMcpRequest(body.value, toolCtx, callerLabel);
-    }
-
     // Everything past this point requires a session.
     const session = await requireSession(request, deps);
     if (isResponse(session)) return session;
@@ -293,11 +273,6 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
       if (result.kind !== "ok" || result.sessionId !== sessionId) return json({ error: "reauth_failed" }, 401);
       const nonce = await issueReauthNonce(ctx.db, sessionId);
       return json({ reauthNonce: nonce });
-    }
-
-    if (pathname === "/console/summary" && method === "GET") {
-      const summary = await getConsoleSummary(ctx.db, ctx.hotKv, ctx.vaultKv, deps.vaultMasterKey);
-      return json(summary);
     }
 
     // ---- the guided run's first three steps: count, topic, ranked ideas ----
@@ -366,6 +341,27 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
     if (pathname === "/console/exports" && method === "GET") {
       const status = url.searchParams.get("status") as ExportStatus | null;
       return json(await listExports(ctx.db, status ?? undefined));
+    }
+
+    // Stage 6's sneak peeks. Registered ahead of the `:id` export routes
+    // because "previews" would otherwise be read as an export id — it
+    // cannot collide today (the id routes all carry a trailing verb) but
+    // the ordering is what keeps that true when one of them stops doing so.
+    //
+    // Reads the same live list the stage renders, so the previews can never
+    // describe a different set of exports than the one on screen; discarded
+    // and expired rows are dropped because nothing shows them.
+    if (pathname === "/console/exports/previews" && method === "GET") {
+      const live = (await listExports(ctx.db)).filter((row) => row.status !== "discarded" && row.status !== "expired");
+      return json(
+        await getExportPreviews(
+          ctx.hotKv,
+          ctx.vaultKv,
+          deps.vaultMasterKey,
+          deps.pexelsApiKeyFallback,
+          live.map((row) => ({ id: row.id, keywords: row.keywords })),
+        ),
+      );
     }
 
     const downloadMatch = pathname.match(EXPORT_DOWNLOAD_PATTERN);
@@ -463,7 +459,7 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
     }
 
     if (pathname === "/console/dispatch" && method === "POST") {
-      const result = await dispatchRun(ctx.db, ctx.hotKv);
+      const result = await dispatchRun(ctx.db, ctx.hotKv, { actions: deps.actions, workflow: deps.renderWorkflow, ref: deps.renderRef });
       if (result.kind === "disabled") return json({ error: "pipeline_disabled" }, 409);
       if (result.kind === "rate_limited") return json({ error: "rate_limited" }, 429);
       await writeAuditLog(ctx.db, "human", "pipeline.dispatch", result.runId, {});
@@ -490,103 +486,6 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
       if (result.kind === "not_draft") return json({ error: "not_draft" }, 409);
       await writeAuditLog(ctx.db, "human", "script.approve", approveMatch[1], {});
       return json({ ok: true });
-    }
-
-    // ---- Chat-agent console (Groq tool-calling over the same service layer) ----
-    if (pathname === "/console/chat/sessions" && method === "GET") {
-      return json(await listChatSessions(ctx.db));
-    }
-
-    if (pathname === "/console/chat/sessions" && method === "POST") {
-      const session = await createChatSession(ctx.db);
-      return json(session, 201);
-    }
-
-    const chatDeleteMatch = pathname.match(/^\/console\/chat\/sessions\/([^/]+)$/);
-    if (chatDeleteMatch && method === "DELETE") {
-      const result = await deleteChatSession(ctx.db, chatDeleteMatch[1]);
-      if (result.kind === "not_found") return json({ error: "not_found" }, 404);
-      await writeAuditLog(ctx.db, "human", "chat.delete_session", chatDeleteMatch[1], {});
-      return json({ ok: true });
-    }
-
-    const chatMessagesMatch = pathname.match(/^\/console\/chat\/sessions\/([^/]+)\/messages$/);
-    if (chatMessagesMatch && method === "GET") {
-      return json(await getChatMessages(ctx.db, chatMessagesMatch[1]));
-    }
-
-    const chatSendMatch = pathname.match(/^\/console\/chat\/sessions\/([^/]+)\/message$/);
-    if (chatSendMatch && method === "POST") {
-      const body = await readJson(request);
-      if (!body.ok) return json({ error: "invalid_json" }, 400);
-      const { content } = body.value as { content?: string };
-      if (typeof content !== "string" || content.trim().length === 0) return json({ error: "invalid_request" }, 400);
-
-      const llm = await createGroqDriverFromVault(ctx.vaultKv, ctx.vaultMasterKey, ctx.groqApiKeyFallback, groqLimiter);
-      const toolCtx = { db: ctx.db, rawClient: ctx.rawClient, hotKv: ctx.hotKv, vaultKv: ctx.vaultKv, vaultMasterKey: ctx.vaultMasterKey };
-      const result = await runAgentTurn(llm, ctx.db, toolCtx, chatSendMatch[1], content);
-      return json(result);
-    }
-
-    // ---- MCP access tokens (external clients — Claude Desktop, Claude Code) ----
-    if (pathname === "/console/mcp-tokens" && method === "GET") {
-      return json(await listMcpTokens(ctx.db));
-    }
-
-    if (pathname === "/console/mcp-tokens" && method === "POST") {
-      // A live MCP token can call the same AGENT_TOOLS allowlist the chat agent
-      // can — credential-equivalent, same reauth bar as key rotation (CONSOLE_SPEC.md §2).
-      const reauth = await requireReauth(request, ctx, sessionId);
-      if (isResponse(reauth)) return reauth;
-
-      const body = await readJson(request);
-      if (!body.ok) return json({ error: "invalid_json" }, 400);
-      const { label } = body.value as { label?: string };
-      if (typeof label !== "string" || label.trim().length === 0) return json({ error: "invalid_request" }, 400);
-
-      const { token, summary } = await issueMcpToken(ctx.db, label.trim());
-      await writeAuditLog(ctx.db, "human", "mcp_token.issue", summary.id, { label: summary.label });
-      return json({ token, ...summary }, 201);
-    }
-
-    const mcpTokenDeleteMatch = pathname.match(/^\/console\/mcp-tokens\/([^/]+)$/);
-    if (mcpTokenDeleteMatch && method === "DELETE") {
-      const result = await revokeMcpToken(ctx.db, mcpTokenDeleteMatch[1]);
-      if (result.kind === "not_found") return json({ error: "not_found" }, 404);
-      await writeAuditLog(ctx.db, "human", "mcp_token.revoke", mcpTokenDeleteMatch[1], {});
-      return json({ ok: true });
-    }
-
-    // ---- Voice control (Groq Whisper STT + the same AGENT_TOOLS surface, dispatched via MCP) ----
-    if (pathname === "/console/voice/transcribe" && method === "POST") {
-      const bytes = new Uint8Array(await request.arrayBuffer());
-      if (bytes.byteLength === 0) return json({ error: "invalid_request" }, 400);
-
-      const asr = await createGroqWhisperDriverFromVault(ctx.vaultKv, ctx.vaultMasterKey, ctx.groqApiKeyFallback);
-      const mimeType = request.headers.get("content-type") ?? "audio/webm";
-      const result = await asr.transcribe({ source: { kind: "audio", bytes, mimeType } });
-      if (!result.ok) return json({ error: result.error.kind, message: result.error.message }, 502);
-      return json({ transcript: result.value.transcript });
-    }
-
-    const voiceTurnMatch = pathname === "/console/voice/turn";
-    if (voiceTurnMatch && method === "POST") {
-      const body = await readJson(request);
-      if (!body.ok) return json({ error: "invalid_json" }, 400);
-      const { sessionId: voiceSessionId, transcript } = body.value as { sessionId?: string; transcript?: string };
-      if (typeof transcript !== "string" || transcript.trim().length === 0) return json({ error: "invalid_request" }, 400);
-
-      const activeSessionId = typeof voiceSessionId === "string" && voiceSessionId.length > 0 ? voiceSessionId : (await createChatSession(ctx.db)).id;
-
-      const llm = await createGroqDriverFromVault(ctx.vaultKv, ctx.vaultMasterKey, ctx.groqApiKeyFallback, groqLimiter);
-      const toolCtx = { db: ctx.db, rawClient: ctx.rawClient, hotKv: ctx.hotKv, vaultKv: ctx.vaultKv, vaultMasterKey: ctx.vaultMasterKey };
-      // Dispatches every tool call through the exact MCP tool contract
-      // (src/server/mcp/server.ts's callMcpTool) instead of AGENT_TOOLS
-      // directly — this is what makes voice control genuinely "through
-      // MCP," audited with actor "mcp" instead of "agent" (docs/DECISIONS.md).
-      const mcpInvoker: ToolInvoker = { invoke: (invokerCtx, sid, name, args, now) => callMcpTool(invokerCtx, name, args, `session:${sid}`, now) };
-      const result = await runAgentTurn(llm, ctx.db, toolCtx, activeSessionId, transcript, Date.now, mcpInvoker);
-      return json({ sessionId: activeSessionId, ...result });
     }
 
     return json({ error: "not_found" }, 404);

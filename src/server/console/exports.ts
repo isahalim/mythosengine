@@ -1,6 +1,7 @@
 import { desc, eq } from "drizzle-orm";
 import { getOne, type AppDb } from "../../../db/client.ts";
 import { exports as exportsTable, footageSources, footageSegments, renders, scripts } from "../../../db/schema.ts";
+import { extractKeywords } from "../../lib/pipeline/keywords.ts";
 
 // Matches src/console/lib/types.ts's ExportListItem/ExportStatus exactly —
 // that file is the Phase 7 frontend's already-shipped contract.
@@ -21,6 +22,17 @@ export interface ExportListItem {
   ttsVoice: string | null;
   scriptHook: string | null;
   durationS: number | null;
+  /**
+   * Visual keywords derived from this export's script, by the same
+   * heuristic the live run's montage uses (src/lib/pipeline/keywords.ts).
+   * Stage 6 searches Pexels for them so a finished video's fragments show
+   * stills of what it is *about* instead of empty glass.
+   *
+   * Empty when the script row is gone — a keyword list is never invented
+   * from the export's own title, which is model-written copy about the
+   * video rather than a reading of it.
+   */
+  keywords: string[];
 }
 
 async function toListItem(db: AppDb, row: typeof exportsTable.$inferSelect): Promise<ExportListItem> {
@@ -51,6 +63,7 @@ async function toListItem(db: AppDb, row: typeof exportsTable.$inferSelect): Pro
     ttsVoice: render?.ttsVoice ?? null,
     scriptHook: script?.hook ?? null,
     durationS: render?.durationS ?? null,
+    keywords: script ? extractKeywords({ hook: script.hook, body: script.body, debateQuestion: script.debateQuestion }) : [],
   };
 }
 

@@ -31,9 +31,8 @@ import { runExport } from "../../src/lib/pipeline/export.ts";
 import { readClipFromLibrary } from "../../src/lib/footage/library.ts";
 import { GroqWhisperDriver } from "../../src/lib/drivers/groq-whisper.ts";
 import { FfmpegRenderDriver } from "../../src/lib/drivers/render-ffmpeg.ts";
-import { KvExportDriver } from "../../src/lib/drivers/export-kv.ts";
 import { createGroqDriverFromEnv, createGroqLimiter } from "../../src/lib/drivers/resolve-groq-driver.ts";
-import { buildPipelineEnv, HOT_KV_NAMESPACE_ID } from "./env.ts";
+import { buildPipelineEnv } from "./env.ts";
 
 const REPO_DIR = process.cwd();
 
@@ -72,7 +71,21 @@ async function main(): Promise<void> {
   const reaped = await reapStaleRuns(env.db);
   if (reaped > 0) console.warn(`Reaped ${reaped} abandoned run row(s) left behind by a killed job.`);
 
-  const traceId = crypto.randomUUID();
+  /**
+   * The console decides the trace, not this script.
+   *
+   * POST /console/dispatch writes a `runs` row, hands its id to the workflow
+   * as `trace_id` (.github/workflows/render.yml), and stage 5 polls that id.
+   * Minting one here regardless — which is what this did — meant the console
+   * watched a trace this run never wrote to, so the waiting screen sat on
+   * "waiting for the first script" even after the run had finished and
+   * exported. GitHub's dispatch endpoint returns no run id, so the
+   * identifier has to travel down; there is nothing to read back up.
+   *
+   * Unset on a hand-triggered or scheduled invocation, and minting one is
+   * then exactly right.
+   */
+  const traceId = process.env.PIPELINE_TRACE_ID?.trim() || crypto.randomUUID();
 
   if (!(await isPipelineEnabled(env.hotKv))) {
     console.warn("Pipeline killswitch is off — skipping this RENDER run.");
@@ -372,7 +385,7 @@ async function main(): Promise<void> {
     // ---- EXPORT ----
     const exportRunId = await startRun(env.db, "export", traceId);
     const fileBytes = await readFile(outputPath);
-    const exportDriver = new KvExportDriver({ accountId: env.accountId, namespaceId: HOT_KV_NAMESPACE_ID, apiToken: env.apiToken });
+    const exportDriver = env.exportDriver;
     const exportResult = await runExport(
       env.db,
       outputPath,

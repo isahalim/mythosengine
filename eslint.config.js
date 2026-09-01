@@ -15,7 +15,12 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.strict,
   {
-    files: ["**/*.ts"],
+    // .tsx included deliberately: the six-stage app (src/app/**) is React,
+    // and before 2026-08-31 this glob said "**/*.ts" only, which meant the
+    // one .tsx file in the tree was linted by nothing but the recommended
+    // presets. Every rule below is exactly the bar the rest of src/ is held
+    // to, so the UI is held to it too.
+    files: ["**/*.ts", "**/*.tsx"],
     rules: {
       "@typescript-eslint/no-explicit-any": "error",
       "@typescript-eslint/ban-ts-comment": "error",
@@ -53,7 +58,7 @@ export default tseslint.config(
     // project-wide naming convention of binding a Vault instance to a local
     // named `vault` — a heuristic, not a type-level guarantee, documented as
     // such in docs/DECISIONS.md's hardening entry.
-    files: ["src/**/*.ts"],
+    files: ["src/**/*.ts", "src/**/*.tsx"],
     ignores: ["src/lib/drivers/**", "**/*.test.ts"],
     rules: {
       "no-restricted-syntax": [

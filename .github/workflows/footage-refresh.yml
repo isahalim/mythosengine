@@ -37,7 +37,10 @@ jobs:
     # self-hosted runner that may exist later. Registering the machine is an
     # operator step (PROVISIONED.md); until it is registered this job queues
     # rather than failing.
-    runs-on: [self-hosted, mythos-footage]
+    # See render.yml: `mythos-footage` was a label no registered runner ever
+    # carried, so this queued forever. These are the operator laptop's real
+    # labels.
+    runs-on: [self-hosted, macOS, ARM64]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

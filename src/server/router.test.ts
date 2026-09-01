@@ -69,8 +69,14 @@ describe("router", () => {
       vaultMasterKey: MASTER_KEY_B64,
       sessionSigningKey: SESSION_SIGNING_KEY,
       consoleEnrollmentToken: ENROLLMENT_TOKEN,
-      groqApiKeyFallback: "gsk_" + "a".repeat(40),
       pexelsApiKeyFallback: undefined,
+      // No dispatch credential in the default deps: POST /console/dispatch
+      // records the run and reports `not_triggered`, which is what these
+      // route tests are asserting. The trigger path itself is covered
+      // against the real driver in console/dispatch.test.ts.
+      actions: null,
+      renderWorkflow: "render.yml",
+      renderRef: "main",
       pipelineBatchToken: PIPELINE_BATCH_TOKEN,
     };
     vi.mocked(simplewebauthn.verifyRegistrationResponse).mockReset();
@@ -88,7 +94,7 @@ describe("router", () => {
   });
 
   it("rejects an unauthenticated request to a session-protected route", async () => {
-    const res = await handleApiRequest(apiRequest("/console/summary"), deps);
+    const res = await handleApiRequest(apiRequest("/console/exports"), deps);
     expect(res?.status).toBe(401);
   });
 
@@ -154,10 +160,9 @@ describe("router", () => {
 
   it("registers a passkey, authenticates, and reaches a session-protected route with the resulting cookie", async () => {
     const cookie = await completeRegistrationAndLogin();
-    const res = await handleApiRequest(apiRequest("/console/summary", { cookie }), deps);
+    const res = await handleApiRequest(apiRequest("/console/exports", { cookie }), deps);
     expect(res?.status).toBe(200);
-    const body = (await res?.json()) as { killswitch: { enabled: boolean } };
-    expect(body.killswitch.enabled).toBe(true);
+    expect((await res?.json()) as unknown[]).toEqual([]);
   });
 
   it("closes enrollment after 2 registrations, so a stolen enrollment token is useless afterward", async () => {
@@ -256,139 +261,40 @@ describe("router", () => {
     return reauthNonce;
   }
 
-  describe("MCP server (POST /console/mcp)", () => {
-    it("session-authenticated tools/list returns the AGENT_TOOLS allowlist, no key rotation or killswitch", async () => {
+  // The reauth gate itself, on the one route that still carries it after
+  // the six-stage overhaul removed MCP token issuance (which used to be
+  // this helper's only caller). CONSOLE_SPEC.md §2: flipping the killswitch
+  // is credential-equivalent and needs a fresh (<5min) WebAuthn assertion.
+  describe("step-up reauth (POST /console/killswitch)", () => {
+    it("rejects a killswitch flip carrying no reauth nonce", async () => {
       const cookie = await completeRegistrationAndLogin();
       const res = await handleApiRequest(
-        apiRequest("/console/mcp", { method: "POST", cookie, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) }),
-        deps,
-      );
-      expect(res?.status).toBe(200);
-      const body = (await res?.json()) as { result: { tools: { name: string }[] } };
-      const names = body.result.tools.map((t) => t.name);
-      expect(names).toContain("get_summary");
-      expect(names).not.toContain("rotate_key");
-    });
-
-    it("rejects a request with neither a session cookie nor a bearer token", async () => {
-      const res = await handleApiRequest(
-        apiRequest("/console/mcp", { method: "POST", body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) }),
+        apiRequest("/console/killswitch", { method: "POST", cookie, body: JSON.stringify({ enabled: false }) }),
         deps,
       );
       expect(res?.status).toBe(401);
+      expect(await res?.json()).toEqual({ error: "reauth_required" });
     });
 
-    it("rejects an unknown or revoked bearer token", async () => {
-      const res = await handleApiRequest(
-        apiRequest("/console/mcp", {
-          method: "POST",
-          headers: { authorization: "Bearer mcp_not-a-real-token" },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
-        }),
-        deps,
-      );
-      expect(res?.status).toBe(401);
-    });
-
-    it("a valid bearer token from POST /console/mcp-tokens authenticates an external client, and revoking it takes effect on the very next call", async () => {
+    it("accepts the flip with a fresh nonce, and refuses to reuse that nonce", async () => {
       const cookie = await completeRegistrationAndLogin();
       const nonce = await completeReauth(cookie);
-      const issueRes = await handleApiRequest(
-        apiRequest("/console/mcp-tokens", { method: "POST", cookie, headers: { "x-reauth-nonce": nonce }, body: JSON.stringify({ label: "Claude Desktop" }) }),
-        deps,
-      );
-      expect(issueRes?.status).toBe(201);
-      const { token, id } = (await issueRes?.json()) as { token: string; id: string };
 
-      const callRes = await handleApiRequest(
-        apiRequest("/console/mcp", {
+      const flip = (): Request =>
+        apiRequest("/console/killswitch", {
           method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_summary", arguments: {} } }),
-        }),
-        deps,
-      );
-      expect(callRes?.status).toBe(200);
-      const callBody = (await callRes?.json()) as { result: { isError: boolean } };
-      expect(callBody.result.isError).toBe(false);
+          cookie,
+          headers: { "x-reauth-nonce": nonce },
+          body: JSON.stringify({ enabled: false }),
+        });
 
-      const revokeRes = await handleApiRequest(apiRequest(`/console/mcp-tokens/${id}`, { method: "DELETE", cookie }), deps);
-      expect(revokeRes?.status).toBe(200);
+      const first = await handleApiRequest(flip(), deps);
+      expect(first?.status).toBe(200);
+      expect(await first?.json()).toEqual({ ok: true, enabled: false });
 
-      const secondCallRes = await handleApiRequest(
-        apiRequest("/console/mcp", {
-          method: "POST",
-          headers: { authorization: `Bearer ${token}` },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list" }),
-        }),
-        deps,
-      );
-      expect(secondCallRes?.status).toBe(401);
-    });
-
-    it("issuing an MCP token without a fresh reauth nonce is refused, same bar as key rotation", async () => {
-      const cookie = await completeRegistrationAndLogin();
-      const res = await handleApiRequest(apiRequest("/console/mcp-tokens", { method: "POST", cookie, body: JSON.stringify({ label: "x" }) }), deps);
-      expect(res?.status).toBe(401);
-    });
-  });
-
-  describe("Voice control (POST /console/voice/*)", () => {
-    it("transcribes uploaded audio via Groq Whisper and returns the transcript", async () => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async () => new Response(JSON.stringify({ text: "check the pipeline status" }), { status: 200 })),
-      );
-      const cookie = await completeRegistrationAndLogin();
-      const res = await handleApiRequest(
-        apiRequest("/console/voice/transcribe", { method: "POST", cookie, headers: { "content-type": "audio/webm" }, body: new Uint8Array([1, 2, 3]) }),
-        deps,
-      );
-      expect(res?.status).toBe(200);
-      expect(await res?.json()).toEqual({ transcript: "check the pipeline status" });
-      vi.unstubAllGlobals();
-    });
-
-    it("rejects an empty audio body", async () => {
-      const cookie = await completeRegistrationAndLogin();
-      const res = await handleApiRequest(apiRequest("/console/voice/transcribe", { method: "POST", cookie, body: new Uint8Array(0) }), deps);
-      expect(res?.status).toBe(400);
-    });
-
-    it("a voice turn dispatches tool calls through MCP, audited as actor 'mcp' — not 'agent', which is what the identical text-chat call would produce", async () => {
-      let callCount = 0;
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(async () => {
-          callCount += 1;
-          if (callCount === 1) {
-            return new Response(
-              JSON.stringify({
-                choices: [{ message: { content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "get_summary", arguments: "{}" } }] }, finish_reason: "tool_calls" }],
-              }),
-              { status: 200 },
-            );
-          }
-          return new Response(JSON.stringify({ choices: [{ message: { content: "Pipeline looks fine.", tool_calls: undefined }, finish_reason: "stop" }] }), { status: 200 });
-        }),
-      );
-
-      const cookie = await completeRegistrationAndLogin();
-      const res = await handleApiRequest(
-        apiRequest("/console/voice/turn", { method: "POST", cookie, body: JSON.stringify({ transcript: "what's the pipeline status?" }) }),
-        deps,
-      );
-      expect(res?.status).toBe(200);
-      const body = (await res?.json()) as { sessionId: string; finalMessage: string; toolCallsMade: string[] };
-      expect(body.toolCallsMade).toEqual(["get_summary"]);
-
-      const { auditLog } = await import("../../db/schema.ts");
-      const rows = await ctx.db.select().from(auditLog).all();
-      const row = rows.find((r) => r.action === "tool.get_summary");
-      expect(row?.actor).toBe("mcp");
-      expect(row?.subject).toBe(`session:${body.sessionId}`);
-
-      vi.unstubAllGlobals();
+      // Single-use: the same nonce must not authorize a second flip.
+      const second = await handleApiRequest(flip(), deps);
+      expect(second?.status).toBe(401);
     });
   });
 
@@ -446,9 +352,11 @@ describe("router", () => {
     expect(res?.headers.get("content-disposition")).toBe('attachment; filename="Ever-watched-a-movie-so-insane-exp1.mp4"');
   });
 
-  it("still treats a non-JSON GET of a console page as a page request", async () => {
-    // The exemption above must not become "every GET is an API call" — a
-    // browser opening /console/settings has to get the Astro page, not JSON.
+  it("still treats a non-JSON GET of an API path as a page request", async () => {
+    // The download exemption must not become "every GET is an API call".
+    // Nothing is served under /console/ any more (the six-stage overhaul
+    // collapsed every page into "/"), but the rule still has to hold: a
+    // browser navigation falls through to the static asset handler.
     const cookie = await completeRegistrationAndLogin();
     const res = await handleApiRequest(apiRequest("/console/settings", { cookie, headers: { accept: "text/html" } }), deps);
     expect(res).toBeNull();
@@ -461,7 +369,7 @@ describe("router", () => {
     const clearedCookie = logoutRes?.headers.get("set-cookie");
     expect(clearedCookie).toContain("Max-Age=0");
 
-    const res = await handleApiRequest(apiRequest("/console/summary", { cookie }), deps);
+    const res = await handleApiRequest(apiRequest("/console/exports", { cookie }), deps);
     // The session token itself is still cryptographically valid until its
     // 12h TTL elapses (this is a stateless signed cookie, not a server-side
     // session store) — logout's guarantee is that the *browser* forgets it
@@ -480,10 +388,10 @@ describe("router", () => {
     await new Vault(vaultKv, MASTER_KEY_B64).rotate("GROQ_API_KEY", plantedSecret);
 
     const routesToCheck: Request[] = [
-      apiRequest("/console/summary", { cookie }),
       apiRequest("/console/exports", { cookie }),
       apiRequest("/console/settings", { cookie }),
-      apiRequest("/console/chat/sessions", { cookie }),
+      apiRequest("/console/runs", { cookie }),
+      apiRequest("/console/run-plan", { cookie }),
     ];
     for (const request of routesToCheck) {
       const res = await handleApiRequest(request, deps);

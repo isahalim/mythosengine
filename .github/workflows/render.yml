@@ -1,9 +1,11 @@
 name: RENDER
 
-# Operator-triggered, not scheduled. Each invocation does exactly one signal
-# end-to-end (RESEARCH -> SCRIPT -> CRITIC -> FOOTAGE SELECT -> TTS -> ALIGN
-# -> RENDER -> AUDIT -> EXPORT), not a loop of three. ALIGN runs only on the
-# Gemini narration path; PLAN is not built yet (plan v2 §8 item 4).
+# Operator-triggered, not scheduled. One INVOCATION of render.ts does exactly
+# one signal end-to-end (RESEARCH -> SCRIPT -> CRITIC -> FOOTAGE SELECT ->
+# TTS -> ALIGN -> RENDER -> AUDIT -> EXPORT); this job invokes it `count`
+# times, which is how many videos the operator lit shards for in stage 2.
+# ALIGN runs only on the Gemini narration path; PLAN is not built yet
+# (plan v2 §8 item 4).
 #
 # The 3x/day cron was removed 2026-08-31. It was never the right shape for
 # this system and the self-hosted runner is what settled it: footage only
@@ -16,7 +18,24 @@ name: RENDER
 # what it makes. Dispatch is the honest trigger for work that needs a human
 # and their laptop both.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      # Handed down by POST /console/dispatch (src/server/console/dispatch.ts).
+      # The console records a `runs` row, hands its id here, and RENDER stamps
+      # every stage and script with it — so stage 5 is polling the same trace
+      # this job writes to. Before this input existed the two ends minted
+      # separate ids and the waiting screen never saw the run it had started.
+      #
+      # Empty on a hand-triggered run: RENDER then mints its own, which is
+      # the pre-console behaviour and still correct.
+      trace_id:
+        description: "Trace id to stamp every stage with. Leave empty to mint one."
+        required: false
+        default: ""
+      count:
+        description: "How many videos to render in this run (one signal each)."
+        required: false
+        default: "1"
 
 permissions:
   contents: read
@@ -30,16 +49,25 @@ concurrency:
 
 jobs:
   render:
-    # Same machine and label as FOOTAGE REFRESH. RENDER itself is not
-    # IP-gated — it makes no third-party video request — but it is pointless
-    # anywhere else: the operator is present for the run by design, and the
-    # clips it composites were sourced on this machine. Until the runner is
-    # registered (PROVISIONED.md) a dispatch queues rather than failing.
-    runs-on: [self-hosted, mythos-footage]
+    # The operator's laptop, the same machine FOOTAGE REFRESH runs on.
+    # RENDER itself is not IP-gated — it makes no third-party video request —
+    # but it is pointless anywhere else: the operator is present for the run
+    # by design, and the clips it composites were sourced on this machine.
+    #
+    # These are the labels the registered runner actually reports.
+    # `mythos-footage` was aspirational: no runner ever carried it, so every
+    # dispatch queued forever waiting for a machine that does not exist
+    # (found 2026-08-31, against the live runner listing). A dispatch made
+    # while the runner is offline still queues, correctly — it starts when
+    # the operator runs ./run.sh.
+    runs-on: [self-hosted, macOS, ARM64]
     # 15 was sized for a 47-second video on a GitHub-hosted runner. v2's
     # ceiling is 180s of narration plus a character composite, and a laptop
-    # is not a dedicated CI box.
-    timeout-minutes: 30
+    # is not a dedicated CI box — so 30 minutes per video, scaled by how
+    # many this run was asked for. A fixed ceiling large enough for six
+    # would let a hung single-video run hold the concurrency group for
+    # hours.
+    timeout-minutes: ${{ fromJSON(inputs.count || '1') * 30 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -87,9 +115,55 @@ jobs:
           fi
           ffmpeg -version | head -1 && ffprobe -version | head -1
 
+      # One invocation renders one signal end-to-end. The loop is here
+      # rather than inside render.ts so that stays true: each video gets a
+      # clean process, its own footage claim and its own run rows, and a
+      # video that fails takes only itself down.
+      #
+      # `continue` rather than `set -e`: the operator queued N stories, and
+      # losing stories 2 and 3 because story 1's CRITIC rejected a script is
+      # not what they asked for. Every failure is counted and the job still
+      # exits non-zero at the end, so a partly-failed run is never reported
+      # as green.
+      # Both inputs reach the shell through `env:` and are read as quoted
+      # variables, never interpolated into the script with `${{ }}`. A
+      # workflow input is untrusted text, and `${{ inputs.count }}` inline
+      # would let a crafted dispatch inject shell into a job that holds
+      # every pipeline credential.
+      #
+      # RENDER_COUNT is then range-checked rather than trusted: MAX_VIDEOS
+      # in src/app/glass/videoGlass.ts is 6 and run-plan.ts enforces the
+      # same ceiling, so anything outside 1..6 did not come from the
+      # console.
       - name: Run RENDER
-        run: npx tsx scripts/pipeline/render.ts
+        run: |
+          case "$RENDER_COUNT" in
+            1|2|3|4|5|6) ;;
+            *)
+              echo "::error::count must be 1-6 (got '$RENDER_COUNT')"
+              exit 1
+              ;;
+          esac
+          echo "Rendering $RENDER_COUNT video(s) for trace ${PIPELINE_TRACE_ID:-<minted per invocation>}"
+          FAILED=0
+          for i in $(seq 1 "$RENDER_COUNT"); do
+            echo "::group::video $i of $RENDER_COUNT"
+            if npx tsx scripts/pipeline/render.ts; then
+              echo "video $i succeeded"
+            else
+              echo "::error::video $i of $RENDER_COUNT failed — continuing with the rest of the run"
+              FAILED=$((FAILED + 1))
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$FAILED" -gt 0 ]; then
+            echo "::error::$FAILED of $RENDER_COUNT video(s) failed"
+            exit 1
+          fi
         env:
+          RENDER_COUNT: ${{ inputs.count }}
+          # Empty on a hand-triggered run, and render.ts mints its own then.
+          PIPELINE_TRACE_ID: ${{ inputs.trace_id }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}

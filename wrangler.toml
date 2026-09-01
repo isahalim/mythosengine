@@ -5,6 +5,7 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 TURNSTILE_SITE_KEY = "0x4AAAAAAEee0w7vUlvWpXFF"
+GITHUB_REPOSITORY = "isahalim/mythosengine"
 
 [assets]
 directory = "./dist"

@@ -129,3 +129,77 @@ export async function getRunMontage(
 
   return { traceId, configured: true, videos, failures };
 }
+
+/**
+ * One export's preview stills, keyed by export id.
+ *
+ * Stage 6 (docs/SIX_STAGES.md) asks the same question of Pexels that the
+ * forge does — "what is this video about?" — but for work that has already
+ * finished, so it cannot go through `getRunMontage`: an export outlives the
+ * run that made it, and the operator reaches past work without a trace id
+ * in hand.
+ *
+ * Same cache, same keys, same clips as the live montage
+ * (`clipsForKeyword`), so a video the operator watched being forged shows
+ * the identical stills when they come back to it, and costs no extra Pexels
+ * request to do so.
+ */
+interface ExportPreview {
+  exportId: string;
+  keywords: string[];
+  clips: MontageClip[];
+}
+
+export interface ExportPreviews {
+  configured: boolean;
+  exports: ExportPreview[];
+  failures: { keyword: string; error: string }[];
+}
+
+/**
+ * `GET /console/exports/previews`.
+ *
+ * `entries` is what the caller already listed — this deliberately does not
+ * re-read the export table, so the previews cannot describe a different set
+ * of exports than the ones on screen.
+ *
+ * **Previews, not footage**, exactly as above: nothing here writes to
+ * `footage_segments` and the stage that renders these keeps saying so
+ * (CLAUDE.md's footage constraint is about what reaches a render, and this
+ * never does).
+ */
+export async function getExportPreviews(
+  hotKv: KvLike,
+  vaultKv: VaultKv,
+  vaultMasterKey: string,
+  envFallbackApiKey: string | undefined,
+  entries: { id: string; keywords: string[] }[],
+): Promise<ExportPreviews> {
+  const driver = await createPexelsDriverFromVault(vaultKv, vaultMasterKey, envFallbackApiKey);
+  if (driver === null) return { configured: false, exports: [], failures: [] };
+
+  const failures: { keyword: string; error: string }[] = [];
+  const previews: ExportPreview[] = [];
+  const clipsByKeyword = new Map<string, MontageClip[]>();
+
+  for (const entry of entries) {
+    const keywords = entry.keywords.slice(0, KEYWORDS_PER_VIDEO);
+    const clips: MontageClip[] = [];
+
+    for (const keyword of keywords) {
+      const already = clipsByKeyword.get(keyword);
+      if (already) {
+        clips.push(...already);
+        continue;
+      }
+      const { clips: fetched, failure } = await clipsForKeyword(driver, hotKv, keyword);
+      clipsByKeyword.set(keyword, fetched);
+      clips.push(...fetched);
+      if (failure !== null) failures.push({ keyword, error: failure });
+    }
+
+    previews.push({ exportId: entry.id, keywords, clips });
+  }
+
+  return { configured: true, exports: previews, failures };
+}

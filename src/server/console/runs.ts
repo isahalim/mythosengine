@@ -72,18 +72,46 @@ export interface RunSummary {
 /** How many `runs` rows one listing reads. A RENDER invocation writes at most seven (one per stage in scripts/pipeline/render.ts), so this covers a comfortable few dozen runs. */
 const RUN_ROW_SCAN_LIMIT = 300;
 
+/**
+ * The console's dispatch record is not one of the run's stages, and folding
+ * it into the aggregate gets the answer wrong at both ends.
+ *
+ * Its own status carries exactly one fact — what happened to the
+ * `workflow_dispatch` POST (src/server/console/dispatch.ts):
+ *
+ *   queued      recorded, nothing was triggered (no credential)
+ *   succeeded   GitHub accepted the dispatch; the run has not reported yet
+ *   failed      the dispatch attempt itself failed
+ *   skipped     the killswitch was off
+ *
+ * Read as a stage instead, a `succeeded` dispatch made a run with no videos
+ * look finished, and leaving it `running` would have made every completed
+ * run look like it was still working forever. So the pipeline's own rows
+ * decide the run's status, and the dispatch row only speaks when there are
+ * none of them yet.
+ */
 function statusOf(stageRows: RunStage[]): RunStatus {
-  // A trace whose only row is the console's own dispatch record has not run
-  // anywhere: dispatchRun writes the row and says outright that it could not
-  // trigger the workflow (src/server/console/dispatch.ts). Reporting that as
-  // "queued" would leave the waiting screen spinning on a run that is never
-  // coming — the fabricated-status failure db/runs.ts's reaper exists to
-  // stop, arriving from the other end.
-  if (stageRows.length === 1 && stageRows[0].stage === DISPATCH_STAGE && stageRows[0].status === "queued") return "not_triggered";
+  const pipeline = stageRows.filter((row) => row.stage !== DISPATCH_STAGE);
+  const dispatch = stageRows.find((row) => row.stage === DISPATCH_STAGE) ?? null;
 
-  if (stageRows.some((row) => row.status === "running")) return "running";
-  if (stageRows.some((row) => row.status === "failed")) return "failed";
-  if (stageRows.some((row) => row.status === "queued")) return "queued";
+  if (pipeline.length === 0) {
+    // Nothing has reported from the runner. What that means depends
+    // entirely on whether a workflow was actually started — reporting a
+    // never-triggered run as "queued" would leave the waiting screen
+    // spinning on a run that is never coming, which is the
+    // fabricated-status failure db/runs.ts's reaper exists to stop,
+    // arriving from the other end.
+    if (dispatch === null) return "queued";
+    if (dispatch.status === "queued") return "not_triggered";
+    if (dispatch.status === "failed") return "failed";
+    // Dispatched, and genuinely waiting: a run can sit in GitHub's queue
+    // for as long as the self-hosted runner is offline.
+    return "queued";
+  }
+
+  if (pipeline.some((row) => row.status === "running")) return "running";
+  if (pipeline.some((row) => row.status === "failed")) return "failed";
+  if (pipeline.some((row) => row.status === "queued")) return "queued";
   return "succeeded";
 }
 

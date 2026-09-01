@@ -1,107 +1,81 @@
 /*
-  Design tokens — MythosEngine "wet slate" palette. See ARCHITECTURE.md §8.
+  Design tokens — Mythos Engine, "shatter into reality."
+
+  Rewritten 2026-08-31 for the six-stage overhaul (operator direction, three
+  design boards). The product is no longer a dark bento console: it is one
+  white surface with soft rainbow lava-lamp spheres drifting behind it and
+  real shattered glass in front. Everything below serves that.
+
   This is the only file allowed to declare raw hex values (CLAUDE.md, Stack).
 */
 :root {
-  /* True black ground (2026-08-28, docs/DECISIONS.md) — was a deep
-     blue-black (#10131a); the operator asked for black specifically so
-     WebGL/canvas elements (the Liquid Metal shader, the Siri Wave) read as
-     native to the page instead of sitting in a visibly lighter box. --slate
-     matches the Siri Wave component's own reference demo background
-     (#0a0a0c) for the same reason — one continuous black, not two
-     near-black tones fighting each other at a card edge. */
-  --ink: #000000;
-  --slate: #0a0a0c; /* panel / card, near-black */
-  --mercury: #c9d2da; /* the metal; primary text color */
-  --oxide: #2f6b57; /* oxidized copper-green — state + provenance ONLY */
-  --sodium: #e8944a; /* warm amber CTA */
-  --bone: #f2efe9; /* rare high-contrast surface for pull-quotes */
+  /* ---- ground ------------------------------------------------------- */
+  /* White, flat, and total. The spheres supply every colour on the page;
+     the ground's whole job is to let them read as light rather than paint. */
+  --ink: #ffffff; /* page ground */
+  --slate: #f5f5f8; /* panel — a faint cool cast, not a flat grey */
+  --mercury: #15151b; /* primary text, near-black with a violet bias */
+  --bone: #55555f; /* secondary text / captions — dark enough to clear 4.5:1 over a veiled sphere, measured 2026-08-31 */
+  --hairline: #e4e4ec; /* the only border colour */
 
-  /* Console-only glass/gradient accents (CONSOLE_SPEC.md §4 bento dashboard).
-     Restrained, not a loud rainbow: a third and fourth hue alongside the
-     existing oxide/sodium, used only for live-status glow and thin
-     gradient borders — never body text or large fills. */
-  --violet: #7c6fdb; /* live/active state glow, third gradient stop */
-  --rose: #d9707a; /* flagged/attention accent, distinct from a hard error red */
-  --glass-bg: color-mix(in srgb, var(--slate) 55%, transparent);
-  --glass-border: color-mix(in srgb, var(--mercury) 14%, transparent);
-  --gradient-accent: linear-gradient(135deg, var(--oxide), var(--sodium) 55%, var(--violet));
+  /* ---- state -------------------------------------------------------- */
+  --oxide: #0d6b4f; /* success / provenance-verified */
+  --sodium: #a34e08; /* warning / attention */
+  --rose: #b62f40; /* failure */
+  --violet: #5b39e0; /* live / in-flight */
+
+  /* ---- the spheres --------------------------------------------------
+     Board 1: "soft gradient rainbow spheres actually MOVING around the
+     centre like lava lamps ... use other colors, rotate, collide, merge,
+     combine colors."
+
+     Saturated rather than pastel, because Spheres.tsx composites them with
+     `multiply` over white: multiply DARKENS toward the product of the two
+     colours, so two overlapping circles genuinely combine (blue over yellow
+     really does resolve green) instead of washing out the way `screen` or
+     plain alpha would. Pastels multiplied together stay pastel and the
+     merge stops reading. The blur in the shader is what makes them soft. */
+  --orb-1: #ff5f8d; /* rose */
+  --orb-2: #ffc247; /* amber */
+  --orb-3: #35d0c7; /* teal */
+  --orb-4: #8b6cff; /* violet */
+  --orb-5: #4aa8ff; /* cyan-blue */
+  --orb-6: #ff8a4c; /* coral */
+
+  /* ---- topic colours -------------------------------------------------
+     Board 2: "new shard with specific color based on topic ... = an
+     associated color for the new added shard." One hue per topic in
+     src/app/topics.ts, which reads these off computed style rather than
+     repeating the hex — same discipline the old palette.ts used. */
+  --topic-viral: #ff4d6d;
+  --topic-politics: #4a7cff;
+  --topic-tech: #23c4b8;
+  --topic-science: #34b866;
+  --topic-ai: #8b5cf6;
+  --topic-philosophy: #f0a020;
+  --topic-concept: #ec4899;
+
+  /* ---- glass --------------------------------------------------------
+     Over a white ground the panel has to TINT rather than darken: the
+     spheres drift behind it and the panel's job is to soften them, not
+     black them out. 88% keeps every foreground above 4.5:1 even when the
+     darkest sphere is passing directly underneath — measured, not
+     eyeballed, and carried forward from the previous palette where the
+     same composite was worked out. */
+  --glass-bg: color-mix(in srgb, var(--slate) 88%, transparent);
+  --glass-border: color-mix(in srgb, var(--mercury) 10%, transparent);
+
+  /* ---- elevation ----------------------------------------------------
+     Board 1: "Make all buttons have shadows, and pop effect on click."
+     Three steps, all neutral-cool rather than pure black, so a shadow over
+     a passing sphere reads as depth instead of as dirt. */
+  --shadow-1: 0 1px 2px rgba(20, 20, 40, 0.06), 0 2px 8px rgba(20, 20, 40, 0.06);
+  --shadow-2: 0 2px 4px rgba(20, 20, 40, 0.07), 0 8px 24px rgba(20, 20, 40, 0.1);
+  --shadow-3: 0 4px 8px rgba(20, 20, 40, 0.08), 0 18px 48px rgba(20, 20, 40, 0.14);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
   --font-display: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif;
   --font-body: "Public Sans", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
-}
-
-/*
-  Console surface — white (2026-08-31, operator direction; supersedes the
-  black ground for /console/* only, see ARCHITECTURE.md §8).
-
-  The token *names* below are roles, not colours: --ink is "page ground",
-  --slate is "panel", --mercury is "primary text". Redefining those roles
-  here is what lets the whole console flip surface without touching a single
-  component — `bg-ink text-mercury` keeps meaning "ground / primary text" and
-  simply resolves light instead of dark.
-
-  This works because :root IS <html>, and ConsoleLayout.astro stamps
-  data-surface="console" on that same element. `--color-ink: var(--ink)` in
-  global.css's @theme is declared on :root too, so it substitutes the winning
-  --ink for that element. Higher specificity here (0,2,0 vs 0,1,0) wins.
-
-  The public homepage keeps the black :root palette above, untouched.
-
-  Every foreground below clears 4.5:1 against BOTH --ink (#ffffff) and
-  --slate (#f4f4f8) — the panel is the harder case, so it is the one the
-  values were picked against. Measured, not eyeballed:
-    mercury 16.4  ·  oxide 5.9  ·  sodium 5.2  ·  violet 6.2  ·  rose 5.5
-*/
-:root[data-surface="console"] {
-  --ink: #ffffff; /* the workspace the glass disperses to reveal */
-  --slate: #f4f4f8; /* panel — a faint cool cast, not a flat grey */
-  --mercury: #16161c; /* primary text, near-black with a violet bias */
-  --oxide: #0d6b4f; /* state + provenance ONLY — darkened for white */
-  --sodium: #a34e08; /* warm CTA — darkened for white */
-  --bone: #16161c; /* inverts: the rare high-contrast surface is dark here */
-
-  --violet: #5b39e0;
-  --rose: #b62f40;
-
-  /* Glass over a white ground needs to tint rather than darken: the
-     lava-lamp spheres drift behind it and the panel's job is to soften
-     them, not to black them out.
-
-     88%, not the 62% this started at, and the number is a contrast result
-     rather than a taste call. Once the spheres actually drift behind the
-     panels (2026-08-31), the panel is no longer a flat #f4f4f8 — it is
-     #f4f4f8 composited over whatever orb is passing under it, and the
-     foreground ratios below were all measured against the flat version.
-     Worst case is --sodium over --orb-4, the darkest of the four:
-
-       panel 62% → 4.03:1  FAIL
-       panel 80% → 4.58:1  pass, no margin
-       panel 88% → 4.84:1  pass
-
-     At 88% every foreground still clears 4.5:1 in the worst case (mercury
-     15.2 · oxide 5.5 · sodium 4.8 · violet 5.7 · rose 5.1), and the orb
-     still reads through the blur as a colour cast — which is the whole
-     point of putting it back there. Below 80% the panel stops being
-     legible and starts being a tint. */
-  --glass-bg: color-mix(in srgb, var(--slate) 88%, transparent);
-  --glass-border: color-mix(in srgb, var(--mercury) 12%, transparent);
-
-  /* The lava-lamp spheres that drift through the workspace, and that the
-     shattered-glass hero refracts. Rainbow is deliberate and is an exception
-     to the restrained oxide/sodium/violet system above — the operator asked
-     for rainbow spheres specifically, the same way they asked for a rainbow
-     Siri orb (see .siri-orb in global.css).
-
-     Pastels, not saturated hues: they are averaged together over a white
-     ground, so anything stronger stops reading as light through glass and
-     starts reading as paint. Read off computed style by
-     src/console/lib/palette.ts and handed to both shaders that draw them —
-     workspace-orbs.ts (the ground) and shattered-glass.ts (which refracts
-     that same ground) — rather than repeated in either. */
-  --orb-1: #ff9ec4; /* rose */
-  --orb-2: #ffd08a; /* amber */
-  --orb-3: #7fe3e0; /* teal */
-  --orb-4: #b39dff; /* violet */
 }
