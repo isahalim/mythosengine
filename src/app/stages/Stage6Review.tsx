@@ -179,7 +179,10 @@ export function Stage6Review({ onRestart, onUnauthorized }: Stage6Props) {
               {/* Whole glass. The fracture closed — and the fragments are
                   masking this video's own keyword stills. */}
               <div className="float-group float-group--inline mx-auto w-2/3" style={driftStyle(i)}>
-                <ForgePane fracture={0} glow="var(--oxide)" clips={clipsByExport[item.id] ?? []} working={false} />
+                {/* `variant={i}`: each card in the grid is broken along a
+                    different cut, so a row of finished videos reads as
+                    several panes rather than one pane printed three times. */}
+                <ForgePane fracture={0} glow="var(--oxide)" clips={clipsByExport[item.id] ?? []} working={false} variant={i} />
               </div>
 
               <div>

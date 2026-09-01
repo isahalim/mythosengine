@@ -382,6 +382,18 @@
   transition: opacity 1.15s cubic-bezier(0.45, 0, 0.55, 1) 0.14s;
 }
 
+/* A reveal that finished, stays (operator direction, 2026-09-01). The
+   class is written by ForgePane on the fade's own transitionend, so it
+   marks a fragment the operator held the cursor on long enough to fully
+   uncover — not one they passed over. Declared after the two rules above
+   and at the same specificity as `.forge-dream`, so it beats the resting
+   `opacity: 0` on source order while still agreeing with `.shard--hot`
+   about the value, which is what keeps a kept fragment from re-animating
+   every time the cursor returns to it. */
+.forge-dream--kept {
+  opacity: 0.82;
+}
+
 .forge-crack path {
   fill: none;
   vector-effect: non-scaling-stroke;
@@ -422,9 +434,16 @@
   .shard,
   .shard-spec,
   .shard-tint,
-  .forge-dream,
   .forge-crack {
     transition: none;
+  }
+  /* Not `none`, unlike its neighbours above: the reveal latches on this
+     transition's own `transitionend`, and a transition that never runs
+     never ends — `none` would make the reduced-motion viewer the only one
+     whose uncovered fragments never stay uncovered. 10ms is below the
+     threshold of an animation and still fires the event. */
+  .forge-dream {
+    transition: opacity 0.01s linear;
   }
   .pane-cracks,
   .pane-title {

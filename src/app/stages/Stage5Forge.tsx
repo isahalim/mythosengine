@@ -180,7 +180,9 @@ export function Stage5Forge({ traceId, videos, dispatchNote, onDone, onUnauthori
                     } as CSSProperties
                   }
                 >
-                  <ForgePane fracture={fractureOf(video)} glow={hue} clips={clipsByScript[video.scriptId] ?? []} working={running} />
+                  {/* Its own cut, so the videos in a run are visibly
+                      different panes rather than one repeated. */}
+                  <ForgePane fracture={fractureOf(video)} glow={hue} clips={clipsByScript[video.scriptId] ?? []} working={running} variant={i} />
                   <p className="mt-2 line-clamp-2 text-center text-[0.66rem] leading-snug text-bone">{video.hook}</p>
                   {/* The paperwork beside the glass: what the agents planned
                       to find, and what they have actually found so far. */}

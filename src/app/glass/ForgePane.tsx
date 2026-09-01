@@ -38,20 +38,13 @@
  * exists) and nothing else. A pane at half fracture means exactly two of
  * those four things are true, not "about halfway".
  */
-import { useMemo, useRef, type CSSProperties } from "react";
+import { useMemo, useRef, useState, type CSSProperties } from "react";
+import { forgeLayout } from "./forge-layouts.ts";
 import { CRACKS, MOBILE, preloadAtlas } from "./geometry.ts";
 import { Shard } from "./Shard.tsx";
 import { useShardField, type Placement } from "./useShardField.ts";
 import { useAtlasReady } from "../useAtlasReady.ts";
 import type { MontageClip } from "../types.ts";
-
-/**
- * The fragments that tile the card. Taken from the portrait cut, whose
- * pieces already tessellate a 9:16 pane — which is exactly the aspect a
- * Short is, so the card is the video's own shape rather than an arbitrary
- * rectangle drawn around it.
- */
-const FORGE_PIECES = ["mobile-02a", "mobile-01b", "mobile-05b", "mobile-04a", "mobile-03b", "mobile-06a", "mobile-07b", "mobile-04c"];
 
 interface ForgePaneProps {
   /** 0 = whole, 1 = fully fractured. Derived from observed milestones by the caller. */
@@ -60,15 +53,39 @@ interface ForgePaneProps {
   clips: MontageClip[];
   /** Pulse the cracks while the pipeline is actually working on this one. */
   working: boolean;
+  /**
+   * Which cut this card is broken along. Pass the card's own index so a row
+   * of them is a row of different panes; it wraps, so any number is valid.
+   * It must be STABLE for a given card — a card that re-cuts itself on a
+   * re-render is a card that shatters again while the operator is reading
+   * it, and any reveals they had uncovered would go with it.
+   */
+  variant?: number;
 }
 
-export function ForgePane({ fracture, glow, clips, working }: ForgePaneProps) {
+export function ForgePane({ fracture, glow, clips, working, variant = 0 }: ForgePaneProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const ready = useAtlasReady("mobile", preloadAtlas);
 
+  /**
+   * Fragments whose reveal has fully arrived, and therefore stays
+   * (operator direction, 2026-09-01). Keyed by placement, so it is per
+   * fragment and never per card: uncovering one piece uncovers exactly
+   * that piece, permanently, and its neighbours are still glass.
+   *
+   * A *completed* fade is the condition, which is why this is driven by
+   * the transition's own end rather than by a timer or by pointerleave.
+   * The operator who passes over a fragment and moves on has not chosen to
+   * uncover it and it fades back; the one who rests on it until the image
+   * is fully up has, and it keeps.
+   */
+  const [kept, setKept] = useState<ReadonlySet<string>>(() => new Set());
+
+  const pieces = forgeLayout(variant);
+
   const placements = useMemo<Placement[]>(
     () =>
-      FORGE_PIECES.map((id, i) => {
+      pieces.map((id, i) => {
         const piece = MOBILE.find((p) => p.id === id);
         if (piece === undefined) throw new Error(`unknown mobile piece: ${id}`);
         return {
@@ -85,7 +102,7 @@ export function ForgePane({ fracture, glow, clips, working }: ForgePaneProps) {
           z: 10 + i,
         };
       }),
-    [],
+    [pieces],
   );
 
   useShardField(rootRef, placements, { ready, hoverLift: 46 });
@@ -126,9 +143,22 @@ export function ForgePane({ fracture, glow, clips, working }: ForgePaneProps) {
                     key={clip.id}
                     src={clip.thumbnailUrl}
                     alt=""
-                    className="forge-dream"
+                    className={`forge-dream ${kept.has(p.key) ? "forge-dream--kept" : ""}`}
                     loading="lazy"
                     decoding="async"
+                    // The latch. `transitionend` fires for the fade OUT as
+                    // well, and at that moment the fragment is at zero and
+                    // nothing should be kept — so the test is not "a
+                    // transition finished" but "a transition finished while
+                    // this fragment was still under the cursor", which only
+                    // a completed reveal satisfies. An interrupted one ends
+                    // its life in the fade-out's own transitionend, cold.
+                    onTransitionEnd={(e) => {
+                      if (e.propertyName !== "opacity") return;
+                      const shard = e.currentTarget.closest("[data-shard]");
+                      if (shard === null || !shard.classList.contains("shard--hot")) return;
+                      setKept((prev) => (prev.has(p.key) ? prev : new Set(prev).add(p.key)));
+                    }}
                     // A still that will not load is hidden rather than left
                     // as the browser's broken-image glyph inside the glass.
                     // This is presentation, not a swallowed error: the
