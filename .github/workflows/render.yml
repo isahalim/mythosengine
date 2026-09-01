@@ -63,11 +63,16 @@ jobs:
     runs-on: [self-hosted, macOS, ARM64]
     # 15 was sized for a 47-second video on a GitHub-hosted runner. v2's
     # ceiling is 180s of narration plus a character composite, and a laptop
-    # is not a dedicated CI box — so 30 minutes per video, scaled by how
-    # many this run was asked for. A fixed ceiling large enough for six
-    # would let a hung single-video run hold the concurrency group for
-    # hours.
-    timeout-minutes: ${{ fromJSON(inputs.count || '1') * 30 }}
+    # is not a dedicated CI box, so 30 minutes per video is the working
+    # figure — and `count` can be 6.
+    #
+    # Static, not `fromJSON(inputs.count) * 30`. That expression is not
+    # accepted here: GitHub failed to parse the whole file and reported a
+    # run with zero jobs whose name was the file path rather than RENDER
+    # (2026-08-31). A job-level timeout is resolved before the dispatch
+    # inputs are in scope, so the ceiling has to cover the largest run.
+    # The per-video guard is inside the loop instead.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -145,10 +150,25 @@ jobs:
               ;;
           esac
           echo "Rendering $RENDER_COUNT video(s) for trace ${PIPELINE_TRACE_ID:-<minted per invocation>}"
+
+          # 30 minutes per video, enforced per invocation — the per-video
+          # ceiling the job-level timeout cannot express, so one hung video
+          # cannot eat the whole run's 180.
+          #
+          # `timeout` is GNU coreutils and is NOT on a stock macOS, which is
+          # what this runner is; `gtimeout` is there only if the operator
+          # installed coreutils. So it is resolved, not assumed — and when
+          # neither exists the render still runs, unguarded, because losing
+          # the run to a missing convenience would be the worse trade. The
+          # job timeout is still the backstop.
+          if command -v timeout >/dev/null; then GUARD="timeout 1800"
+          elif command -v gtimeout >/dev/null; then GUARD="gtimeout 1800"
+          else GUARD=""; echo "::warning::no timeout/gtimeout on this runner - per-video guard is off, the 180-minute job timeout is the only ceiling"; fi
+
           FAILED=0
           for i in $(seq 1 "$RENDER_COUNT"); do
             echo "::group::video $i of $RENDER_COUNT"
-            if npx tsx scripts/pipeline/render.ts; then
+            if $GUARD npx tsx scripts/pipeline/render.ts; then
               echo "video $i succeeded"
             else
               echo "::error::video $i of $RENDER_COUNT failed — continuing with the rest of the run"
