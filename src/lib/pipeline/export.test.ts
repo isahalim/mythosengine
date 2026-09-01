@@ -151,4 +151,20 @@ describe("runExport", () => {
     expect(parsed.footage.segmentId).toBe("seg1");
     expect(parsed.auditResult.flags).toEqual([]);
   });
+
+  it("records the narration settings that were actually used, including a driver that has no rate", async () => {
+    // The audit package's one job is to be true. On the Gemini path this
+    // block used to carry the Edge voice and rate the directive selected
+    // before the driver was chosen, so it named a voice that never spoke
+    // (observed in the first successful live run, 2026-09-01). Null reads as
+    // "does not apply to this driver"; "+0%" would read as a chosen setting.
+    const bytes = new Uint8Array([1, 2, 3, 4]) as Uint8Array<ArrayBuffer>;
+    const input = { ...packageInput("ren1"), ttsSettings: { voice: "Kore", rate: null, pitch: null, volume: null } };
+
+    await runExport(ctx.db, renderFilePath, bytes, input, { export: fakeExportDriver("succeed") });
+
+    const rows = ctx.db.select().from(exportsTable).all();
+    const parsed = JSON.parse(rows[0]?.auditJson ?? "") as { ttsSettings: unknown };
+    expect(parsed.ttsSettings).toEqual({ voice: "Kore", rate: null, pitch: null, volume: null });
+  });
 });

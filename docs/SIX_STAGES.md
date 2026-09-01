@@ -243,6 +243,41 @@ One consequence worth stating plainly: **the runner is the operator's
 laptop**, and it is online only while `./run.sh` is running. A dispatch made
 while it is offline queues, correctly, and starts when they bring it up.
 
+## Revision — 2026-09-01, the first video the console actually made
+
+The run works end to end. `POST /console/dispatch` starts `render.yml` on the
+operator's laptop, RENDER stamps the console's trace, and stage 6 lists a
+real reviewable MP4. Four dispatches got there, and each failure was a real
+defect rather than a flake:
+
+1. **ALIGN.** Groq's transcription API answered `file must be one of the
+   following types: [... wav ...]` for an `audio/wav` file. It reads the
+   format from the uploaded *filename*, and the driver named every blob
+   `"audio"` with no extension. Only ever reachable on the Gemini narration
+   path, which is why it survived until `GEMINI_API_KEY` reached a runner.
+2. **The encoder had no `ass` filter.** Homebrew's plain `ffmpeg` is not
+   built with libass; `ffmpeg-full`, installed beside it, is. The workflow
+   took whichever came first on PATH. It now probes for the filter. ffmpeg's
+   error names neither libass nor the filter — it falls back to reading
+   `ass=<path>` as an option assignment and says `No option name near`.
+3. **The host was in the repo root.** `right_person.gif` belongs at
+   `assets/character/`, so renders had been silently producing v1's look —
+   footage and captions, no host.
+4. **EXPORT.** A 128s render is ~42 MB and KV caps a value at 25 MiB, so the
+   whole video was made and then thrown away. Blobs moved to R2 (operator
+   direction, which lifts CLAUDE.md's "no R2"), written through the Worker's
+   binding so the pipeline needs no R2 credential of its own.
+
+One more defect surfaced in the audit package of the first *successful* run:
+`ttsSettings` recorded the Edge voice the directive selected before the
+driver was chosen, so a Gemini render named a voice that never spoke.
+`auditResult.narration` had it right all along. §9's phrase is "the TTS
+settings actually used", and now both fields mean it.
+
+The first export: 117.9s, 1080x1920 h264/aac, 59.8 MB, `ready_for_review`,
+narrated by Kore with the host composited and captions burned, grounded with
+one citation — and 59.8 MB is more than twice what KV could ever have held.
+
 ## Running the whole pipeline locally
 
 `PIPELINE_LOCAL=1` swaps D1-over-HTTP and KV-over-HTTP for a SQLite file

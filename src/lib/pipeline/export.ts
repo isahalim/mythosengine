@@ -24,11 +24,29 @@ interface CriticVerdict {
   reason: string;
 }
 
+/**
+ * The narration settings **actually used** — which is the phrase CLAUDE.md's
+ * NEVER block and ARCHITECTURE.md §9 both use, and it has to be literally
+ * true.
+ *
+ * It was not. These were filled in from the Edge voice and rate the
+ * directive *selected*, before `selectTtsDrivers` decided whether the
+ * narration would be upgraded to Gemini — so on every Gemini render the
+ * audit package named a voice that never spoke (`en-US-GuyNeural` beside a
+ * render row and an `auditResult.narration` both saying `Kore`, observed in
+ * the first successful live run, 2026-09-01). A reviewer checking the one
+ * field that claims to record what happened would have been misled by it.
+ *
+ * `rate`, `pitch` and `volume` are nullable because Gemini takes a style
+ * direction rather than SSML-style prosody controls: null reads as "does not
+ * apply to this driver", where `"+0%"` would read as a setting that was
+ * chosen. `auditResult.narration` carries the style direction itself.
+ */
 interface TtsSettingsUsed {
   voice: string;
-  rate: string;
-  pitch: string;
-  volume: string;
+  rate: string | null;
+  pitch: string | null;
+  volume: string | null;
 }
 
 export interface ExportPackageInput {

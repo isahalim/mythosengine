@@ -44,7 +44,7 @@ does not reach GitHub Actions.
 
 | Where | Set by | Read by |
 |---|---|---|
-| Deployed Worker | `npx wrangler secret put X` | the live Worker: stage 6's preview stills, the console's dispatch |
+| Deployed Worker | `npx wrangler secret put X` | the live Worker: stage 6's preview stills, the console's dispatch, the export blob store |
 | `wrangler dev` | a line in `.dev.vars` (gitignored) | the same code, locally — stage 6 says "no Pexels key is configured" without it |
 | GitHub Actions | repo → Settings → Secrets → Actions | the pipeline: `render.ts`'s Gemini narration path |
 | `.env.local` | a line in `.env.local` (gitignored) | `PIPELINE_LOCAL=1` pipeline runs from a terminal |
@@ -70,7 +70,9 @@ These are new requirements from the pivot and do not exist yet. Do not invent pl
 
 `CONSOLE_ENROLLMENT_TOKEN` is single-use and burns after the second passkey is registered. If Phase 9 needs a fresh one, ask the operator to generate it — do not do it yourself.
 
-The KV namespace provisioned in Phase 8 (Task 8.2) now also stores export blobs (rendered MP4s, 3-day TTL), not just hot JSON/rate-limit counters/the key vault — no separate namespace needed, but size this into the 1GB free-tier ceiling when checking headroom.
+**Export blobs moved to R2 on 2026-08-31** (bucket `mythosengine-exports`, created via the `cloudflare-bindings` MCP). KV holds hot JSON, rate-limit counters and the key vault, and no longer holds video. The move was forced, not preferred: KV caps one value at 25 MiB, and a real 1080x1920 render is 42–60 MB, so EXPORT failed with `10024 content size ... exceeds maximum allowed size of 27MiB` after the entire video had already been made. Fitting a 180s Short into one KV value would have meant ~1.1 Mbps.
+
+R2 usage sits well inside the free tier (10 GB-month, 1M class-A ops): ~60 MB per export, three a day, three-day window, so roughly 500 MB peak. **R2 has no per-object TTL**, unlike KV, and this account's token cannot set a bucket lifecycle rule — so `db/exports-reap.ts` sweeps expired rows and frees their blobs at the top of every RENDER. Enabling R2 itself was a one-time operator action in the dashboard (it requires a payment method even on the free tier); the API returns `10042 Please enable R2 through the Cloudflare Dashboard` until then.
 
 ## GitHub Actions secrets
 
@@ -90,7 +92,15 @@ Account ▸ Workers Scripts      ▸ Edit
 Account ▸ Workers KV Storage   ▸ Edit
 Account ▸ D1                   ▸ Edit
 Account ▸ Turnstile            ▸ Edit
+Account ▸ Workers R2 Storage   ▸ Edit      (added 2026-08-31)
 ```
+
+R2 was added because **`wrangler deploy` validates an R2 binding against the
+API before it uploads** — a deploy with `[[r2_buckets]]` in `wrangler.toml`
+fails `Authentication error [code: 10000]` without it, even though the
+binding works fine at runtime. `wrangler deploy --dry-run` does *not* catch
+this: it never calls the API. The pipeline runner still needs no R2
+permission of its own; it writes through the Worker.
 
 `Zone ▸ Zone ▸ Edit` is **not** granted. If a command fails with 403 or error 9109, report the exact permission required and stop.
 

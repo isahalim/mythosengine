@@ -410,7 +410,12 @@ async function main(): Promise<void> {
         script: { hook: script.hook, body: script.body, debateQuestion: script.debateQuestion },
         critic: { originalityScore: critic.originalityScore, policyFlags: critic.policyFlags, verdict: critic.verdict, reason: critic.reason },
         footage,
-        ttsSettings: { voice, rate, pitch: "+0Hz", volume: "+0%" },
+        // What actually spoke, not what was selected before the driver was
+        // chosen — the same source `auditResult.narration` reads from.
+        ttsSettings:
+          tts.driver === "gemini-tts"
+            ? { voice: HOST_GEMINI_VOICE, rate: null, pitch: null, volume: null }
+            : { voice, rate, pitch: "+0Hz", volume: "+0%" },
         auditResult,
         suggestedTitle: script.hook.slice(0, 100),
         suggestedDescription: script.body.slice(0, 500),

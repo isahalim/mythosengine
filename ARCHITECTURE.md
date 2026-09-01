@@ -716,7 +716,7 @@ Output is persisted to `research_briefs` (§4) and travels into the export's
 | `POST /console/scripts/:id/approve` | approve a `pending_approval` script | session |
 | `GET /console/exports` | list export packages, filterable by status | session |
 | `GET /console/exports/previews` | Pexels **preview** stills for every live export's script keywords — stage 6's sneak peeks. Shares `/runs/:traceId/montage`'s per-keyword day-long KV cache. Never footage for the render | session |
-| `GET /console/exports/:id/download` | stream the rendered MP4 from KV | session |
+| `GET /console/exports/:id/download` | stream the rendered MP4 from R2 (or from KV for rows written before 2026-08-31 — the storage key says which) | session |
 | `POST /console/exports/:id/mark-reviewed` | mark an export reviewed | session |
 | `POST /console/exports/:id/discard` | discard an export early (frees the KV blob before TTL) | session |
 | `GET /console/settings` | current pipeline settings (voice pool, rate, focus games, source weighting, diversity mode) | session |

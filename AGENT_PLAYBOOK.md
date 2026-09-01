@@ -520,11 +520,22 @@ it. Both workflow inputs reach the shell through `env:`, never inline
 `count` is range-checked against the same 1..6 ceiling `run-plan.ts`
 enforces.
 
-**Gate:** `pnpm verify` green — met. A dispatch from the console starting a
-real GitHub Actions run that exports a reviewable video — **not yet met**,
-and it is now blocked on nothing but the operator bringing the runner online
-(`./run.sh`) and pressing the button. The self-hosted runner is their
-laptop, so this is a supervised action by construction.
+**Gate: met, 2026-09-01.** A dispatch started a real GitHub Actions run on
+the operator's laptop that produced a reviewable video — Actions run
+`33473845534`, trace `7dd9d954`: 117.9s, 1080x1920 h264/aac, 59.8 MB,
+`ready_for_review`, host composited, captions burned, one research citation,
+complete audit package. This also closes Phase 6's and Phase 8.5's gates,
+which had been open since they were written for want of anything that could
+run them.
+
+Four dispatches were needed, and all four failures were real defects:
+Groq reads transcription format from the *filename* (ALIGN); the runner's
+Homebrew ffmpeg has no libass, and ffmpeg's error for that names neither
+(RENDER); the host GIF was in the repo root, so renders had been silently
+producing v1's look; and KV's 25 MiB value cap cannot hold a 1080x1920 Short,
+which moved export blobs to R2. A fifth surfaced in the first *successful*
+run's audit package — `ttsSettings` named the Edge voice selected before the
+driver was chosen, so a Gemini render recorded a voice that never spoke.
 
 ---
 
