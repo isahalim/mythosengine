@@ -14,6 +14,49 @@ function isGroqTranscriptionResponse(value: unknown): value is GroqTranscription
   return typeof value === "object" && value !== null;
 }
 
+/**
+ * The filename extension Groq reads the audio format from.
+ *
+ * This is the whole reason this map exists, and it is not obvious: Groq (and
+ * the OpenAI-compatible transcription API it mirrors) decides the format
+ * from the **uploaded filename**, not from the multipart part's
+ * Content-Type. Sending a perfectly good `audio/wav` blob under the name
+ * "audio" is rejected with
+ *
+ *   file must be one of the following types: [flac mp3 mp4 mpeg mpga m4a ogg opus wav webm]
+ *
+ * which reads as "your format is unsupported" and means "I could not tell
+ * what your format is". That failure took the first live RENDER on the
+ * Gemini narration path (2026-08-31, run 33469903139) at ALIGN, after
+ * RESEARCH, SCRIPT, CRITIC, FOOTAGE SELECT and TTS had all already
+ * succeeded.
+ *
+ * Keys are what the drivers actually emit (`tts-gemini.ts` sends
+ * `audio/wav`, `tts-edge.ts` MP3) plus the common aliases; values are the
+ * extensions from the provider's own error message above.
+ */
+const EXTENSION_BY_MIME: Record<string, string> = {
+  "audio/flac": "flac",
+  "audio/x-flac": "flac",
+  "audio/mpeg": "mp3",
+  "audio/mp3": "mp3",
+  "audio/mpga": "mpga",
+  "audio/mp4": "mp4",
+  "audio/m4a": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/ogg": "ogg",
+  "audio/opus": "opus",
+  "audio/wav": "wav",
+  "audio/wave": "wav",
+  "audio/x-wav": "wav",
+  "audio/webm": "webm",
+};
+
+/** Strips any `;codecs=...` parameter and normalises case before the lookup. */
+function extensionForMime(mimeType: string): string | null {
+  return EXTENSION_BY_MIME[mimeType.split(";")[0].trim().toLowerCase()] ?? null;
+}
+
 export interface GroqWhisperDriverOptions {
   apiKey: string;
   model?: string;
@@ -51,10 +94,24 @@ export class GroqWhisperDriver implements AsrDriver {
       });
     }
 
+    // Refused here rather than sent and rejected: the provider's error for
+    // an unrecognised format is about the *filename*, so it would point the
+    // next reader at the wrong thing entirely. Naming the mime type this
+    // driver was handed is the fact that actually helps.
+    const extension = extensionForMime(req.source.mimeType);
+    if (extension === null) {
+      return err({
+        kind: "policy_violation",
+        message: `Groq Whisper cannot transcribe ${req.source.mimeType}; supported: ${[...new Set(Object.values(EXTENSION_BY_MIME))].join(", ")}`,
+        retryable: false,
+      });
+    }
+
     const form = new FormData();
     form.set("model", this.model);
     form.set("response_format", "verbose_json");
-    form.set("file", new Blob([req.source.bytes], { type: req.source.mimeType }), "audio");
+    // The extension is load-bearing — see EXTENSION_BY_MIME. Not decoration.
+    form.set("file", new Blob([req.source.bytes], { type: req.source.mimeType }), `audio.${extension}`);
     if (req.wordTimestamps) {
       // Both granularities, appended rather than set: asking for `word`
       // alone makes the provider drop `segments` from the response, and the

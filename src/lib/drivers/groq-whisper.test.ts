@@ -117,4 +117,60 @@ describe("GroqWhisperDriver", () => {
     if (!result.ok) throw new Error("expected ok");
     expect(result.value.words.map((w) => w.word)).toEqual(["hello", "world"]);
   });
+
+  it("names the upload with an extension, because Groq reads the format from the filename and not the mime type", async () => {
+    let seenName: string | undefined;
+    let seenType: string | undefined;
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      const file = (init?.body as FormData).get("file");
+      if (file instanceof File) {
+        seenName = file.name;
+        seenType = file.type;
+      }
+      return new Response(JSON.stringify({ text: "hi", segments: [], words: [] }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const driver = new GroqWhisperDriver({ apiKey: "k", fetchImpl });
+    const result = await driver.transcribe({ source: { kind: "audio", bytes: new Uint8Array([1, 2, 3]), mimeType: "audio/wav" }, wordTimestamps: true });
+
+    expect(result.ok).toBe(true);
+    // "audio" with no extension is what took the first live RENDER down at
+    // ALIGN: Groq answered "file must be one of the following types" for a
+    // file whose type was already on that list.
+    expect(seenName).toBe("audio.wav");
+    expect(seenType).toBe("audio/wav");
+  });
+
+  it("maps a mime alias and ignores a codecs parameter", async () => {
+    const names: string[] = [];
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      const file = (init?.body as FormData).get("file");
+      if (file instanceof File) names.push(file.name);
+      return new Response(JSON.stringify({ text: "hi" }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+    const driver = new GroqWhisperDriver({ apiKey: "k", fetchImpl });
+
+    await driver.transcribe({ source: { kind: "audio", bytes: new Uint8Array([1]), mimeType: "audio/x-wav" } });
+    await driver.transcribe({ source: { kind: "audio", bytes: new Uint8Array([1]), mimeType: "audio/mpeg" } });
+    await driver.transcribe({ source: { kind: "audio", bytes: new Uint8Array([1]), mimeType: "audio/webm;codecs=opus" } });
+
+    expect(names).toEqual(["audio.wav", "audio.mp3", "audio.webm"]);
+  });
+
+  it("refuses an unmappable mime type here rather than letting the provider blame the filename", async () => {
+    let called = 0;
+    const fetchImpl = (async () => {
+      called += 1;
+      return new Response("{}", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const driver = new GroqWhisperDriver({ apiKey: "k", fetchImpl });
+    const result = await driver.transcribe({ source: { kind: "audio", bytes: new Uint8Array([1]), mimeType: "audio/aiff" } });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.kind).toBe("policy_violation");
+    expect(result.error.message).toContain("audio/aiff");
+    expect(called).toBe(0);
+  });
 });
