@@ -457,7 +457,7 @@ Not originally itemized as its own phase — surfaced when a later session went 
 
 **Built:** `db/d1-http.ts` (D1 over Cloudflare's REST API via `drizzle-orm/sqlite-proxy`) and `src/lib/drivers/kv-http.ts`, giving `AppDb`/`KvLike` a third arm GitHub Actions can actually use — a Worker binding was never reachable from there. Fixed the dialect bug in `watch.ts`/`score.ts`/`refresh.ts`/`export.ts`/`db/footage-select.ts` (typed against the test-only better-sqlite3 dialect, would have silently broken against real D1). Three new entrypoints, `scripts/pipeline/{watch,render,footage-refresh}.ts`, run by three new cron workflows (`.github/workflows/{watch,render,footage-refresh}.yml`) via `npx tsx` (not plain `node`). Every stage now writes real `runs` rows (`db/runs.ts`), finally giving `src/server/alerts/rules.ts`'s Discord alerts (built in Phase 8, never called) a real caller.
 
-**Gate:** a full pipeline run for 3 signals produces 3 KV-stored exports with complete audit packages (`AGENT_PLAYBOOK.md`'s original Phase 6 gate) — **not yet exercised live**, deliberately: this session proved every script imports and runs to its first real failure via `npx tsx` with no credentials, but a genuine end-to-end run against the provisioned D1 database is a real production write this session wasn't asked to make. `workflow_dispatch` is wired on all three workflows for the operator to trigger one by hand first.
+**Gate:** a full pipeline run for 3 signals produces 3 KV-stored exports with complete audit packages (`AGENT_PLAYBOOK.md`'s original Phase 6 gate) — **not yet exercised live**, deliberately: this session proved every script imports and runs to its first real failure via `npx tsx` with no credentials, but a genuine end-to-end run against the provisioned D1 database is a real production write this session wasn't asked to make. `workflow_dispatch` is wired on all three workflows for the operator to trigger one by hand first. **Update 2026-08-31 (Phase 11):** the console can now trigger `render.yml` itself, and the runner exists — this gate is reachable for the first time.
 
 ---
 
@@ -478,6 +478,53 @@ Two operator directives, landed together.
 **RESEARCH.** A new stage between SCORE and SCRIPT (ARCHITECTURE.md §5.2.5): Groq tool-calling on `gpt-oss-20b` over two functions — `search_discourse` (BM25 over the `signals` corpus) and `read_source` (`ArticleFetchDriver`). No agent framework; the loop is thirty lines. Two invariants carry the design: a citation that doesn't trace to something retrieved *in that run* is dropped, and a brief left with none is rejected (a fabricated grounding is worse than none, because it reads as sourced); and the stage may fail without costing the day's video — SCRIPT falls back to `prompts/script.v2.md`'s ungrounded path and AUDIT SUMMARY flags the export. The model names signal ids, never URLs, so the fetch leg can only reach pages WATCH already ingested.
 
 **Gate:** `pnpm verify` green, and the two properties above proven by test rather than by inspection — a fabricated-citation brief is rejected, and `read_source` on an un-retrieved id issues zero fetches. **Not yet exercised live**: no production render has run through the new stage, for the same reason Phase 6's gate is still open — that is a real write to the provisioned D1, and it needs the operator to trigger it.
+
+---
+
+### Phase 11 — The console actually starts the pipeline — done (2026-08-31)
+
+The gate every earlier phase deferred. Phase 8's gate wanted "a real
+end-to-end run producing a real downloadable export in the console,
+supervised"; Phase 8.5's wanted three exports with complete audit packages.
+Both stayed open for the same reason — nothing connected the button to the
+runner — and three separate breaks had to be fixed before one could be
+attempted.
+
+**Built:** `src/lib/drivers/github-actions.ts`, a one-method driver
+(`workflow_dispatch`, nothing else) in the Phase 1 shape — `Result<T,
+DriverError>`, `fetchWithRetry`, contract tests against a fake fetch,
+`maxAttempts: 1` because a retried dispatch starts a second run. Wired into
+`dispatchRun`, which now decides the trace, counts the operator's queued
+picks, passes both as workflow inputs, and records what actually happened on
+its own `runs` row.
+
+**Three real bugs found and fixed:**
+
+1. **The console and the pipeline used different trace ids.** `render.ts`
+   minted its own regardless, so stage 5 polled a trace the run never wrote
+   to. The console now owns the id and hands it down (`PIPELINE_TRACE_ID`);
+   GitHub's dispatch endpoint returns no run id, so it cannot be read back.
+2. **`runs-on: [self-hosted, mythos-footage]` named a label no runner
+   carries.** The registered runner reports `self-hosted, macOS, ARM64`, so
+   every dispatch would have queued forever. Both self-hosted workflows
+   fixed.
+3. **`statusOf` read the console's dispatch record as if it were a pipeline
+   stage.** Harmless while a dispatch never left `queued`; the moment one
+   could succeed, a run with no videos would have reported `succeeded`. The
+   dispatch row now speaks only when the pipeline has written nothing yet.
+
+`render.yml` takes a `count` and loops — one signal per invocation, one
+process per video, and a failed video does not take the rest of the run with
+it. Both workflow inputs reach the shell through `env:`, never inline
+`${{ }}` (semgrep's shell-injection rule caught the first attempt), and
+`count` is range-checked against the same 1..6 ceiling `run-plan.ts`
+enforces.
+
+**Gate:** `pnpm verify` green — met. A dispatch from the console starting a
+real GitHub Actions run that exports a reviewable video — **not yet met**,
+and it is now blocked on nothing but the operator bringing the runner online
+(`./run.sh`) and pressing the button. The self-hosted runner is their
+laptop, so this is a supervised action by construction.
 
 ---
 

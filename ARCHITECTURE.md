@@ -712,9 +712,10 @@ Output is persisted to `research_briefs` (§4) and travels into the export's
 | `GET /console/*` | dashboard queries: runs, signals, scripts, renders, exports, directives | passkey session cookie, `__Host-` prefixed, HttpOnly, SameSite=Strict |
 | `POST /console/directive` | new steering directive | session + CSRF + schema validation |
 | `POST /console/keys/:name` | validate-then-swap a provider key | session + reauth (< 5 min old) |
-| `POST /console/dispatch` | trigger a pipeline run ad hoc | session + rate limited to 10/hour |
+| `POST /console/dispatch` | trigger a pipeline run ad hoc: records a `runs` row, then starts `render.yml` via `workflow_dispatch` with that row's id as `trace_id` and the queued pick count as `count` (`src/lib/drivers/github-actions.ts`). With no `GITHUB_DISPATCH_TOKEN` it records and reports `not_triggered` rather than pretending | session + rate limited to 10/hour |
 | `POST /console/scripts/:id/approve` | approve a `pending_approval` script | session |
 | `GET /console/exports` | list export packages, filterable by status | session |
+| `GET /console/exports/previews` | Pexels **preview** stills for every live export's script keywords — stage 6's sneak peeks. Shares `/runs/:traceId/montage`'s per-keyword day-long KV cache. Never footage for the render | session |
 | `GET /console/exports/:id/download` | stream the rendered MP4 from KV | session |
 | `POST /console/exports/:id/mark-reviewed` | mark an export reviewed | session |
 | `POST /console/exports/:id/discard` | discard an export early (frees the KV blob before TTL) | session |
