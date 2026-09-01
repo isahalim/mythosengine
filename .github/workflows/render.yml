@@ -107,18 +107,56 @@ jobs:
           fi
           python3 -c "import edge_tts; print('edge_tts', edge_tts.__version__)"
 
-      - name: Install ffmpeg
+      # "an ffmpeg is present" is NOT the requirement. RENDER burns captions
+      # with the `ass` filter, which only exists in a build configured with
+      # libass — and Homebrew's plain `ffmpeg` bottle is not one, while
+      # `ffmpeg-full` is. Both can be installed at once, and the plain one
+      # wins on PATH.
+      #
+      # This step used to accept the first ffmpeg it found, so the first
+      # live RENDER got all the way through RESEARCH, SCRIPT, CRITIC,
+      # FOOTAGE SELECT, TTS and ALIGN and then died in the encoder with
+      #
+      #   No option name near '.../captions.ass'
+      #   Error parsing filterchain ... around: [v]
+      #
+      # which is what ffmpeg says when `ass` is not a filter it has: it
+      # falls back to reading `ass=<path>` as an option assignment. It does
+      # not say "no such filter", and it does not mention libass
+      # (2026-08-31, run 33470463212).
+      #
+      # So the capability is probed, not assumed, and the build that has it
+      # is put on PATH for the steps that follow.
+      - name: Select an ffmpeg built with libass
         run: |
-          if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
-            echo "ffmpeg already present on this runner."
-          elif command -v apt-get >/dev/null; then
+          has_ass() { [ -x "$1" ] && "$1" -hide_banner -filters 2>/dev/null | awk '$2=="ass"{f=1} END{exit !f}'; }
+
+          FFMPEG=""
+          for candidate in /opt/homebrew/opt/ffmpeg-full/bin/ffmpeg /usr/local/opt/ffmpeg-full/bin/ffmpeg "$(command -v ffmpeg || true)"; do
+            if has_ass "$candidate"; then FFMPEG="$candidate"; break; fi
+          done
+
+          if [ -z "$FFMPEG" ] && command -v apt-get >/dev/null; then
             sudo apt-get update -qq
             sudo apt-get install -y --no-install-recommends ffmpeg
-          else
-            echo "::error::ffmpeg/ffprobe not found and no apt-get to install them. Install ffmpeg on this self-hosted runner (e.g. 'brew install ffmpeg')."
+            has_ass "$(command -v ffmpeg)" && FFMPEG="$(command -v ffmpeg)"
+          fi
+
+          if [ -z "$FFMPEG" ]; then
+            echo "::error::No ffmpeg with the 'ass' filter (libass) on this runner. RENDER cannot burn captions without it. On macOS: 'brew install ffmpeg-full'. Installed ffmpeg builds were: $(command -v -a ffmpeg | tr '\n' ' ')"
             exit 1
           fi
-          ffmpeg -version | head -1 && ffprobe -version | head -1
+
+          BIN_DIR="$(dirname "$FFMPEG")"
+          if ! [ -x "$BIN_DIR/ffprobe" ]; then
+            echo "::error::found $FFMPEG but no ffprobe beside it in $BIN_DIR"
+            exit 1
+          fi
+
+          echo "$BIN_DIR" >> "$GITHUB_PATH"
+          echo "Using $FFMPEG (has the ass filter)"
+          "$FFMPEG" -version | head -1
+          "$BIN_DIR/ffprobe" -version | head -1
 
       # One invocation renders one signal end-to-end. The loop is here
       # rather than inside render.ts so that stays true: each video gets a
