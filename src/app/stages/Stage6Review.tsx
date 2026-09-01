@@ -14,6 +14,13 @@
  * video's own script keywords, so the shards read as a sneak peek of what
  * the video argues rather than as decoration.
  *
+ * Operator direction (2026-09-01): those stills are behind the glass, not
+ * printed on it. This grid used to pass `reveal="always"` and every
+ * fragment of every card showed its still at once, which left three walls
+ * of thumbnails where three pieces of cracked glass should be. The pane now
+ * behaves here exactly as it does in stage 5 — plain glass until the cursor
+ * is on a single fragment, which then fades its still up slowly.
+ *
  * Those stills are PREVIEWS. The rendered footage comes from the
  * maintained, provenance-tracked library and never from Pexels (CLAUDE.md);
  * the caption below says so and the attribution stays visible.
@@ -172,7 +179,7 @@ export function Stage6Review({ onRestart, onUnauthorized }: Stage6Props) {
               {/* Whole glass. The fracture closed — and the fragments are
                   masking this video's own keyword stills. */}
               <div className="float-group float-group--inline mx-auto w-2/3" style={driftStyle(i)}>
-                <ForgePane fracture={0} glow="var(--oxide)" clips={clipsByExport[item.id] ?? []} working={false} reveal="always" />
+                <ForgePane fracture={0} glow="var(--oxide)" clips={clipsByExport[item.id] ?? []} working={false} />
               </div>
 
               <div>
@@ -238,8 +245,8 @@ export function Stage6Review({ onRestart, onUnauthorized }: Stage6Props) {
           // are a preview of the script's keywords, not the footage in the
           // video, and the UI has to keep saying so.
           <p className="mt-6 text-[0.65rem] leading-relaxed text-bone">
-            The shards show preview stills from Pexels for each script&apos;s keywords. They are not the rendered footage — that comes from the
-            maintained, provenance-tracked library and never from here.
+            Hover a shard to reveal a preview still from Pexels for that script&apos;s keywords. They are not the rendered footage — that comes
+            from the maintained, provenance-tracked library and never from here.
           </p>
         )}
       </div>

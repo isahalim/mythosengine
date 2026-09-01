@@ -22,11 +22,13 @@
  * of the pane and reveals it only while hovered, so the reveal is an act
  * the operator performs rather than an animation that runs at them.
  *
- * Stage 6 keeps its stills on (`reveal="always"`). That grid is the whole
- * library of past work and the still is what tells one finished video from
- * another at a glance; blanking it would make the operator hover every card
- * to find the one they came for. Stage 5 has the hook printed under each
- * pane and only a handful of them, so it loses nothing.
+ * That applies everywhere the pane appears, stage 6 included (operator
+ * direction, 2026-09-01). Stage 6 briefly had an always-on variant on the
+ * argument that the still is what tells one finished video from another at
+ * a glance — but a grid of cards with every fragment lit is a wall of
+ * thumbnails in the shape of glass, and the thing it identified them by was
+ * the thing it destroyed. The title, status and hook under each card do
+ * that job in text, which is what they are for.
  *
  * The fracture is NOT an estimate. src/server/console/runs.ts is explicit
  * that the waiting screen "does not interpolate a percentage, estimate a
@@ -58,11 +60,9 @@ interface ForgePaneProps {
   clips: MontageClip[];
   /** Pulse the cracks while the pipeline is actually working on this one. */
   working: boolean;
-  /** Whether a fragment's still is shown only under the cursor (stage 5) or always (stage 6). */
-  reveal?: "hover" | "always";
 }
 
-export function ForgePane({ fracture, glow, clips, working, reveal = "hover" }: ForgePaneProps) {
+export function ForgePane({ fracture, glow, clips, working }: ForgePaneProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const ready = useAtlasReady("mobile", preloadAtlas);
 
@@ -118,13 +118,15 @@ export function ForgePane({ fracture, glow, clips, working, reveal = "hover" }: 
                   // rather than mounted on hover: a still that starts loading
                   // when the cursor arrives shows nothing for the first
                   // moments of the reveal, which is exactly the moment the
-                  // operator is looking at it. `loading="lazy"` still keeps a
-                  // pane that is scrolled away from costing nothing.
+                  // operator is looking at it — and the reveal is now over a
+                  // second long, so a late image would surface visibly
+                  // mid-fade. `loading="lazy"` still keeps a pane that is
+                  // scrolled away from costing nothing.
                   <img
                     key={clip.id}
                     src={clip.thumbnailUrl}
                     alt=""
-                    className={`forge-dream ${reveal === "always" ? "forge-dream--on" : ""}`}
+                    className="forge-dream"
                     loading="lazy"
                     decoding="async"
                     // A still that will not load is hidden rather than left

@@ -339,16 +339,34 @@
 }
 
 /* The "dream": one keyword still per fragment, revealed on hover.
-   Operator direction 2026-09-01 — the card is plain glass until the cursor
-   is on a piece, and only that piece shows what is behind it.
+   Operator direction 2026-09-01 — every pane is plain glass until the
+   cursor is on a piece, and only that piece shows what is behind it. There
+   is no always-on variant: a card whose fragments all hold a still reads as
+   a printed collage rather than as glass, which is the bug this replaced.
 
-   Driven by `.shard--hot`, which useShardField already writes on
-   pointerenter, so the reveal and the fragment's lift/specular are one
-   gesture rather than two systems guessing at the same hover. The
-   transition is asymmetric in the same direction and for the same reason as
-   `.shard`'s: leaving is quick so the pane is glass again by the time the
-   cursor reaches the next fragment, arriving is slower so the image surfaces
-   through the glass rather than snapping on. */
+   Driven by `.shard--hot`, which useShardField writes on the individual
+   fragment's pointerenter, so "only this piece" is structural rather than a
+   rule that has to keep the others suppressed — and the reveal shares one
+   gesture with that fragment's lift and specular.
+
+   Three timings, and each is doing a job:
+
+   - **1.15s to arrive, on an even curve.** Slow enough to read as something
+     surfacing through the glass rather than an image being switched on.
+     Deliberately NOT `--ease-out`: that token is `cubic-bezier(0.16, 1,
+     0.3, 1)`, an expo-out built for a fragment snapping into place, and it
+     spends ~90% of the opacity in the first third of the duration — a fade
+     on it still reads as a pop followed by a long crawl, however long the
+     duration says it is. A symmetric in-out ramp is the one that actually
+     looks slow.
+   - **0.14s delay before it starts.** A cursor crossing the pane to reach
+     one fragment passes over three others; without the delay it drags a lit
+     trail behind it and the pane is briefly showing everything at once,
+     which is exactly what it must never do. The delay is under the time it
+     takes to *choose* a fragment and over the time it takes to cross one.
+   - **0.2s to leave, no delay.** Asymmetric on purpose: the pane has to be
+     glass again by the time the cursor reaches the next fragment, so the
+     reveal is never two fragments wide. */
 .forge-dream {
   position: absolute;
   inset: 0;
@@ -356,17 +374,12 @@
   height: 100%;
   object-fit: cover;
   opacity: 0;
-  transition: opacity 0.16s linear;
-}
-
-/* Stage 6: the sneak peek is the card's identity, so it is simply on. */
-.forge-dream--on {
-  opacity: 0.82;
+  transition: opacity 0.2s linear;
 }
 
 .shard--hot .forge-dream {
   opacity: 0.82;
-  transition: opacity 0.42s var(--ease-out);
+  transition: opacity 1.15s cubic-bezier(0.45, 0, 0.55, 1) 0.14s;
 }
 
 .forge-crack path {
