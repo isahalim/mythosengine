@@ -206,6 +206,32 @@ export interface CaptionCue {
  * eating her face and 0.20 destroys it**, so 0.10 is the ceiling rather than
  * a starting point.
  */
+/**
+ * One hold in the character's loop — a beat where she waits on screen
+ * instead of running straight through to the end.
+ *
+ * The loop is 5.6s of continuous motion, which reads as restless under a
+ * two-minute narration. Holds stretch it by parking her on chosen frames,
+ * so she still moves but arrives at the end of the cycle far less often.
+ *
+ * `frames: 1` freezes on `atFrame`. `frames: 2` or more cycles through that
+ * many consecutive frames for the whole hold, which keeps a little life in
+ * her rather than stopping her dead.
+ */
+export interface CharacterHold {
+  /**
+   * Where the hold starts, as a 1-based frame number — the way a person
+   * counts frames when they scrub the asset, and the way the operator
+   * specified these. ffmpeg's `loop` filter counts from 1 here too, despite
+   * its documentation reading otherwise (see buildHoldFilter).
+   */
+  atFrame: number;
+  /** How many consecutive frames the hold cycles through. 1 freezes. */
+  frames: number;
+  /** How long the hold lasts on screen, in seconds. */
+  seconds: number;
+}
+
 export interface CharacterOverlay {
   /** Path to the character loop (a GIF or video file ffmpeg can read). */
   filePath: string;
@@ -216,6 +242,12 @@ export interface CharacterOverlay {
   blend: number;
   /** Fraction of the output height the character occupies. */
   heightRatio: number;
+  /**
+   * Beats where she waits, applied to the source loop before it is scaled,
+   * keyed and composited. Omitted or empty means she runs at native speed
+   * and the asset is fed to the encoder untouched.
+   */
+  holds?: readonly CharacterHold[];
 }
 
 /**

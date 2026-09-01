@@ -2,8 +2,8 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CHARACTER_ASSET_PATH, CHARACTER_OVERLAY, resolveCharacterOverlay } from "./character.ts";
-import { buildFilterGraph } from "../drivers/render-ffmpeg.ts";
+import { CHARACTER_ASSET_PATH, CHARACTER_HOLDS, CHARACTER_OVERLAY, resolveCharacterOverlay } from "./character.ts";
+import { buildFilterGraph, buildHoldFilter } from "../drivers/render-ffmpeg.ts";
 
 describe("CHARACTER_OVERLAY", () => {
   it("keys at the measured ceiling, never above it", () => {
@@ -100,5 +100,45 @@ describe("buildFilterGraph", () => {
 
   it("escapes a caption path containing a colon, which ffmpeg's filter parser would otherwise split on", () => {
     expect(buildFilterGraph("/tmp/a:b.ass", CHARACTER_OVERLAY)).toContain("ass=/tmp/a\\:b.ass");
+  });
+});
+
+describe("CHARACTER_HOLDS", () => {
+  // The asset, measured: 70 frames at 12.5fps.
+  const ASSET_FPS = 12.5;
+  const ASSET_FRAMES = 70;
+
+  it("holds where the operator asked, for as long as they asked", () => {
+    expect(CHARACTER_HOLDS).toEqual([
+      { atFrame: 3, frames: 2, seconds: 5 },
+      { atFrame: 12, frames: 1, seconds: 5 },
+      { atFrame: 28, frames: 1, seconds: 5 },
+    ]);
+  });
+
+  it("cycles at frame 3 and freezes at 12 and 28", () => {
+    // The distinction is the whole point of the first hold: a dead stop
+    // three frames into the loop looks like the video stalled.
+    const [first, ...rest] = CHARACTER_HOLDS;
+    expect(first.frames).toBe(2);
+    expect(rest.every((hold) => hold.frames === 1)).toBe(true);
+  });
+
+  it("fits the asset it was counted against", () => {
+    // This is the guard on swapping the loop for a different one: every
+    // hold has to land inside it, and none may overlap.
+    const result = buildHoldFilter(CHARACTER_HOLDS, ASSET_FPS, ASSET_FRAMES);
+    expect(result.ok).toBe(true);
+  });
+
+  it("stretches the 5.6s loop to about 20.5s", () => {
+    // 70 frames + 62 + 62 + 60 extra = 254 frames at 12.5fps. She reaches
+    // the end of her cycle roughly a quarter as often, which is the point.
+    const added = CHARACTER_HOLDS.reduce((total, hold) => total + Math.round((hold.seconds * ASSET_FPS) / hold.frames) * hold.frames - hold.frames, 0);
+    expect((ASSET_FRAMES + added) / ASSET_FPS).toBeCloseTo(20.32, 1);
+  });
+
+  it("is the spec the overlay actually carries", () => {
+    expect(CHARACTER_OVERLAY.holds).toBe(CHARACTER_HOLDS);
   });
 });

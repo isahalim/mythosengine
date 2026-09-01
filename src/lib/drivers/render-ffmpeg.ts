@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { buildAssSubtitles } from "./ass-subtitles.ts";
-import type { CharacterOverlay, DriverError, RenderDriver, RenderRequest, RenderResponse } from "./types.ts";
+import type { CharacterHold, CharacterOverlay, DriverError, RenderDriver, RenderRequest, RenderResponse } from "./types.ts";
 import { err, ok, type Result } from "../result.ts";
 
 const execFileAsync = promisify(execFile);
@@ -68,6 +68,19 @@ export class FfmpegRenderDriver implements RenderDriver {
       await writeFile(assPath, buildAssSubtitles(req.captionCues, OUTPUT_WIDTH, OUTPUT_HEIGHT), "utf8");
 
       const overlay = req.characterOverlay;
+      // The host's loop, stretched by her holds if she has any. Deriving a
+      // file rather than folding the holds into the graph below is forced
+      // by how they have to repeat: `loop` counts frames from the start of
+      // the stream it is given, so against an endlessly looping input the
+      // holds would land on the first pass through the asset and never
+      // again. Against a finite file they land once, and the *result* is
+      // what loops — so every cycle holds, which is what "every time it
+      // reaches that frame" means.
+      const overlayInput = await this.characterInputArgs(overlay, dir);
+      if (!overlayInput.ok) {
+        await rm(dir, { recursive: true, force: true });
+        return err(overlayInput.error);
+      }
       await execFileAsync(
         this.ffmpegBin,
         [
@@ -86,9 +99,8 @@ export class FfmpegRenderDriver implements RenderDriver {
           "-i",
           req.narrationAudioPath,
           // The character loop is shorter than the narration (5.6s against
-          // up to 180s), so it loops too. `-ignore_loop 0` is the GIF
-          // demuxer's own flag; `-stream_loop -1` does not apply to it.
-          ...(overlay ? ["-ignore_loop", "0", "-i", overlay.filePath] : []),
+          // up to 180s, ~20.5s once her holds are in), so it loops too.
+          ...overlayInput.value,
           "-filter_complex",
           buildFilterGraph(assPath, overlay, req.footageClips.length),
           "-map",
@@ -123,6 +135,103 @@ export class FfmpegRenderDriver implements RenderDriver {
     if (!durationResult.ok) return durationResult;
 
     return ok({ filePath: req.outputPath, durationS: durationResult.value });
+  }
+
+  /**
+   * The ffmpeg input flags for the character, deriving her held loop first
+   * if she has holds.
+   *
+   * The two branches differ in more than the path. A GIF read straight from
+   * the asset loops with `-ignore_loop 0`, the GIF demuxer's own flag, which
+   * does not apply to anything else; the derived loop is a Matroska file and
+   * loops with `-stream_loop -1`, which does not apply to GIFs.
+   */
+  private async characterInputArgs(overlay: CharacterOverlay | undefined, dir: string): Promise<Result<string[], DriverError>> {
+    if (!overlay) return ok([]);
+    if (overlay.holds === undefined || overlay.holds.length === 0) {
+      return ok(["-ignore_loop", "0", "-i", overlay.filePath]);
+    }
+    const held = await this.deriveHeldLoop(overlay, overlay.holds, dir);
+    if (!held.ok) return err(held.error);
+    return ok(["-stream_loop", "-1", "-i", held.value]);
+  }
+
+  /**
+   * Writes the character's loop back out with her holds in it.
+   *
+   * Lossless FFV1 rather than a second GIF, and that is not fussiness: a
+   * re-encoded GIF gets a freshly quantised palette, and the flat `#e5505c`
+   * key measured in character.ts comes back as `#fc4855` (checked against
+   * this asset, 2026-09-01). The colorkey downstream is tight enough that
+   * `0.14 begins eating her face` — a key that has moved 27 units is not a
+   * key any more. FFV1 keeps every pixel exactly where it was.
+   *
+   * The frame rate and length come off the asset rather than being assumed,
+   * so a hold means five seconds of screen time whatever the loop is pulled
+   * at, and a hold that points past the end of the loop is caught here.
+   */
+  private async deriveHeldLoop(overlay: CharacterOverlay, holds: readonly CharacterHold[], dir: string): Promise<Result<string, DriverError>> {
+    const source = await this.probeLoop(overlay.filePath);
+    if (!source.ok) return err(source.error);
+
+    const filter = buildHoldFilter(holds, source.value.fps, source.value.frameCount);
+    if (!filter.ok) return err(filter.error);
+
+    const heldPath = join(dir, "character-held.mkv");
+    try {
+      await execFileAsync(
+        this.ffmpegBin,
+        ["-y", "-i", overlay.filePath, "-vf", filter.value, "-c:v", "ffv1", heldPath],
+        { signal: AbortSignal.timeout(this.timeoutMs) },
+      );
+    } catch (cause) {
+      return err(classifyError(cause));
+    }
+    return ok(heldPath);
+  }
+
+  /**
+   * The character loop's frame rate and exact length.
+   *
+   * `-count_frames` decodes the file to count, which is the only way to get
+   * a trustworthy length out of a GIF — the header's `nb_frames` is absent
+   * or wrong for most of them. It costs a decode of a 1.6 MB asset, next to
+   * nothing beside the render it precedes.
+   */
+  private async probeLoop(filePath: string): Promise<Result<{ fps: number; frameCount: number }, DriverError>> {
+    try {
+      const { stdout } = await execFileAsync(
+        this.ffprobeBin,
+        [
+          "-v",
+          "quiet",
+          "-print_format",
+          "json",
+          "-select_streams",
+          "v:0",
+          "-count_frames",
+          "-show_entries",
+          "stream=r_frame_rate,nb_read_frames",
+          filePath,
+        ],
+        { signal: AbortSignal.timeout(this.timeoutMs) },
+      );
+      const stream = readFirstStream(JSON.parse(stdout) as unknown);
+      if (stream === undefined) {
+        return err({ kind: "invalid_response", message: `ffprobe reported no video stream in ${filePath}`, retryable: false });
+      }
+      const fps = parseFrameRate(stream.r_frame_rate);
+      const frameCount = Number(stream.nb_read_frames);
+      if (!Number.isFinite(fps) || fps <= 0) {
+        return err({ kind: "invalid_response", message: `ffprobe returned no usable frame rate for ${filePath}`, retryable: false });
+      }
+      if (!Number.isInteger(frameCount) || frameCount < 1) {
+        return err({ kind: "invalid_response", message: `ffprobe returned no usable frame count for ${filePath}`, retryable: false });
+      }
+      return ok({ fps, frameCount });
+    } catch (cause) {
+      return err(classifyError(cause));
+    }
   }
 
   private async probeDuration(filePath: string): Promise<Result<number, DriverError>> {
@@ -216,6 +325,100 @@ export function buildFilterGraph(
 
   chain.push(`${video}ass=${escapeFilterPath(assPath)}[v]`);
   return chain.join(";");
+}
+
+/**
+ * The `-vf` chain that puts the holds into the character's loop.
+ *
+ * ffmpeg's `loop` filter is exactly the right tool and reads backwards from
+ * how a person describes a hold: `loop=loop=N:size=S:start=F` buffers `S`
+ * frames from `F` and replays them `N` more times, so a five-second freeze
+ * is one frame replayed until five seconds of them have gone by, and a
+ * five-second cycle over two frames is that pair replayed thirty-one times.
+ * Everything is counted in frames, which is why the source frame rate has
+ * to be measured rather than assumed.
+ *
+ * **`start` is 1-based**, so `atFrame` passes through untouched. The
+ * documentation ("set first frame of loop") reads like the 0-based index
+ * every other ffmpeg frame option uses, and it is not — measured against a
+ * ten-frame ramp on 2026-09-01, `start=3` holds the *third* frame and
+ * `start=10` holds the last one. Subtracting one to convert puts every hold
+ * a frame early, which is invisible in a still and wrong in the video.
+ *
+ * **The holds are emitted last-first.** Each `loop` inserts frames into the
+ * stream the next filter sees, so a hold applied at frame 3 shifts frames
+ * 12 and 28 down the timeline and every later hold would land in the wrong
+ * place. Descending order leaves every index still pointing at the frame it
+ * was counted against.
+ *
+ * Nothing here degrades quietly. A hold past the end of the loop, an
+ * overlapping pair, or one too short to add a single frame is a mistake in
+ * the spec that would otherwise show up as a video that looks *almost*
+ * right, so each returns an error the render surfaces.
+ */
+export function buildHoldFilter(holds: readonly CharacterHold[], sourceFps: number, sourceFrameCount: number): Result<string, DriverError> {
+  const invalid = (message: string): Result<string, DriverError> => err({ kind: "invalid_response", message, retryable: false });
+
+  if (holds.length === 0) return invalid("buildHoldFilter needs at least one hold");
+  if (!Number.isFinite(sourceFps) || sourceFps <= 0) return invalid(`a character loop cannot run at ${sourceFps}fps`);
+  if (!Number.isInteger(sourceFrameCount) || sourceFrameCount < 1) return invalid(`a character loop cannot be ${sourceFrameCount} frames long`);
+
+  const ordered = [...holds].sort((a, b) => a.atFrame - b.atFrame);
+  let previousEnd = 0;
+
+  for (const hold of ordered) {
+    if (!Number.isInteger(hold.atFrame) || hold.atFrame < 1) {
+      return invalid(`hold at frame ${hold.atFrame}: frames are numbered from 1`);
+    }
+    if (!Number.isInteger(hold.frames) || hold.frames < 1) {
+      return invalid(`hold at frame ${hold.atFrame}: a hold covers at least 1 frame, not ${hold.frames}`);
+    }
+    if (!(hold.seconds > 0)) {
+      return invalid(`hold at frame ${hold.atFrame}: a hold lasts longer than 0s, not ${hold.seconds}s`);
+    }
+    const lastFrame = hold.atFrame + hold.frames - 1;
+    if (lastFrame > sourceFrameCount) {
+      return invalid(`hold at frame ${hold.atFrame} covers frame ${lastFrame}, but the loop is only ${sourceFrameCount} frames long`);
+    }
+    if (hold.atFrame <= previousEnd) {
+      return invalid(`hold at frame ${hold.atFrame} overlaps the hold before it, which runs to frame ${previousEnd}`);
+    }
+    previousEnd = lastFrame;
+  }
+
+  const chain: string[] = [];
+  // Last hold first: see above.
+  for (const hold of [...ordered].reverse()) {
+    // How many times the held frames play in total, then how many *extra*
+    // plays that is — which is what `loop` counts.
+    const plays = Math.round((hold.seconds * sourceFps) / hold.frames);
+    if (plays < 2) {
+      return invalid(
+        `hold at frame ${hold.atFrame}: ${hold.seconds}s over ${hold.frames} frame(s) at ${sourceFps}fps adds nothing to the loop`,
+      );
+    }
+    chain.push(`loop=loop=${plays - 1}:size=${hold.frames}:start=${hold.atFrame}`);
+  }
+  return ok(chain.join(","));
+}
+
+function readFirstStream(parsed: unknown): { r_frame_rate?: string; nb_read_frames?: string } | undefined {
+  if (typeof parsed !== "object" || parsed === null || !("streams" in parsed)) return undefined;
+  const { streams } = parsed as { streams: unknown };
+  if (!Array.isArray(streams) || streams.length === 0) return undefined;
+  const first: unknown = streams[0];
+  if (typeof first !== "object" || first === null) return undefined;
+  return first as { r_frame_rate?: string; nb_read_frames?: string };
+}
+
+/** ffprobe reports a rate as an exact rational ("25/2"), never a decimal. */
+function parseFrameRate(value: string | undefined): number {
+  if (value === undefined) return Number.NaN;
+  const [numerator, denominator] = value.split("/");
+  const n = Number(numerator);
+  const d = denominator === undefined ? 1 : Number(denominator);
+  if (!Number.isFinite(n) || !Number.isFinite(d) || d === 0) return Number.NaN;
+  return n / d;
 }
 
 function escapeFilterPath(path: string): string {

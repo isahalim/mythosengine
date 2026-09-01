@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
-import type { CharacterOverlay } from "../drivers/types.ts";
+import type { CharacterHold, CharacterOverlay } from "../drivers/types.ts";
 
 /**
  * Where the host's loop lives in a checkout.
@@ -12,6 +12,32 @@ import type { CharacterOverlay } from "../drivers/types.ts";
  * one 800×600 loop that never changes has the opposite profile.
  */
 export const CHARACTER_ASSET_PATH = join("assets", "character", "right_person.gif");
+
+/**
+ * Where she waits, and for how long (operator direction, 2026-09-01).
+ *
+ * The asset is 70 frames at 12.5fps — 5.6 seconds — which under a 100-130s
+ * narration means she completes the same loop twenty times and reads as
+ * fidgeting. These three holds stretch one cycle to about 20.5 seconds
+ * without touching the asset or her animation: she plays normally, waits,
+ * plays on.
+ *
+ * The first hold cycles rather than freezes. Frame 3 is early enough in the
+ * loop that a dead stop there looks like the video stalled; oscillating
+ * between 3 and 4 for five seconds reads as her holding a pose. Frames 12
+ * and 28 fall mid-gesture, where a still frame is a pause rather than a
+ * fault, so those freeze.
+ *
+ * Frame numbers are 1-based and were counted off the asset, so they are
+ * only meaningful for *this* asset. Replacing the loop means recounting
+ * them — a hold past the end of a shorter loop fails the render loudly
+ * rather than being quietly dropped (see buildHoldFilter).
+ */
+export const CHARACTER_HOLDS: readonly CharacterHold[] = [
+  { atFrame: 3, frames: 2, seconds: 5 },
+  { atFrame: 12, frames: 1, seconds: 5 },
+  { atFrame: 28, frames: 1, seconds: 5 },
+];
 
 /**
  * The measured key, not a guessed one (plan v2 §2, verified 2026-08-31 by
@@ -39,6 +65,7 @@ export const CHARACTER_OVERLAY: CharacterOverlay = {
    * against her face.
    */
   heightRatio: 0.34,
+  holds: CHARACTER_HOLDS,
 };
 
 export type CharacterResolution =
