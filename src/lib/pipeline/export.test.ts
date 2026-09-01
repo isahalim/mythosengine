@@ -12,6 +12,8 @@ import { err, ok, type Result } from "../result.ts";
 
 function fakeExportDriver(behavior: "succeed" | "fail"): ExportDriver {
   return {
+    keyFor: (renderId: string) => `exports/${renderId}.mp4`,
+    remove: () => Promise.resolve(ok(undefined)),
     store(req: ExportStoreRequest): Promise<Result<ExportStoreResponse, DriverError>> {
       if (behavior === "fail") {
         return Promise.resolve(err({ kind: "provider_error", message: "KV write failed", retryable: false }));
@@ -104,14 +106,14 @@ describe("runExport", () => {
     const result = await runExport(ctx.db, renderFilePath, bytes, packageInput("ren1"), { export: fakeExportDriver("succeed") });
 
     expect(result.status).toBe("exported");
-    expect(result.storageKey).toBe("export:ren1.mp4");
+    expect(result.storageKey).toBe("exports/ren1.mp4");
     expect(result.sizeBytes).toBe(4);
 
     const rows = ctx.db.select().from(exportsTable).all();
     expect(rows).toHaveLength(1);
     expect(rows[0]?.status).toBe("ready_for_review");
     expect(rows[0]?.renderId).toBe("ren1");
-    expect(rows[0]?.storageKey).toBe("export:ren1.mp4");
+    expect(rows[0]?.storageKey).toBe("exports/ren1.mp4");
 
     const row = rows[0];
     expect(row).toBeDefined();

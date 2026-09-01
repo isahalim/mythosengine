@@ -72,7 +72,9 @@ export async function runExport(
 ): Promise<RunExportResult> {
   const ttlSeconds = options.ttlSeconds ?? EXPORT_TTL_SECONDS;
   const mimeType = options.mimeType ?? "video/mp4";
-  const storageKey = `export:${input.renderId}.mp4`;
+  // The driver names its own key: the shape is what tells the console which
+  // store to read a download from (see ExportDriver.keyFor).
+  const storageKey = drivers.export.keyFor(input.renderId);
 
   const storeResult = await drivers.export.store({ key: storageKey, bytes: fileBytes, mimeType, ttlSeconds });
   if (!storeResult.ok) {

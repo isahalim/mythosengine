@@ -31,3 +31,19 @@ id = "e1a2adff832742ae8953cab9905a7aa6"
 [[kv_namespaces]]
 binding = "VAULT"
 id = "84b02470f3ca4e65807ba09c53cbe426"
+
+# Export blobs (rendered MP4s). Moved off KV on 2026-08-31: a 128s 1080x1920
+# render is ~42 MB and KV caps one value at 25 MiB, which killed EXPORT with
+# `10024 content size of 42225848 bytes exceeds maximum allowed size of
+# 27MiB` after the whole video had already been made. Fitting a 180s Short
+# into one KV value needs ~1.1 Mbps at 1080x1920, which is not a quality
+# anyone would upload. KV keeps the hot JSON and the vault.
+#
+# The pipeline runner cannot reach this bucket directly — the Actions
+# CLOUDFLARE_API_TOKEN has no R2 permission, deliberately — so blobs are
+# written through PUT /internal/exports/:key with the PIPELINE_BATCH_TOKEN
+# shared secret, exactly as /internal/d1/batch already works. No new
+# credential enters the system.
+[[r2_buckets]]
+binding = "EXPORTS"
+bucket_name = "mythosengine-exports"

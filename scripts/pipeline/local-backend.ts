@@ -89,7 +89,7 @@ export class LocalKv implements KvLike, ExportBlobStore {
 /**
  * Writes the finished MP4 to disk as well as to the local KV, so a local
  * run leaves something the operator can actually open and watch. Same
- * `ExportDriver` contract the KV driver implements, so `runExport` cannot
+ * `ExportDriver` contract the R2 driver implements, so `runExport` cannot
  * tell the difference — and the audit package still travels with it,
  * because `runExport` writes that to the database exactly as it always
  * does (CLAUDE.md NEVER block).
@@ -99,6 +99,16 @@ export class LocalExportDriver implements ExportDriver {
     mkdirSync(EXPORT_DIR, { recursive: true });
   }
 
+  /**
+   * The legacy KV-shaped key, deliberately. A local run stores into a
+   * directory and a `LocalKv`, never into R2, so claiming an `exports/` key
+   * would tell `src/server/console/exports.ts` to look in a bucket that has
+   * nothing in it.
+   */
+  keyFor(renderId: string): string {
+    return `export:${renderId}.mp4`;
+  }
+
   store(req: ExportStoreRequest): Promise<Result<ExportStoreResponse, DriverError>> {
     this.kv.putBlob(req.key, req.bytes);
     // ttlSeconds is deliberately not honoured: KV expires values
@@ -106,6 +116,19 @@ export class LocalExportDriver implements ExportDriver {
     // under them would be a behaviour the real store does not have.
     writeFileSync(join(EXPORT_DIR, `${req.key.replace(/[^A-Za-z0-9._-]/g, "_").replace(/\.mp4$/, "")}.mp4`), req.bytes);
     return Promise.resolve(ok({ key: req.key, sizeBytes: req.bytes.byteLength }));
+  }
+
+  /**
+   * Drops the KV entry but keeps the file in `.local-pipeline/exports/`.
+   *
+   * The expiry sweep exists to stop a bucket growing without bound; a local
+   * run's whole point is that the operator can watch the MP4s it made, and
+   * deleting one out from under them three days later would be this harness
+   * inventing a behaviour to imitate a store it is not.
+   */
+  remove(key: string): Promise<Result<void, DriverError>> {
+    void this.kv.delete(key);
+    return Promise.resolve(ok(undefined));
   }
 }
 

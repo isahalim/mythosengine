@@ -15,6 +15,7 @@ import { writeAuditLog } from "./audit.ts";
 import { DirectiveSchema } from "./console/directive-schema.ts";
 import { compileDirectiveFromRawText, dryRunSettings, getSettings, resetToDefaults, updateSettings } from "./console/settings.ts";
 import { discardExport, downloadExport, exportFileName, listExports, markExportReviewed, type ExportBlobStore, type ExportStatus } from "./console/exports.ts";
+import type { ExportStores } from "./console/exports.ts";
 import { rotateProviderKey, ROTATABLE_KEY_NAMES, type RotatableKeyName } from "./console/keys.ts";
 import { DEFAULT_RENDER_REF, DEFAULT_RENDER_WORKFLOW, dispatchRun } from "./console/dispatch.ts";
 import { createGithubActionsDriver, type GithubActionsDriver } from "../lib/drivers/github-actions.ts";
@@ -25,6 +26,7 @@ import { isTopic, rankIdeas } from "./console/ideas.ts";
 import { cancelPlanPick, listPlan, queuePlan, queuedSignalIds } from "./console/run-plan.ts";
 import { getExportPreviews, getRunMontage } from "./console/montage.ts";
 import { handleD1Batch } from "./internal/d1-batch.ts";
+import { handleExportBlob } from "./internal/export-blob.ts";
 import { log } from "./log.ts";
 import type { KvLike } from "../lib/drivers/cache-kv.ts";
 import type { VaultKv } from "../lib/vault.ts";
@@ -57,6 +59,14 @@ export interface RouterEnv {
   GITHUB_REPOSITORY?: string;
   /** The git ref RENDER runs from. Defaults to `main`. */
   GITHUB_RENDER_REF?: string;
+  /**
+   * Export blobs (rendered MP4s), moved off KV on 2026-08-31 because KV caps
+   * one value at 25 MiB and a 128s render is ~42 MB. Optional in the type so
+   * a Worker deployed without the binding refuses the write with a reason
+   * rather than failing to boot — but there is no KV fallback: falling back
+   * would restore the ceiling this exists to escape.
+   */
+  EXPORTS?: R2Bucket;
 }
 
 /** The exact slice of a KV namespace the export blob store needs, layered onto plain KvLike. */
@@ -86,6 +96,8 @@ export interface RouterDeps {
   actions: GithubActionsDriver | null;
   renderWorkflow: string;
   renderRef: string;
+  /** Undefined when this Worker has no EXPORTS binding — the export routes then say so rather than guessing. */
+  exportBucket: R2Bucket | undefined;
 }
 
 function depsFromEnv(env: RouterEnv): RouterDeps {
@@ -100,6 +112,7 @@ function depsFromEnv(env: RouterEnv): RouterDeps {
     pexelsApiKeyFallback: env.PEXELS_API_KEY,
     pipelineBatchToken: env.PIPELINE_BATCH_TOKEN,
     actions: createGithubActionsDriver(env.GITHUB_DISPATCH_TOKEN, env.GITHUB_REPOSITORY),
+    exportBucket: env.EXPORTS,
     renderWorkflow: DEFAULT_RENDER_WORKFLOW,
     renderRef: env.GITHUB_RENDER_REF ?? DEFAULT_RENDER_REF,
   };
@@ -183,6 +196,19 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
   if (pathname === "/internal/d1/batch" && method === "POST") {
     return handleD1Batch(request, { db: deps.db, rawClient: deps.rawClient, pipelineBatchToken: deps.pipelineBatchToken });
   }
+  // The pipeline's door to the export blob store (internal/export-blob.ts).
+  // Same shared secret as the batch endpoint above, and here for the same
+  // reason: the Actions runner has no Worker bindings, and its Cloudflare
+  // token has no R2 permission, so the Worker performs the write.
+  const exportBlobMatch = pathname.match(/^\/internal\/(exports\/[^/]+)$/);
+  if (exportBlobMatch && (method === "PUT" || method === "DELETE")) {
+    return handleExportBlob(request, exportBlobMatch[1], {
+      db: deps.db,
+      exportBucket: deps.exportBucket,
+      pipelineBatchToken: deps.pipelineBatchToken,
+    });
+  }
+
   // Nothing else lives under /internal/ — say so rather than falling
   // through to the static asset handler, which would answer a probe of this
   // prefix with the console's HTML.
@@ -364,17 +390,23 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
       );
     }
 
+    // Both halves, because export blobs moved from KV to R2 on 2026-08-31
+    // and the rows written before that are still downloadable. Which one a
+    // given export uses is read off its storage key, never assumed.
+    const exportStores: ExportStores = { kv: ctx.hotKv, r2: deps.exportBucket };
+
     const downloadMatch = pathname.match(EXPORT_DOWNLOAD_PATTERN);
     if (downloadMatch && method === "GET") {
-      const result = await downloadExport(ctx.db, ctx.hotKv, downloadMatch[1]);
+      const result = await downloadExport(ctx.db, exportStores, downloadMatch[1]);
       if (result.kind === "not_found") return json({ error: "not_found" }, 404);
       if (result.kind === "blob_missing") return json({ error: "blob_missing" }, 410);
+      if (result.kind === "no_blob_store") return json({ error: "not_configured", detail: "this Worker has no EXPORTS R2 binding" }, 503);
       await writeAuditLog(ctx.db, "human", "export.download", downloadMatch[1], {});
       // `attachment` is what makes this a download rather than a video that
       // opens in the tab and plays. The button says Download; without this
       // header Chrome navigates and plays it, which is not what a reviewer
       // asked for and leaves them with no file.
-      return new Response(result.bytes, {
+      return new Response(result.body, {
         headers: {
           "content-type": "video/mp4",
           "content-disposition": `attachment; filename="${exportFileName(result.export.suggestedTitle, result.export.id)}"`,
@@ -392,8 +424,9 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
 
     const discardMatch = pathname.match(/^\/console\/exports\/([^/]+)\/discard$/);
     if (discardMatch && method === "POST") {
-      const result = await discardExport(ctx.db, ctx.hotKv, discardMatch[1]);
+      const result = await discardExport(ctx.db, exportStores, discardMatch[1]);
       if (result.kind === "not_found") return json({ error: "not_found" }, 404);
+      if (result.kind === "no_blob_store") return json({ error: "not_configured", detail: "this Worker has no EXPORTS R2 binding" }, 503);
       await writeAuditLog(ctx.db, "human", "export.discard", discardMatch[1], {});
       return json({ ok: true });
     }

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { desc, eq, gte, inArray } from "drizzle-orm";
 import { footageSegments, footageSources, renders, scripts, signals } from "../../db/schema.ts";
 import { finishRun, reapStaleRuns, startRun } from "../../db/runs.ts";
+import { reapExpiredExports } from "../../db/exports-reap.ts";
 import { claimNextRunPick } from "../../db/run-picks.ts";
 import { claimNextFootageSegment } from "../../db/footage-select.ts";
 import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
@@ -70,6 +71,20 @@ async function main(): Promise<void> {
   // pipeline owns the runs table.
   const reaped = await reapStaleRuns(env.db);
   if (reaped > 0) console.warn(`Reaped ${reaped} abandoned run row(s) left behind by a killed job.`);
+
+  // Export blobs live in R2 since 2026-08-31, and R2 has no per-object TTL
+  // the way KV did — so the review window is enforced here rather than by
+  // the store. Swept at the top of a run, like the stale-run reaper above
+  // and for the same reason: this is a write, and the pipeline owns it.
+  const { retired, failures } = await reapExpiredExports(env.db, async (key) => {
+    const removal = await env.exportDriver.remove(key);
+    return removal.ok ? { ok: true } : { ok: false, error: `${removal.error.kind}: ${removal.error.message}` };
+  });
+  if (retired > 0) console.warn(`Retired ${retired} export(s) past their review window and freed their blobs.`);
+  for (const failure of failures) {
+    // Reported, never swallowed. The row stays live and the next run retries.
+    console.warn(`Could not free the blob for export ${failure.id}: ${failure.error}`);
+  }
 
   /**
    * The console decides the trace, not this script.

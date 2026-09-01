@@ -1,6 +1,7 @@
 import { execAtomic, type AppDb, type RawSqlClient } from "../../../db/client.ts";
 import { writeAuditLog } from "../audit.ts";
 import { log } from "../log.ts";
+import { secretsMatch } from "./shared-secret.ts";
 import { err, ok, type Result } from "../../lib/result.ts";
 
 /**
@@ -50,27 +51,6 @@ export function parseBatchBody(value: unknown): Result<D1BatchStatement[], strin
   }
 
   return ok(parsed);
-}
-
-/**
- * Compares two secrets without leaking their contents through timing.
- *
- * Both sides are hashed first, so the comparison always runs over 32 fixed
- * bytes: a plain length check on the raw strings would leak the token's
- * length, and an early-exit `===` would leak a prefix. `crypto.subtle` is
- * available in workerd, so this needs no dependency.
- */
-async function secretsMatch(presented: string, expected: string): Promise<boolean> {
-  const encoder = new TextEncoder();
-  const [a, b] = await Promise.all([
-    crypto.subtle.digest("SHA-256", encoder.encode(presented)),
-    crypto.subtle.digest("SHA-256", encoder.encode(expected)),
-  ]);
-  const left = new Uint8Array(a);
-  const right = new Uint8Array(b);
-  let difference = 0;
-  for (let i = 0; i < left.length; i++) difference |= left[i] ^ right[i];
-  return difference === 0;
 }
 
 /** SQL text is audit-worthy; bound parameters are the payload and are never recorded. Truncated because an audit row is evidence of *what ran*, not a second copy of the query. */

@@ -2,7 +2,7 @@ import { fetchWithRetry } from "./http.ts";
 import type { KvLike } from "./cache-kv.ts";
 
 /**
- * Cloudflare KV over the REST API — same envelope/base URL KvExportDriver
+ * Cloudflare KV over the REST API — same envelope/base URL the export driver
  * already uses, the counterpart for reads (and small writes) instead of
  * blob storage. Exists so the GitHub Actions pipeline runner can check the
  * console's killswitch (`src/server/console/killswitch.ts`'s

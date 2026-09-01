@@ -2,7 +2,7 @@ import { createD1HttpDb } from "../../db/d1-http.ts";
 import { WorkerBatchClient } from "../../db/worker-batch.ts";
 import type { AppDb, RawSqlClient } from "../../db/client.ts";
 import { KvHttpClient } from "../../src/lib/drivers/kv-http.ts";
-import { KvExportDriver } from "../../src/lib/drivers/export-kv.ts";
+import { R2ExportDriver } from "../../src/lib/drivers/export-r2.ts";
 import { openLocalBackend } from "./local-backend.ts";
 import type { KvLike } from "../../src/lib/drivers/cache-kv.ts";
 import type { ExportDriver } from "../../src/lib/drivers/types.ts";
@@ -104,17 +104,20 @@ export function buildPipelineEnv(): PipelineEnv {
   let rawClient: WorkerBatchClient | undefined;
 
   const geminiApiKey = optionalEnv("GEMINI_API_KEY");
+  const workerUrl = optionalEnv("WORKER_URL") ?? DEFAULT_WORKER_URL;
 
   return {
     geminiApiKey,
     local: false,
-    exportDriver: new KvExportDriver({ accountId, namespaceId: HOT_KV_NAMESPACE_ID, apiToken }),
+    // Through the Worker, not straight at R2: this runner's
+    // CLOUDFLARE_API_TOKEN has no R2 permission, and the Worker holds the
+    // binding. Same shared secret and same reasoning as `rawClient` below.
+    // Replaced KvExportDriver on 2026-08-31 — KV caps a value at 25 MiB and
+    // a 128s render is ~42 MB (src/lib/drivers/export-r2.ts).
+    exportDriver: new R2ExportDriver({ workerUrl, token: requireEnv("PIPELINE_BATCH_TOKEN") }),
     db: createD1HttpDb(d1Options),
     get rawClient(): RawSqlClient {
-      rawClient ??= new WorkerBatchClient({
-        workerUrl: optionalEnv("WORKER_URL") ?? DEFAULT_WORKER_URL,
-        token: requireEnv("PIPELINE_BATCH_TOKEN"),
-      });
+      rawClient ??= new WorkerBatchClient({ workerUrl, token: requireEnv("PIPELINE_BATCH_TOKEN") });
       return rawClient;
     },
     hotKv: new KvHttpClient({ accountId, apiToken, namespaceId: HOT_KV_NAMESPACE_ID }),

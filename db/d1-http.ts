@@ -17,7 +17,7 @@ import * as schema from "./schema.ts";
  * (arbitrary SQL execution against the live database) for marginal benefit
  * at this volume. `CLOUDFLARE_API_TOKEN` already has D1 Edit scope
  * (PROVISIONED.md) and is already the credential GitHub Actions uses for KV
- * writes (KvExportDriver) — reusing it here adds no new secret. Revisit if
+ * writes — reusing it here adds no new secret. Revisit if
  * this project ever actually hits Cloudflare's global API rate limit.
  *
  * Endpoint/response shape confirmed against Cloudflare's current docs
@@ -27,7 +27,7 @@ import * as schema from "./schema.ts";
  * standard Cloudflare API envelope `{ success, errors, messages, result }`
  * where `result` is an array of per-statement `{ success, meta, results }`
  * objects — `results` being an array of column-keyed row objects (matching
- * the same `{success, result, errors}` envelope shape KvExportDriver
+ * the same `{success, result, errors}` envelope shape the KV client
  * already documents for the sibling KV REST API).
  */
 export interface D1HttpOptions {

@@ -256,7 +256,26 @@ export interface ExportStoreResponse {
 }
 
 export interface ExportDriver {
+  /**
+   * The storage key this driver would use for a render.
+   *
+   * On the driver rather than on the caller because the key format is what
+   * identifies the backend: `src/server/console/exports.ts` reads a
+   * download's store off the key shape (`exports/<id>.mp4` is an R2 object,
+   * `export:<id>.mp4` a legacy KV value), so a driver that chose a shape it
+   * does not actually write to would send the console looking in the wrong
+   * place.
+   */
+  keyFor(renderId: string): string;
   store(req: ExportStoreRequest): Promise<Result<ExportStoreResponse, DriverError>>;
+  /**
+   * Frees a blob whose review window has closed (`db/exports-reap.ts`).
+   *
+   * On the driver because R2 — unlike KV — has no per-object TTL, so
+   * something has to actually delete the bytes, and the store that wrote
+   * them is the only thing that knows how to reach them.
+   */
+  remove(key: string): Promise<Result<void, DriverError>>;
 }
 
 export interface ChannelTopVideoRequest {

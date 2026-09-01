@@ -77,6 +77,11 @@ describe("router", () => {
       actions: null,
       renderWorkflow: "render.yml",
       renderRef: "main",
+      // No R2 binding in the default deps. The routes that need one answer
+      // 503 with a reason rather than guessing; the KV path (which every
+      // export seeded here uses) is unaffected, and the backend split itself
+      // is covered in console/exports.test.ts.
+      exportBucket: undefined,
       pipelineBatchToken: PIPELINE_BATCH_TOKEN,
     };
     vi.mocked(simplewebauthn.verifyRegistrationResponse).mockReset();
