@@ -126,3 +126,79 @@ describe("PexelsDriver", () => {
     expect(result.error.kind).toBe("invalid_response");
   });
 });
+
+describe("PexelsDriver.downloadClip", () => {
+  it("returns the bytes for a clip the search itself produced", async () => {
+    const body = new Uint8Array([1, 2, 3, 4, 5]);
+    const driver = new PexelsDriver("key", {
+      fetchImpl: fakeFetch(new Response(body, { status: 200, headers: { "content-type": "video/mp4" } })),
+    });
+
+    const result = await driver.downloadClip("https://player.pexels.com/8765-720.mp4");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(Array.from(result.value)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("refuses a response that is not a video, rather than handing ffmpeg an error page", async () => {
+    // A CDN serving an HTML error page with a 200 is the failure this
+    // exists for: without the check it reaches the encoder as a mystery.
+    const driver = new PexelsDriver("key", {
+      fetchImpl: fakeFetch(new Response("<html>gone</html>", { status: 200, headers: { "content-type": "text/html" } })),
+    });
+
+    const result = await driver.downloadClip("https://player.pexels.com/8765-720.mp4");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.kind).toBe("invalid_response");
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  it("refuses a clip that declares itself larger than the ceiling, before downloading it", async () => {
+    const driver = new PexelsDriver("key", {
+      fetchImpl: fakeFetch(
+        new Response(new Uint8Array([1]), { status: 200, headers: { "content-type": "video/mp4", "content-length": String(500 * 1024 * 1024) } }),
+      ),
+    });
+
+    const result = await driver.downloadClip("https://player.pexels.com/8765-2160.mp4");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("ceiling");
+  });
+
+  it("enforces the ceiling against the body received, not only the declared length", async () => {
+    // A chunked response sends no content-length at all.
+    const driver = new PexelsDriver("key", {
+      fetchImpl: fakeFetch(new Response(new Uint8Array(64), { status: 200, headers: { "content-type": "video/mp4" } })),
+    });
+
+    const result = await driver.downloadClip("https://player.pexels.com/8765-720.mp4", { maxBytes: 32 });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("ceiling");
+  });
+
+  it("reports an empty body as a retryable failure rather than a zero-byte clip", async () => {
+    const driver = new PexelsDriver("key", {
+      fetchImpl: fakeFetch(new Response(new Uint8Array(0), { status: 200, headers: { "content-type": "video/mp4" } })),
+    });
+
+    const result = await driver.downloadClip("https://player.pexels.com/8765-720.mp4");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.retryable).toBe(true);
+  });
+});
+
+describe("the render path's rendition floor", () => {
+  it("takes a 1080-wide rendition when asked, where the montage takes 720", async () => {
+    // The console plays these in cards a few hundred pixels wide; RENDER
+    // crops them to fill a 1080x1920 frame, and a 720 source there is
+    // visibly softer than the gameplay footage beside it.
+    const driver = new PexelsDriver("key", {
+      fetchImpl: fakeFetch(new Response(JSON.stringify(videoPayload()), { status: 200, headers: JSON_HEADERS })),
+    });
+
+    const result = await driver.searchVideos("rain on glass", { minWidth: 1080 });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.value[0].videoUrl).toBe("https://player.pexels.com/8765-2160.mp4");
+  });
+});

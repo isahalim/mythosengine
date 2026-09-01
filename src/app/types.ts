@@ -63,10 +63,33 @@ interface RunStage {
   errorClass: string | null;
 }
 
+/**
+ * One shot in a video's plan, and how far it actually got.
+ *
+ * Every status is a row the pipeline wrote after doing the thing — PLAN
+ * writes `planned`, SOURCE moves it to `searching`, `downloading`,
+ * `clipped`, and RENDER to `composited`. Nothing here is predicted, which
+ * is the same contract the rest of stage 5 holds to.
+ */
+export interface RunShot {
+  position: number;
+  /** The beat this shot covers; null for the opening image over the hook. */
+  beatIndex: number | null;
+  /** One sentence from PLAN: what this image is doing for this beat. */
+  intent: string;
+  /** What was typed into the search box. */
+  query: string;
+  source: "youtube" | "pexels";
+  status: "planned" | "searching" | "downloading" | "clipped" | "composited" | "failed";
+  error: string | null;
+}
+
 export interface RunVideo {
   scriptId: string;
   hook: string;
   keywords: string[];
+  /** The sourcing plan. Empty until PLAN has run. */
+  shots: RunShot[];
   wordCount: number;
   createdAt: string;
   renderId: string | null;
@@ -94,9 +117,12 @@ export interface RunProgress {
 
 /**
  * A preview clip for the forge — retrieved from Pexels for one of the
- * script's keywords. Preview ONLY: the rendered video's footage comes from
- * the maintained, provenance-tracked library and these clips never enter
- * it. The UI must keep saying so, and must keep the attribution visible.
+ * script's keywords, for the hover reveal inside the glass.
+ *
+ * A PREVIEW, which is not the same thing as the footage: the shot plan
+ * (`RunShot`) is what says where a video's real footage came from, and the
+ * export's audit package is what proves it per clip. The UI keeps the
+ * attribution visible either way.
  */
 export interface MontageClip {
   id: number;

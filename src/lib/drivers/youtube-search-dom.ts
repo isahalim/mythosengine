@@ -183,12 +183,32 @@ async function extractFromAnchors(page: Page): Promise<RawResult[]> {
   return out;
 }
 
+/**
+ * The literal string typed into YouTube's search box.
+ *
+ * Exported and pure so the three shapes are testable without a browser:
+ * a free-form query, a channel plus its game, and a channel alone.
+ */
+export function buildSearchQuery(req: ChannelTopVideoRequest): string {
+  const free = req.query?.trim();
+  if (free !== undefined && free.length > 0) return free;
+  if (req.channelHandle === undefined || req.channelHandle.length === 0) {
+    throw new Error("a YouTube search needs either a query or a channelHandle");
+  }
+  return req.game ? `"${req.game}" walkthrough "${req.channelHandle}" youtube` : `"${req.channelHandle}" walkthrough youtube`;
+}
+
 export class DomYoutubeSearchDriver implements YoutubeSearchDriver {
   constructor(private readonly options: DomYoutubeSearchDriverOptions = {}) {}
 
   async findTopLongFormVideos(req: ChannelTopVideoRequest): Promise<Result<ChannelTopVideoResponse[], DriverError>> {
     const origin = this.options.searchOrigin ?? YOUTUBE_ORIGIN;
-    const query = req.game ? `"${req.game}" walkthrough "${req.channelHandle}" youtube` : `"${req.channelHandle}" walkthrough youtube`;
+    // A planner-written query wins outright: it is already the question,
+    // and folding a channel handle into it would narrow a deliberately open
+    // search back down to the maintained channel (operator direction
+    // 2026-09-01 opened sourcing beyond it). The channel form is unchanged
+    // and is still what the weekly FOOTAGE REFRESH sends.
+    const query = buildSearchQuery(req);
     const searchUrl = `${origin}/results?search_query=${encodeURIComponent(query)}`;
 
     const session = await launchBrowserSession([origin]);

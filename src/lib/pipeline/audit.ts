@@ -8,6 +8,31 @@ import { hammingDistance, simhash64 } from "../ingest/simhash.ts";
  * model call.
  */
 
+/**
+ * One clip in the finished video's footage track.
+ *
+ * `startMs`/`endMs` are positions in the *output*, so a reviewer watching
+ * the video can put a shot they are questioning against the row that
+ * explains it. The stock fields are null on a gameplay clip, where the
+ * channel on the source row is the whole attribution, and set together on a
+ * stock one — the Pexels licence is per clip and per photographer, and an
+ * export that names neither cannot be licence-checked.
+ */
+export interface FootagePart {
+  position: number;
+  segmentId: string;
+  startMs: number;
+  endMs: number;
+  provider: string | null;
+  providerClipId: string | null;
+  photographer: string | null;
+  pageUrl: string | null;
+  /** The keyword that retrieved this shot — why it is in this video at all. */
+  searchQuery: string | null;
+  /** The script beat this shot illustrates; null for the hook's establishing shot or a single looped clip. */
+  beatIndex: number | null;
+}
+
 export interface FootageProvenance {
   segmentId: string;
   footageSourceId: string;
@@ -15,6 +40,14 @@ export interface FootageProvenance {
   clipStartS: number;
   clipEndS: number;
   usedCount: number;
+  /**
+   * Every clip in the video, in order. Required, not optional: a montage
+   * whose parts were merely absent would be indistinguishable from a single
+   * looped clip, and CLAUDE.md forbids an export that leaves the reviewer to
+   * infer where a frame came from. A gameplay render has exactly one part,
+   * and the fields above describe that same clip.
+   */
+  parts: FootagePart[];
 }
 
 /**
@@ -55,6 +88,25 @@ interface NarrationProvenance {
    * native and exact.
    */
   alignMatchRatio: number | null;
+  /**
+   * Where the caption timings came from, which decides how much to trust
+   * them:
+   *
+   * - `native` — Edge TTS's own WordBoundary events. Exact.
+   * - `aligned` — ALIGN force-aligned a transcript of the Gemini audio.
+   *   Accurate to `alignMatchRatio`.
+   * - `estimated` — ALIGN failed and the words were spread evenly across the
+   *   narration's measured duration. The video is complete and watchable and
+   *   the captions will drift within a sentence.
+   *
+   * The third state exists because losing a finished video to a failed
+   * transcription call is the worse trade (2026-09-01, operator direction) —
+   * the same reasoning §5.2.5 already applies to RESEARCH. It is recorded
+   * and flagged rather than silently accepted, because a reviewer cannot
+   * tell drifting captions from a bad take without being told which one
+   * they are watching.
+   */
+  captionTiming: "native" | "aligned" | "estimated";
 }
 
 export interface AuditSummaryInput {
@@ -154,6 +206,9 @@ export function computeAuditSummary(input: AuditSummaryInput): AuditResult {
   const narrationDowngraded = input.narration?.fallbackReason != null;
   if (input.narration?.fallbackReason) flags.push(`narration on ${input.narration.driver}: ${input.narration.fallbackReason}`);
   if (input.characterAbsentReason) flags.push(`no host on screen: ${input.characterAbsentReason}`);
+  if (input.narration?.captionTiming === "estimated") {
+    flags.push("caption timings estimated — ALIGN failed, so words are spread evenly across the narration and will drift within a sentence");
+  }
 
   const hasDebateQuestion = input.script.debateQuestion.trim().length > 0;
   if (!hasDebateQuestion) flags.push("no debate question");
@@ -170,6 +225,17 @@ export function computeAuditSummary(input: AuditSummaryInput): AuditResult {
   for (const policyFlag of input.policyFlags) flags.push(`critic: ${policyFlag}`);
 
   const footageRecentlyUsed = input.footage.usedCount > 0;
+
+  // A licensed stock clip whose photographer or page did not survive into
+  // the export cannot be licence-checked by the reviewer, which is the one
+  // thing §9 will not let an export be missing. Reported per clip, because
+  // "one of eight" is the answer the reviewer needs.
+  for (const part of input.footage.parts) {
+    if (part.provider === null) continue;
+    if (part.photographer === null || part.pageUrl === null) {
+      flags.push(`${part.provider} clip ${part.providerClipId ?? "?"} at position ${part.position} has no attribution recorded`);
+    }
+  }
 
   let scriptSimilarityResult: AuditResult["scriptSimilarity"] = null;
   let flaggedAsRepeat = false;

@@ -338,7 +338,17 @@
   transform-style: preserve-3d;
 }
 
-/* The "dream": keyword footage playing inside one fragment. */
+/* The "dream": one keyword still per fragment, revealed on hover.
+   Operator direction 2026-09-01 — the card is plain glass until the cursor
+   is on a piece, and only that piece shows what is behind it.
+
+   Driven by `.shard--hot`, which useShardField already writes on
+   pointerenter, so the reveal and the fragment's lift/specular are one
+   gesture rather than two systems guessing at the same hover. The
+   transition is asymmetric in the same direction and for the same reason as
+   `.shard`'s: leaving is quick so the pane is glass again by the time the
+   cursor reaches the next fragment, arriving is slower so the image surfaces
+   through the glass rather than snapping on. */
 .forge-dream {
   position: absolute;
   inset: 0;
@@ -346,11 +356,17 @@
   height: 100%;
   object-fit: cover;
   opacity: 0;
-  transition: opacity 1.1s var(--ease-out);
+  transition: opacity 0.16s linear;
 }
 
+/* Stage 6: the sneak peek is the card's identity, so it is simply on. */
 .forge-dream--on {
   opacity: 0.82;
+}
+
+.shard--hot .forge-dream {
+  opacity: 0.82;
+  transition: opacity 0.42s var(--ease-out);
 }
 
 .forge-crack path {

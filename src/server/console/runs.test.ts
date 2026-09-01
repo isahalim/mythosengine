@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createTestDb } from "../../../db/client.ts";
 import { applyMigrations } from "../../../db/apply-migrations.ts";
 import { exports as exportsTable, footageSegments, footageSources, renders, runs, scripts, signals, sources } from "../../../db/schema.ts";
+import { advanceShot, saveShotPlan } from "../../../db/shot-plans.ts";
 import { getRunProgress, listRecentRuns } from "./runs.ts";
 
 const TRACE = "trace-1";
@@ -154,6 +155,50 @@ describe("getRunProgress", () => {
     expect(progress?.videos).toHaveLength(1);
     expect(progress?.videos[0].renderId).toBeNull();
     expect(progress?.videos[0].exportId).toBeNull();
+  });
+
+  it("carries the shot plan, in plan order, with the status each shot actually reached", async () => {
+    // Stage 5's contract: it shows what the pipeline recorded. These
+    // statuses are rows SOURCE wrote after doing the thing, never
+    // predictions, so the panel can never claim a shot is downloading when
+    // nothing has been requested.
+    await seedSignal(ctx);
+    await ctx.db.insert(runs).values({ id: "r1", startedAt: "2026-08-31T10:00:00.000Z", stage: "footage_select", status: "running", traceId: TRACE }).run();
+    await ctx.db
+      .insert(scripts)
+      .values({ id: "scr1", signalId: "sig1", hook: "h", body: "b", debateQuestion: "q", wordCount: 3, status: "draft", traceId: TRACE, createdAt: "2026-08-31T10:00:30.000Z" })
+      .run();
+    await saveShotPlan(
+      ctx.client,
+      "scr1",
+      TRACE,
+      [
+        { position: 0, beatIndex: null, intent: "opening", query: "city street crowd walking", source: "pexels" },
+        { position: 1, beatIndex: 0, intent: "the real thing", query: "GTA 6 walkthrough gameplay", source: "youtube" },
+      ],
+      "2026-08-31T10:00:31.000Z",
+    );
+    await advanceShot(ctx.db, "scr1", 0, "clipped", "2026-08-31T10:00:40.000Z", { footageSegmentId: "seg1" });
+    await advanceShot(ctx.db, "scr1", 1, "failed", "2026-08-31T10:00:45.000Z", { error: "no long-form result" });
+
+    const progress = await getRunProgress(ctx.db, TRACE);
+    const shots = progress?.videos[0].shots ?? [];
+
+    expect(shots.map((shot) => shot.position)).toEqual([0, 1]);
+    expect(shots[0]).toMatchObject({ status: "clipped", source: "pexels", query: "city street crowd walking", error: null });
+    expect(shots[1]).toMatchObject({ status: "failed", source: "youtube", error: "no long-form result" });
+  });
+
+  it("reports no shots at all before PLAN has run, rather than inventing placeholders", async () => {
+    await seedSignal(ctx);
+    await ctx.db.insert(runs).values({ id: "r1", startedAt: "2026-08-31T10:00:00.000Z", stage: "script", status: "running", traceId: TRACE }).run();
+    await ctx.db
+      .insert(scripts)
+      .values({ id: "scr1", signalId: "sig1", hook: "h", body: "b", debateQuestion: "q", wordCount: 3, status: "draft", traceId: TRACE, createdAt: "2026-08-31T10:00:30.000Z" })
+      .run();
+
+    const progress = await getRunProgress(ctx.db, TRACE);
+    expect(progress?.videos[0].shots).toEqual([]);
   });
 
   it("does not attribute another trace's script to this run", async () => {

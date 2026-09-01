@@ -20,6 +20,7 @@ import type { VideoSpec } from "../state.ts";
 import type { MontageClip, RunProgress, RunVideo } from "../types.ts";
 import { Button } from "../ui/Button.tsx";
 import { StageFrame } from "../ui/StageFrame.tsx";
+import { ShotPlanPanel } from "./ShotPlanPanel.tsx";
 
 const POLL_MS = 5_000;
 
@@ -123,7 +124,7 @@ export function Stage5Forge({ traceId, videos, dispatchNote, onDone, onUnauthori
       blurb={
         status === "not_triggered"
           ? "This run exists in the database but no workflow was triggered — there is no dispatch credential configured."
-          : "Each pane is one video. The cracks close as the pipeline records real milestones against it — a script, a render, an export."
+          : "Each pane is one video. The shot plan under it is what the agents are sourcing, shot by shot; the cracks close as the pipeline records real milestones — a script, a render, an export."
       }
       footer={
         <>
@@ -181,6 +182,11 @@ export function Stage5Forge({ traceId, videos, dispatchNote, onDone, onUnauthori
                 >
                   <ForgePane fracture={fractureOf(video)} glow={hue} clips={clipsByScript[video.scriptId] ?? []} working={running} />
                   <p className="mt-2 line-clamp-2 text-center text-[0.66rem] leading-snug text-bone">{video.hook}</p>
+                  {/* The paperwork beside the glass: what the agents planned
+                      to find, and what they have actually found so far. */}
+                  <div className="mt-2">
+                    <ShotPlanPanel shots={video.shots} />
+                  </div>
                 </div>
               );
             })}
@@ -201,8 +207,9 @@ export function Stage5Forge({ traceId, videos, dispatchNote, onDone, onUnauthori
           // are a preview of the script's keywords, not the footage in the
           // video, and the UI has to keep saying so.
           <p className="shrink-0 text-[0.65rem] leading-relaxed text-bone">
-            Shards show preview stills from Pexels for this script&apos;s keywords. They are not the rendered footage — that comes from the maintained,
-            provenance-tracked library and never from here.
+            Hover a fragment to see what it is holding — a preview still from Pexels for one of this script&apos;s keywords. Previews are not the footage:
+            the shot plan under each pane is what the agents actually sourced, and every finished video&apos;s audit package names each clip, its provider
+            and the search that found it.
           </p>
         )}
       </div>

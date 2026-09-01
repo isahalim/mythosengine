@@ -6,7 +6,7 @@ const fixturesDir = join(import.meta.dirname, "__fixtures__");
 const fixture = (name: string) => join(fixturesDir, name);
 
 const baseRequest = {
-  footageClipPath: "/tmp/does-not-need-to-exist-for-the-fixture.mp4",
+  footageClips: [{ filePath: "/tmp/does-not-need-to-exist-for-the-fixture.mp4" }],
   narrationAudioPath: "/tmp/does-not-need-to-exist-for-the-fixture.mp3",
   captionCues: [{ text: "hello", startMs: 0, endMs: 500 }],
   outputPath: "",
@@ -58,6 +58,46 @@ describe("FfmpegRenderDriver", () => {
     const result = await driver.compose(withOutput("/tmp/render-test-output-2.mp4"));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe("invalid_response");
+  });
+
+  it("rejects an empty footage track before ever invoking ffmpeg", async () => {
+    const driver = new FfmpegRenderDriver({ ffmpegBin: fixture("fake-ffmpeg-fail.py") });
+    const result = await driver.compose({ ...baseRequest, footageClips: [], outputPath: "/tmp/x.mp4" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.kind).toBe("invalid_response");
+      expect(result.error.retryable).toBe(false);
+    }
+  });
+
+  it("refuses a montage whose clips do not say how long they are on screen", async () => {
+    // Without a duration there is nothing to cut on and ffmpeg would play
+    // each clip in full — a montage running minutes past its narration,
+    // which is the kind of thing you find in the finished file.
+    const driver = new FfmpegRenderDriver({ ffmpegBin: fixture("fake-ffmpeg-fail.py") });
+    const result = await driver.compose({
+      ...baseRequest,
+      footageClips: [{ filePath: "/tmp/a.mp4", durationS: 4 }, { filePath: "/tmp/b.mp4" }],
+      outputPath: "/tmp/x.mp4",
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.message).toContain("durationS");
+  });
+
+  it("accepts a multi-clip montage with durations", async () => {
+    const driver = new FfmpegRenderDriver({
+      ffmpegBin: fixture("fake-ffmpeg-success.py"),
+      ffprobeBin: fixture("fake-ffprobe-success.py"),
+    });
+    const result = await driver.compose({
+      ...baseRequest,
+      footageClips: [
+        { filePath: "/tmp/a.mp4", durationS: 4 },
+        { filePath: "/tmp/b.mp4", durationS: 6.5 },
+      ],
+      outputPath: "/tmp/render-test-montage.mp4",
+    });
+    expect(result.ok).toBe(true);
   });
 
   it("fails with a non-retryable provider_error when ffmpeg itself can't be found", async () => {

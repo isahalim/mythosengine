@@ -57,6 +57,14 @@ export interface PipelineEnv {
    * an upgrade.
    */
   geminiApiKey: string | undefined;
+  /**
+   * Optional, and required only by the stock-montage footage mode
+   * (src/lib/footage/stock.ts). Absent, a `gameplay` run is unaffected and a
+   * `stock_montage` run fails at FOOTAGE naming this variable — which is the
+   * contract CLAUDE.md asks for: name the variable, do not invent a
+   * fallback, and never ask for the value.
+   */
+  pexelsApiKey: string | undefined;
   discordWebhookUrl: string | undefined;
 }
 
@@ -82,6 +90,7 @@ function buildLocalPipelineEnv(): PipelineEnv {
     local: true,
     groqApiKey: requireEnv("GROQ_API_KEY"),
     geminiApiKey: optionalEnv("GEMINI_API_KEY"),
+    pexelsApiKey: optionalEnv("PEXELS_API_KEY"),
     discordWebhookUrl: undefined, // a local run must never page the operator
   };
 }
@@ -122,6 +131,7 @@ export function buildPipelineEnv(): PipelineEnv {
     },
     hotKv: new KvHttpClient({ accountId, apiToken, namespaceId: HOT_KV_NAMESPACE_ID }),
     groqApiKey,
+    pexelsApiKey: optionalEnv("PEXELS_API_KEY"),
     discordWebhookUrl: optionalEnv("DISCORD_WEBHOOK_URL"),
   };
 }

@@ -36,6 +36,13 @@ export interface ClaimedFootageSegment {
  * has to stop it appearing in *new* renders, while leaving its existing
  * segments and their provenance intact for exports already delivered.
  *
+ * Nor is a `stock` segment (db/migrations/0013). This function claims by
+ * *game*, which is a gameplay concept; a stock clip is chosen by what the
+ * script is about, by `src/lib/footage/stock.ts`, and the two selections
+ * have nothing in common but the table they read. Without this filter a
+ * stock source's `game` would enter `pickGamesForToday`'s rotation and a run
+ * asking for GTA V footage could be handed a sunset.
+ *
  * Built against `AppDb` rather than a raw better-sqlite3 handle — the
  * raw-statement version this replaced could only ever run against the
  * local test dialect, not the D1 binding or the D1-over-HTTP client the
@@ -49,7 +56,7 @@ export async function claimNextFootageSegment(db: AppDb, game: string, nowIso: s
       sql`${footageSegments.id} = (
         SELECT fs.id FROM footage_segments fs
         JOIN footage_sources src ON src.id = fs.footage_source_id
-        WHERE src.game = ${game} AND src.enabled = 1
+        WHERE src.game = ${game} AND src.enabled = 1 AND src.kind = 'gameplay'
         ORDER BY fs.used_count ASC, fs.last_used_at IS NOT NULL, fs.last_used_at ASC
         LIMIT 1
       )`,

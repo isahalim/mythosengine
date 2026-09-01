@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { computeAuditSummary, type AuditSummaryInput } from "./audit.ts";
 
+function gameplayPart(segmentId = "seg1") {
+  return {
+    position: 0,
+    segmentId,
+    startMs: 0,
+    endMs: 45_000,
+    provider: null,
+    providerClipId: null,
+    photographer: null,
+    pageUrl: null,
+    searchQuery: null,
+    beatIndex: null,
+  };
+}
+
 function baseInput(overrides: Partial<AuditSummaryInput> = {}): AuditSummaryInput {
   return {
     script: {
@@ -12,7 +27,7 @@ function baseInput(overrides: Partial<AuditSummaryInput> = {}): AuditSummaryInpu
     originalityScore: 0.8,
     minOriginalityScore: 0.5,
     policyFlags: [],
-    footage: { segmentId: "seg1", footageSourceId: "fsrc1", sourceVideoId: "v1", clipStartS: 600, clipEndS: 665, usedCount: 0 },
+    footage: { segmentId: "seg1", footageSourceId: "fsrc1", sourceVideoId: "v1", clipStartS: 600, clipEndS: 665, usedCount: 0, parts: [gameplayPart()] },
     research: {
       model: "openai/gpt-oss-20b",
       summary: "What people are arguing about.",
@@ -82,7 +97,7 @@ describe("computeAuditSummary", () => {
   });
 
   it("echoes footage provenance from the library-only claim, and flags a recently-reused segment as a rotation-health signal", () => {
-    const result = computeAuditSummary(baseInput({ footage: { segmentId: "seg1", footageSourceId: "fsrc1", sourceVideoId: "v1", clipStartS: 0, clipEndS: 20, usedCount: 4 } }));
+    const result = computeAuditSummary(baseInput({ footage: { segmentId: "seg1", footageSourceId: "fsrc1", sourceVideoId: "v1", clipStartS: 0, clipEndS: 20, usedCount: 4, parts: [gameplayPart()] } }));
     expect(result.footage.segmentId).toBe("seg1");
     expect(result.footageRecentlyUsed).toBe(true);
   });

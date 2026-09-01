@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createTestDb } from "../../../db/client.ts";
 import { applyMigrations } from "../../../db/apply-migrations.ts";
 import { signals, sources } from "../../../db/schema.ts";
-import { DEFAULT_DIRECTIVE } from "./directive-schema.ts";
+import { DEFAULT_DIRECTIVE, DirectiveSchema } from "./directive-schema.ts";
 import { dryRunSettings, getSettings, resetToDefaults, updateSettings } from "./settings.ts";
 
 describe("settings service", () => {
@@ -57,5 +57,23 @@ describe("settings service", () => {
     const current = await getSettings(ctx.db);
     expect(current?.version).toBe(activated.version);
     expect(current?.directive.focusGames).toEqual(["gta-v"]);
+  });
+});
+
+describe("a directive saved before a field existed", () => {
+  it("still validates, because a missing optional key is not a null one", () => {
+    // The regression this guards: a field added as `.nullable()` only is
+    // rejected when the key is ABSENT, which it is in every directive saved
+    // before that field existed. `footageMode` did exactly this on
+    // 2026-09-01 and every RENDER died in getSettings with a ZodError
+    // before it read a signal.
+    const withoutFieldsAddedLater = { ...DEFAULT_DIRECTIVE };
+    delete (withoutFieldsAddedLater as Partial<typeof DEFAULT_DIRECTIVE>).targetDurationS;
+    delete (withoutFieldsAddedLater as Partial<typeof DEFAULT_DIRECTIVE>).perBeatDelivery;
+    delete (withoutFieldsAddedLater as Partial<typeof DEFAULT_DIRECTIVE>).tone;
+
+    const parsed = DirectiveSchema.safeParse(withoutFieldsAddedLater);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.targetDurationS ?? null).toBeNull();
   });
 });

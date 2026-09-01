@@ -42,8 +42,39 @@ describe("resolveCharacterOverlay", () => {
 describe("buildFilterGraph", () => {
   it("burns captions straight onto the framed footage when there is no character", () => {
     const graph = buildFilterGraph("/tmp/c.ass", undefined);
-    expect(graph).toBe("[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,ass=/tmp/c.ass[v]");
+    expect(graph).toBe(
+      "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,format=yuv420p[fg];[fg]ass=/tmp/c.ass[v]",
+    );
     expect(graph).not.toContain("overlay");
+  });
+
+  it("does not concat a single-clip footage track", () => {
+    expect(buildFilterGraph("/tmp/c.ass", undefined, 1)).not.toContain("concat");
+  });
+
+  it("normalizes every clip and concatenates them for a montage", () => {
+    const graph = buildFilterGraph("/tmp/c.ass", undefined, 3);
+    // concat compares size, pixel format, frame rate and sample aspect
+    // across its inputs and errors on any disagreement — which is exactly
+    // what three clips from three photographers will do untouched.
+    expect(graph).toContain("[0:v]scale=1080:1920");
+    expect(graph).toContain("[1:v]scale=1080:1920");
+    expect(graph).toContain("[2:v]scale=1080:1920");
+    expect(graph.match(/fps=30,format=yuv420p/g)).toHaveLength(3);
+    expect(graph).toContain("[c0][c1][c2]concat=n=3:v=1:a=0[fg]");
+  });
+
+  it("reads the character from the input after the clips and the narration, however many clips there are", () => {
+    // 4 clips -> inputs 0-3 are footage, 4 is the narration, 5 is the host.
+    // Getting this wrong composites the narration's cover art, or nothing.
+    expect(buildFilterGraph("/tmp/c.ass", CHARACTER_OVERLAY, 4)).toContain("[5:v]scale=-1:");
+    expect(buildFilterGraph("/tmp/c.ass", CHARACTER_OVERLAY, 1)).toContain("[2:v]scale=-1:");
+  });
+
+  it("still burns the captions last in a montage with a character", () => {
+    const graph = buildFilterGraph("/tmp/c.ass", CHARACTER_OVERLAY, 3);
+    expect(graph.indexOf("concat=")).toBeLessThan(graph.indexOf("overlay="));
+    expect(graph.indexOf("overlay=")).toBeLessThan(graph.indexOf("ass="));
   });
 
   it("keys the character and composites her before the captions are burned in", () => {

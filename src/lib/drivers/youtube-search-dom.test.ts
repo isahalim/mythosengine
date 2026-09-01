@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { collectVideoRenderers, DomYoutubeSearchDriver, parseDurationText, parseViewCountText } from "./youtube-search-dom.ts";
+import { buildSearchQuery, collectVideoRenderers, DomYoutubeSearchDriver, parseDurationText, parseViewCountText } from "./youtube-search-dom.ts";
 
 /**
  * The fixture renders results *after* domcontentloaded, exactly as
@@ -180,5 +180,29 @@ describe("DomYoutubeSearchDriver", () => {
       // channel genuinely has no long videos".
       expect(result.error.retryable).toBe(true);
     });
+  });
+});
+
+describe("buildSearchQuery", () => {
+  it("uses a planner's query verbatim, without folding a channel into it", () => {
+    // Sourcing was opened beyond the maintained channel on 2026-09-01.
+    // Appending a handle here would silently narrow a deliberately open
+    // search straight back down to it.
+    expect(buildSearchQuery({ query: "GTA 6 walkthrough gameplay", minDurationS: 300, channelHandle: "HollowPoiint", game: "gta" })).toBe(
+      "GTA 6 walkthrough gameplay",
+    );
+  });
+
+  it("still builds the channel-scoped query the weekly refresh sends", () => {
+    expect(buildSearchQuery({ channelHandle: "HollowPoiint", game: "gta", minDurationS: 300 })).toBe('"gta" walkthrough "HollowPoiint" youtube');
+    expect(buildSearchQuery({ channelHandle: "HollowPoiint", minDurationS: 300 })).toBe('"HollowPoiint" walkthrough youtube');
+  });
+
+  it("ignores an empty query rather than searching for nothing", () => {
+    expect(buildSearchQuery({ query: "   ", channelHandle: "HollowPoiint", minDurationS: 300 })).toBe('"HollowPoiint" walkthrough youtube');
+  });
+
+  it("refuses a request that names neither a query nor a channel", () => {
+    expect(() => buildSearchQuery({ minDurationS: 300 })).toThrow("needs either a query or a channelHandle");
   });
 });

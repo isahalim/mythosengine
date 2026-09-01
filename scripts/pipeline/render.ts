@@ -3,19 +3,18 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { desc, eq, gte, inArray } from "drizzle-orm";
-import { footageSegments, footageSources, renders, scripts, signals } from "../../db/schema.ts";
+import { execAtomic } from "../../db/client.ts";
+import { renders, runs, scripts, signals } from "../../db/schema.ts";
 import { finishRun, reapStaleRuns, startRun } from "../../db/runs.ts";
 import { reapExpiredExports } from "../../db/exports-reap.ts";
-import { claimNextRunPick } from "../../db/run-picks.ts";
-import { claimNextFootageSegment } from "../../db/footage-select.ts";
+import { claimNextRunPick, releaseStrandedPicks } from "../../db/run-picks.ts";
 import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
 import { getSettings } from "../../src/server/console/settings.ts";
 import { DEFAULT_DIRECTIVE, DEFAULT_TARGET_DURATION_S } from "../../src/server/console/directive-schema.ts";
 import { checkAndAlert } from "../../src/server/alerts/rules.ts";
-import { pickGamesForToday, pickVoicesForToday, weightSourcesForToday } from "../../src/lib/pipeline/diversity.ts";
+import { pickVoicesForToday, weightSourcesForToday } from "../../src/lib/pipeline/diversity.ts";
 import { generateDiscourseScript } from "../../src/lib/pipeline/script.ts";
 import { beatWordRanges } from "../../src/lib/pipeline/discourse.ts";
-import { alignBeats } from "../../src/lib/pipeline/align.ts";
 import { buildDirectedNarration, FLAT_DIRECTION } from "../../src/lib/pipeline/tts-direction.ts";
 import { selectTtsDrivers, synthesizeWithFallback } from "../../src/lib/pipeline/tts-select.ts";
 import { HOST_GEMINI_VOICE, resolveCharacterOverlay } from "../../src/lib/pipeline/character.ts";
@@ -27,9 +26,18 @@ import { ArticleFetchDriver } from "../../src/lib/drivers/article-fetch.ts";
 import { critiqueScript } from "../../src/lib/pipeline/critic.ts";
 import { buildCaptionCues } from "../../src/lib/pipeline/captions.ts";
 import { pickTtsRate } from "../../src/lib/pipeline/tts-rate.ts";
-import { computeAuditSummary, type FootageProvenance, type ResearchProvenance } from "../../src/lib/pipeline/audit.ts";
+import { computeAuditSummary, type FootagePart, type FootageProvenance, type ResearchProvenance } from "../../src/lib/pipeline/audit.ts";
 import { runExport } from "../../src/lib/pipeline/export.ts";
-import { readClipFromLibrary } from "../../src/lib/footage/library.ts";
+import { sourceShots, type SourcedShot } from "../../src/lib/footage/source-agent.ts";
+import { sweepSourceCache } from "../../src/lib/footage/source-cache.ts";
+import { heuristicPlan, planShots } from "../../src/lib/pipeline/shot-plan.ts";
+import { advanceShot, reapAbandonedShots, saveShotPlan } from "../../db/shot-plans.ts";
+import { DomYoutubeSearchDriver } from "../../src/lib/drivers/youtube-search-dom.ts";
+import { buildDownloadDriver } from "../../src/lib/footage/download-route.ts";
+import { buildMontageTimeline } from "../../src/lib/pipeline/montage-timeline.ts";
+import { resolveWordTimings } from "../../src/lib/pipeline/align-stage.ts";
+import { probeDurationS } from "../../src/lib/drivers/probe-video.ts";
+import { PexelsDriver } from "../../src/lib/drivers/pexels.ts";
 import { GroqWhisperDriver } from "../../src/lib/drivers/groq-whisper.ts";
 import { FfmpegRenderDriver } from "../../src/lib/drivers/render-ffmpeg.ts";
 import { createGroqDriverFromEnv, createGroqLimiter } from "../../src/lib/drivers/resolve-groq-driver.ts";
@@ -72,15 +80,40 @@ async function main(): Promise<void> {
   const reaped = await reapStaleRuns(env.db);
   if (reaped > 0) console.warn(`Reaped ${reaped} abandoned run row(s) left behind by a killed job.`);
 
+  // A render killed mid-flight leaves its run pick `claimed` forever, and
+  // the operator's queued story then silently never gets made — the next run
+  // finds an empty queue and falls back to its own diversity-weighted
+  // choice, producing a video about something nobody asked for. Observed the
+  // first time a viral render was killed mid-download (2026-09-01).
+  //
+  // Runs alive right now, AFTER the reaper above has failed the abandoned
+  // ones, are the only traces whose picks are genuinely being worked on.
+  const liveTraces = [...new Set((await env.db.select().from(runs).where(eq(runs.status, "running")).all()).map((row) => row.traceId))];
+  const released = await releaseStrandedPicks(env.db, liveTraces);
+  if (released > 0) console.warn(`Requeued ${released} run pick(s) stranded by a killed render.`);
+
+  // Same class of leftover, third door: a killed render leaves its shot rows
+  // mid-flight and stage 5 shows them as `downloading` forever.
+  const abandonedShots = await reapAbandonedShots(env.db, liveTraces, new Date().toISOString());
+  if (abandonedShots > 0) console.warn(`Marked ${abandonedShots} shot(s) abandoned by a killed render.`);
+
   // Export blobs live in R2 since 2026-08-31, and R2 has no per-object TTL
   // the way KV did — so the review window is enforced here rather than by
   // the store. Swept at the top of a run, like the stale-run reaper above
   // and for the same reason: this is a write, and the pipeline owns it.
-  const { retired, failures } = await reapExpiredExports(env.db, async (key) => {
+  const { retired, failures, segmentsFreed } = await reapExpiredExports(env.db, async (key) => {
     const removal = await env.exportDriver.remove(key);
     return removal.ok ? { ok: true } : { ok: false, error: `${removal.error.kind}: ${removal.error.message}` };
   });
   if (retired > 0) console.warn(`Retired ${retired} export(s) past their review window and freed their blobs.`);
+  if (segmentsFreed > 0) console.warn(`Dropped ${segmentsFreed} footage row(s) no reviewable video points at any more.`);
+
+  // The 24h YouTube source cache — the only footage that outlives a render,
+  // and only so a viral run does not re-pull a walkthrough hourly (operator
+  // direction 2026-09-01). Swept by age here, beside the other sweeps and
+  // for the same reason: this is a write, and the pipeline owns it.
+  const swept = await sweepSourceCache(REPO_DIR);
+  if (swept.removed > 0) console.warn(`Swept ${swept.removed} cached source(s) past 24h, freeing ${(swept.bytesFreed / 1e9).toFixed(2)} GB.`);
   for (const failure of failures) {
     // Reported, never swallowed. The row stays live and the next run retries.
     console.warn(`Could not free the blob for export ${failure.id}: ${failure.error}`);
@@ -133,7 +166,7 @@ async function main(): Promise<void> {
   const eligibleSourceIds = [...new Set(scoredSignals.map((s) => s.sourceId))];
   const rankedSourceIds = weightSourcesForToday(
     eligibleSourceIds,
-    { voicePool: directive.voicePool, preferredSourceIds: directive.preferredSourceIds, diversityMode: directive.diversityMode },
+    { voicePool: directive.voicePool ?? null, preferredSourceIds: directive.preferredSourceIds, diversityMode: directive.diversityMode },
     sourceIdsUsedToday,
   );
 
@@ -209,65 +242,110 @@ async function main(): Promise<void> {
   await finishRun(env.db, criticRunId, "succeeded");
   const critic = criticResult.value;
 
-  // ---- FOOTAGE SELECT ----
-  const todaysRenders = await env.db.select().from(renders).where(gte(renders.createdAt, since)).all();
-  // Same in-memory join, same reason as above.
-  const todaysSegments =
-    todaysRenders.length === 0
-      ? []
-      : await env.db.select().from(footageSegments).where(inArray(footageSegments.id, todaysRenders.map((r) => r.footageSegmentId))).all();
-  const allFootageSources = await env.db.select().from(footageSources).all();
-  const gameBySourceId = new Map(allFootageSources.map((row) => [row.id, row.game]));
-  const gamesUsedToday = todaysSegments.flatMap((row) => {
-    const game = gameBySourceId.get(row.footageSourceId);
-    return game === undefined ? [] : [game];
+  // ---- PLAN ----
+  //
+  // What the audience sees while the narrator argues (plan v2 §8 item 4).
+  // Never fatal: a failed PLAN falls back to keyword extraction and is
+  // recorded as degraded, the same contract §5.2.5 gives RESEARCH.
+  //
+  // `viral` never reaches the model. The operator's direction (2026-09-01)
+  // is that a viral video's background is always a GTA 6 walkthrough, and
+  // once the topic has decided the footage there is nothing about it left
+  // to decide — which second of the run to take is answered by motion
+  // scoring and chance, not by language.
+  const planRunId = await startRun(env.db, "plan", traceId);
+  const planResult = await planShots(llm, {
+    hook: script.hook,
+    beats: script.beats ?? [],
+    body: script.body,
+    debateQuestion: script.debateQuestion,
+    topic: claimedPick?.topic ?? null,
   });
+  // planShots never returns an error — the worst case is the heuristic plan.
+  const plan = planResult.ok ? planResult.value : heuristicPlan({ hook: script.hook, beats: script.beats ?? [], body: script.body, debateQuestion: script.debateQuestion, topic: null }, "PLAN returned an error");
+  await finishRun(env.db, planRunId, plan.degradedReason === null ? "succeeded" : "failed", plan.degradedReason ?? undefined);
+  console.warn(`PLAN (${plan.origin}): ${plan.shots.length} shot(s) — ${plan.shots.map((shot) => `${shot.source}:"${shot.query}"`).join(", ")}`);
+  if (plan.degradedReason !== null) console.warn(`PLAN degraded: ${plan.degradedReason}`);
 
-  // Only enabled sources (db/migrations/0008) — a game whose every channel
-  // has been retired must not be ranked as a candidate, or FOOTAGE SELECT
-  // spends a claim attempt on a game it can never satisfy.
-  const allGames = [...new Set(allFootageSources.filter((row) => row.enabled === 1).map((row) => row.game))];
-  const eligibleGames = directive.focusGames.length > 0 ? directive.focusGames.filter((g) => allGames.includes(g)) : allGames;
-  const rankedGames = pickGamesForToday(eligibleGames, gamesUsedToday, directive.diversityMode);
-
-  const footageRunId = await startRun(env.db, "footage_select", traceId);
-  let claimedSegment = null;
-  for (const game of rankedGames) {
-    claimedSegment = await claimNextFootageSegment(env.db, game, new Date().toISOString());
-    if (claimedSegment) break;
+  // An empty plan is a PLAN failure, and it says so here rather than being
+  // discovered two stages later as "no shot in the plan could be sourced" —
+  // which is what happened the first time PLAN was rate-limited and the
+  // heuristic fallback rejected every keyword it had (2026-09-01). Naming
+  // the stage that actually failed is the difference between a five-minute
+  // diagnosis and an hour of one.
+  if (plan.shots.length === 0) {
+    throw new Error(`PLAN produced no shots, so there is nothing to source. Reason: ${plan.degradedReason ?? "unknown"}`);
   }
-  if (!claimedSegment) {
-    await finishRun(env.db, footageRunId, "failed", "no_eligible_footage");
-    throw new Error("FOOTAGE SELECT failed: no footage segment available for any eligible game");
-  }
-  await finishRun(env.db, footageRunId, "succeeded");
 
-  const footage: FootageProvenance = {
-    segmentId: claimedSegment.id,
-    footageSourceId: claimedSegment.footageSourceId,
-    sourceVideoId: claimedSegment.sourceVideoId,
-    clipStartS: claimedSegment.clipStartS,
-    clipEndS: claimedSegment.clipEndS,
-    usedCount: claimedSegment.usedCount,
-  };
+  await saveShotPlan(env.rawClient, script.id, traceId, plan.shots, new Date().toISOString());
 
-  const clipBytesResult = await readClipFromLibrary(REPO_DIR, claimedSegment.libraryPath);
-  if (!clipBytesResult.ok) throw new Error(`could not read footage clip from assets-library: ${clipBytesResult.error.message}`);
+  const todaysRenders = await env.db.select().from(renders).where(gte(renders.createdAt, since)).all();
 
+  // The work directory precedes sourcing: every clip is downloaded into it
+  // and dies with the run (operator direction 2026-09-01 — no sourced
+  // footage is retained). Only the 24h YouTube source cache outlives a
+  // render, and no clip is ever written there.
   const workDir = await mkdtemp(join(tmpdir(), "render-"));
-  const footageClipPath = join(workDir, "footage.mp4");
   // Extension assigned after TTS, from the mime type the driver actually
   // returned: Edge emits MP3, Gemini WAV. FFmpeg probes by content and would
   // decode either under either name, but a `.mp3` holding WAV is a trap for
   // the next person to open the work directory.
   const outputPath = join(workDir, `${script.id}.mp4`);
-  await writeFile(footageClipPath, clipBytesResult.value);
 
   try {
+    // ---- SOURCE ----
+    //
+    // Executes the plan: finds each shot, downloads it, and cuts the piece
+    // worth showing (src/lib/footage/source-agent.ts). Every clip gets its
+    // provenance row before it reaches the encoder, and every clip's bytes
+    // live in this run's work directory and nowhere else — the `finally`
+    // below is what makes "no sourced footage survives" literally true.
+    //
+    // The shot boundaries cannot be computed until the narration exists, so
+    // clips are acquired here and laid out against the beats after TTS.
+    const footageRunId = await startRun(env.db, "footage_select", traceId);
+
+    if (env.pexelsApiKey === undefined || env.pexelsApiKey.length === 0) {
+      await finishRun(env.db, footageRunId, "failed", "no_pexels_key");
+      throw new Error("SOURCE failed: PEXELS_API_KEY is not set. Set it in the RENDER workflow's env, or in .env.local for a local run.");
+    }
+
+    const sourced = await sourceShots(plan, {
+      db: env.db,
+      pexels: new PexelsDriver(env.pexelsApiKey),
+      search: new DomYoutubeSearchDriver(),
+      download: buildDownloadDriver("SOURCE"),
+      workDir,
+      repoDir: REPO_DIR,
+      nowIso: new Date().toISOString(),
+      scriptId: script.id,
+    });
+    if (!sourced.ok) {
+      await finishRun(env.db, footageRunId, "failed", sourced.error.kind);
+      throw new Error(`SOURCE failed: ${sourced.error.message}`);
+    }
+    const sourcedShots = sourced.value.shots;
+    // Surfaced, never swallowed: a montage with holes is the operator's
+    // business, and the shot rows carry the same reasons for stage 5.
+    for (const failure of sourced.value.failures) console.warn(`SOURCE: no clip for ${failure.source} "${failure.query}" — ${failure.error}`);
+    console.warn(`SOURCE: ${sourcedShots.length} clip(s) — ${sourcedShots.map((shot) => `${shot.source}:"${shot.query}"`).join(", ")}`);
+    await finishRun(env.db, footageRunId, "succeeded");
+
+    const first = sourcedShots[0];
+    const primarySegmentId = first.segmentId;
+    const primaryProvenance: Omit<FootageProvenance, "parts"> = {
+      segmentId: first.segmentId,
+      footageSourceId: first.provider === "pexels" ? "pexels-stock" : `youtube-${first.providerClipId}`,
+      sourceVideoId: first.providerClipId,
+      clipStartS: 0,
+      clipEndS: Math.max(1, Math.ceil(first.durationS)),
+      usedCount: 0,
+    };
+
     // ---- TTS ----
     const voicesUsedToday = todaysRenders.map((r) => r.ttsVoice);
-    const voice = pickVoicesForToday({ voicePool: directive.voicePool, preferredSourceIds: directive.preferredSourceIds, diversityMode: directive.diversityMode }, voicesUsedToday)[0];
-    const rate = pickTtsRate(directive.ttsRateRange);
+    const voice = pickVoicesForToday({ voicePool: directive.voicePool ?? null, preferredSourceIds: directive.preferredSourceIds, diversityMode: directive.diversityMode }, voicesUsedToday)[0];
+    const rate = pickTtsRate(directive.ttsRateRange ?? null);
 
     // How many of today's renders already spent a Gemini TTS request. The
     // free tier's ceiling is per *day*, so this is the only count that can
@@ -280,7 +358,7 @@ async function main(): Promise<void> {
     // Edge gets the plain narration. Both speak the same words — only the
     // Gemini input carries the delivery notes, and those are never spoken.
     const directed = script.beats
-      ? buildDirectedNarration(script.hook, script.beats, script.debateQuestion, directive.perBeatDelivery)
+      ? buildDirectedNarration(script.hook, script.beats, script.debateQuestion, directive.perBeatDelivery ?? false)
       : { styleDirection: FLAT_DIRECTION, text: script.body };
 
     const ttsRunId = await startRun(env.db, "tts", traceId);
@@ -298,35 +376,55 @@ async function main(): Promise<void> {
     const narrationAudioPath = join(workDir, tts.response.mimeType === "audio/wav" ? "narration.wav" : "narration.mp3");
     await writeFile(narrationAudioPath, tts.response.audio);
 
+    // The narration's real length, measured rather than assumed. Both the
+    // montage's shot boundaries and the ALIGN fallback below need it, and
+    // the sum of the word timings is not it — it excludes trailing silence.
+    const narrationDurationResult = await probeDurationS(narrationAudioPath);
+    if (!narrationDurationResult.ok) {
+      throw new Error(`could not measure the narration audio: ${narrationDurationResult.error.message}`);
+    }
+    const narrationDurationMs = Math.round(narrationDurationResult.value * 1000);
+
+    const beatRanges = script.beats ? beatWordRanges({ hook: script.hook, beats: script.beats, open_question: script.debateQuestion }) : [];
+
     // ---- ALIGN (Gemini path only) ----
     // Edge TTS emits WordBoundary natively, so its timings are exact and
     // cost nothing. Gemini returns audio and no timings at all, which is
     // why this stage exists: without it, switching narration providers
     // would silently delete the word-level captions (plan v2 §4).
-    let wordTimings = tts.response.wordTimings;
-    let alignMatchRatio: number | null = null;
-    if (wordTimings.length === 0) {
-      const alignRunId = await startRun(env.db, "align", traceId);
-      const asr = new GroqWhisperDriver({ apiKey: env.groqApiKey });
-      const transcript = await asr.transcribe({
-        wordTimestamps: true,
-        source: { kind: "audio", bytes: tts.response.audio, mimeType: tts.response.mimeType },
-      });
-      if (!transcript.ok) {
-        await finishRun(env.db, alignRunId, "failed", transcript.error.kind);
-        throw new Error(`ALIGN failed: ${transcript.error.message}`);
+    //
+    // Not fatal (operator direction, 2026-09-01). It used to be, and the
+    // consequence was that a complete narration, a complete script and a
+    // complete footage montage were all thrown away because one
+    // transcription call failed — the same bad trade §5.2.5 already refuses
+    // to make for RESEARCH. A failure here now costs the render its exact
+    // caption timings and nothing else: the words are spread across the
+    // measured narration instead, the run row records the real error, and
+    // the audit package says `captionTiming: "estimated"` so the reviewer
+    // knows why the captions drift inside a sentence.
+    const needsAlign = tts.response.wordTimings.length === 0;
+    const alignRunId = needsAlign ? await startRun(env.db, "align", traceId) : null;
+    const align = await resolveWordTimings({
+      nativeTimings: tts.response.wordTimings,
+      audio: tts.response.audio,
+      mimeType: tts.response.mimeType,
+      scriptBody: script.body,
+      beatRanges,
+      narrationDurationMs,
+      asr: new GroqWhisperDriver({ apiKey: env.groqApiKey }),
+    });
+    if (alignRunId !== null) {
+      if (align.failure === null) {
+        await finishRun(env.db, alignRunId, "succeeded");
+        console.warn(`ALIGN: matched ${((align.alignMatchRatio ?? 0) * 100).toFixed(0)}% of the script.`);
+      } else {
+        await finishRun(env.db, alignRunId, "failed", align.failure.errorClass);
+        console.warn(
+          `ALIGN failed (${align.failure.errorClass}: ${align.failure.message}) — continuing with caption timings estimated across ${(narrationDurationMs / 1000).toFixed(1)}s of narration.`,
+        );
       }
-      const ranges = script.beats ? beatWordRanges({ hook: script.hook, beats: script.beats, open_question: script.debateQuestion }) : [];
-      const aligned = alignBeats(transcript.value.words, script.body, ranges);
-      if (!aligned.ok) {
-        await finishRun(env.db, alignRunId, "failed", aligned.error.kind);
-        throw new Error(`ALIGN failed: ${aligned.error.message}`);
-      }
-      await finishRun(env.db, alignRunId, "succeeded");
-      wordTimings = aligned.value.wordTimings;
-      alignMatchRatio = aligned.value.matchRatio;
-      console.warn(`ALIGN: matched ${(alignMatchRatio * 100).toFixed(0)}% of the script across ${aligned.value.beatBoundaries.length} beat(s).`);
     }
+    const { wordTimings, alignMatchRatio, captionTiming } = align;
 
     const captionCues = buildCaptionCues(wordTimings, 3, extractKeywords({ hook: script.hook, body: script.body, debateQuestion: script.debateQuestion }));
 
@@ -338,13 +436,76 @@ async function main(): Promise<void> {
     const character = await resolveCharacterOverlay(REPO_DIR);
     if (!character.present) console.warn(`RENDER: ${character.reason}`);
 
+    // The footage track, laid out across the narration on the script's own
+    // beat boundaries (src/lib/pipeline/montage-timeline.ts), so the picture
+    // turns where the argument does rather than on a timer.
+    const timeline = buildMontageTimeline({
+      parts: sourcedShots.map((shot) => ({ position: shot.position, beatIndex: shot.beatIndex })),
+      wordTimings,
+      beatRanges,
+      narrationDurationMs,
+    });
+
+    const shotAt = (position: number): SourcedShot => {
+      const shot = sourcedShots.find((candidate) => candidate.position === position);
+      if (shot === undefined) throw new Error(`the timeline named position ${position}, which no sourced clip has`);
+      return shot;
+    };
+
+    const footageClips = timeline.map((slot) => ({ filePath: shotAt(slot.position).filePath, durationS: slot.durationS }));
+
+    // Every clip that will actually be composited, with the provenance the
+    // export must carry and the second of the finished video it occupies.
+    // This is now the only record that a frame came from anywhere: no bytes
+    // are retained, so the rows are the provenance.
+    const footageParts: FootagePart[] = timeline.map((slot, index) => {
+      const shot = shotAt(slot.position);
+      return {
+        // Renumbered to the composited order: a clip dropped for being too
+        // short to read leaves no hole in the record either.
+        position: index,
+        segmentId: shot.segmentId,
+        startMs: slot.startMs,
+        endMs: slot.endMs,
+        provider: shot.provider,
+        providerClipId: shot.providerClipId,
+        photographer: shot.photographer,
+        pageUrl: shot.pageUrl,
+        searchQuery: shot.query,
+        beatIndex: shot.beatIndex,
+      };
+    });
+
+    // A shot that survived sourcing but was dropped by the timeline for
+    // being too short to read never reaches the screen, and its row should
+    // not claim it did.
+    const composited = new Set(timeline.map((slot) => slot.position));
+    const compositedAt = new Date().toISOString();
+    for (const shot of sourcedShots) {
+      const inVideo = composited.has(shot.position);
+      // Keyed by `planPosition`, never by the composited `position`: the two
+      // diverge as soon as one shot fails to source, and using the wrong one
+      // marks a failed shot as composited.
+      await advanceShot(
+        env.db,
+        script.id,
+        shot.planPosition,
+        inVideo ? "composited" : "failed",
+        compositedAt,
+        inVideo ? { footageSegmentId: shot.segmentId } : { error: "cut from the timeline — its beat was too short to hold a shot" },
+      );
+    }
+
+    const footage: FootageProvenance = { ...primaryProvenance, parts: footageParts };
+
     const renderRunId = await startRun(env.db, "render", traceId);
     const renderDriver = new FfmpegRenderDriver();
     const renderResult = await renderDriver.compose({
-      footageClipPath,
+      footageClips,
       narrationAudioPath,
       captionCues,
       outputPath,
+      outputDurationS: narrationDurationMs / 1000,
       ...(character.present ? { characterOverlay: character.overlay } : {}),
     });
     if (!renderResult.ok) {
@@ -366,6 +527,7 @@ async function main(): Promise<void> {
         styleDirection: tts.driver === "gemini-tts" ? directed.styleDirection : null,
         fallbackReason: tts.fallbackReason,
         alignMatchRatio,
+        captionTiming,
       },
       characterAbsentReason: character.present ? null : character.reason,
       originalityScore: critic.originalityScore,
@@ -382,20 +544,30 @@ async function main(): Promise<void> {
 
     const renderId = crypto.randomUUID();
     const nowIso = new Date().toISOString();
-    await env.db
-      .insert(renders)
-      .values({
-        id: renderId,
-        scriptId: script.id,
-        footageSegmentId: claimedSegment.id,
-        ttsDriver: tts.driver,
-        ttsVoice: tts.driver === "gemini-tts" ? HOST_GEMINI_VOICE : voice,
-        durationS: renderResult.value.durationS,
-        status: "rendered",
-        auditResult: JSON.stringify(auditResult),
-        createdAt: nowIso,
-      })
-      .run();
+    // The render row and the clips it is made of land together or not at
+    // all (CLAUDE.md: never a multi-step mutation outside a transaction). A
+    // render row whose parts failed to insert would be a video whose
+    // footage nothing accounts for, which is exactly the state this system
+    // is not allowed to reach.
+    await execAtomic(env.rawClient, [
+      {
+        sql: `INSERT INTO renders (id, script_id, footage_segment_id, tts_driver, tts_voice, duration_s, status, audit_result, created_at) VALUES (?, ?, ?, ?, ?, ?, 'rendered', ?, ?)`,
+        params: [
+          renderId,
+          script.id,
+          primarySegmentId,
+          tts.driver,
+          tts.driver === "gemini-tts" ? HOST_GEMINI_VOICE : voice,
+          renderResult.value.durationS,
+          JSON.stringify(auditResult),
+          nowIso,
+        ],
+      },
+      ...footageParts.map((part) => ({
+        sql: `INSERT INTO render_footage_parts (id, render_id, position, footage_segment_id, start_ms, end_ms) VALUES (?, ?, ?, ?, ?, ?)`,
+        params: [crypto.randomUUID(), renderId, part.position, part.segmentId, part.startMs, part.endMs],
+      })),
+    ]);
 
     // ---- EXPORT ----
     const exportRunId = await startRun(env.db, "export", traceId);

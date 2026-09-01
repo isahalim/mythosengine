@@ -2,6 +2,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { finishRun, reapStaleRuns, startRun } from "../../db/runs.ts";
+import { reapExpiredExports } from "../../db/exports-reap.ts";
 import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
 import { watchAllEnabledSources } from "../../src/lib/ingest/watch.ts";
 import { scoreObservedSignals } from "../../src/lib/ingest/score.ts";
@@ -42,6 +43,24 @@ async function main(): Promise<void> {
   // pipeline owns the runs table.
   const reaped = await reapStaleRuns(env.db);
   if (reaped > 0) console.warn(`Reaped ${reaped} abandoned run row(s) left behind by a killed job.`);
+
+  // The export review window is enforced from here as well as from RENDER
+  // (operator direction 2026-09-01: two days, "whether or not it gets
+  // downloaded or reviewed"). RENDER alone was not enough to mean that:
+  // this system makes videos only when the operator dispatches a run, so a
+  // sweep that runs only at the top of a render made "expires in two days"
+  // read as "expires whenever you next make a video". WATCH is hourly and
+  // scheduled, so the deadline is now a deadline.
+  //
+  // Failures are reported, never swallowed — the row stays live and the
+  // next sweep retries, exactly as in RENDER.
+  const { retired, failures, segmentsFreed } = await reapExpiredExports(env.db, async (key) => {
+    const removal = await env.exportDriver.remove(key);
+    return removal.ok ? { ok: true } : { ok: false, error: `${removal.error.kind}: ${removal.error.message}` };
+  });
+  if (retired > 0) console.warn(`Retired ${retired} export(s) past their review window and freed their blobs.`);
+  if (segmentsFreed > 0) console.warn(`Dropped ${segmentsFreed} footage row(s) no reviewable video points at any more.`);
+  for (const failure of failures) console.warn(`Could not free the blob for export ${failure.id}: ${failure.error}`);
 
   const traceId = crypto.randomUUID();
 

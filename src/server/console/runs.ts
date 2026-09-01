@@ -2,6 +2,7 @@ import { desc, eq, inArray } from "drizzle-orm";
 import type { AppDb } from "../../../db/client.ts";
 import { exports as exportsTable, renders, runs, scripts } from "../../../db/schema.ts";
 import { extractKeywords } from "../../lib/pipeline/keywords.ts";
+import { shotsForScripts } from "../../../db/shot-plans.ts";
 import { DISPATCH_NOT_TRIGGERED_NOTE, DISPATCH_STAGE } from "./dispatch.ts";
 import type { ExportStatus } from "./exports.ts";
 
@@ -34,8 +35,18 @@ interface RunStage {
 interface RunVideo {
   scriptId: string;
   hook: string;
-  /** Visual keywords for the montage, derived from the script itself (src/lib/pipeline/keywords.ts). Empty until SCRIPT has written a row. */
+  /** Visual keywords for the preview montage, derived from the script itself (src/lib/pipeline/keywords.ts). Empty until SCRIPT has written a row. */
   keywords: string[];
+  /**
+   * The shot plan and how far each shot has got — what stage 5 shows as the
+   * sourcing process (db/shot-plans.ts).
+   *
+   * Every entry is a row PLAN wrote and SOURCE advanced. Nothing here is
+   * predicted: a shot reads `searching` only once the search has been made,
+   * `clipped` only once a clip exists with a provenance row behind it. Empty
+   * until PLAN has run, which is the honest state before it has.
+   */
+  shots: RunShot[];
   wordCount: number;
   createdAt: string;
   renderId: string | null;
@@ -46,6 +57,21 @@ interface RunVideo {
   exportStatus: ExportStatus | null;
   suggestedTitle: string | null;
   sizeBytes: number | null;
+}
+
+/** One planned shot, as the waiting screen shows it. */
+interface RunShot {
+  position: number;
+  /** The beat this shot covers; null for the opening image over the hook. */
+  beatIndex: number | null;
+  /** One sentence from PLAN: what this image is doing for this beat. */
+  intent: string;
+  /** What was typed into the search box — why this shot is in this video. */
+  query: string;
+  source: "youtube" | "pexels";
+  status: "planned" | "searching" | "downloading" | "clipped" | "composited" | "failed";
+  /** Why this shot did not make it. Null unless it failed. */
+  error: string | null;
 }
 
 type RunStatus = "not_triggered" | "queued" | "running" | "succeeded" | "failed";
@@ -148,6 +174,16 @@ async function videosForTrace(db: AppDb, traceId: string): Promise<RunVideo[]> {
   const renderByScriptId = new Map(renderRows.map((row) => [row.scriptId, row]));
   const exportByRenderId = new Map(exportRows.map((row) => [row.renderId, row]));
 
+  // One query for the whole run's shots, grouped in memory — same reason as
+  // the maps above, and a run is at most six videos of at most eight shots.
+  const shotRows = await shotsForScripts(db, scriptRows.map((row) => row.id));
+  const shotsByScriptId = new Map<string, RunShot[]>();
+  for (const row of shotRows) {
+    const list = shotsByScriptId.get(row.scriptId) ?? [];
+    list.push({ position: row.position, beatIndex: row.beatIndex, intent: row.intent, query: row.query, source: row.source, status: row.status, error: row.error });
+    shotsByScriptId.set(row.scriptId, list);
+  }
+
   return scriptRows
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
     .map((script) => {
@@ -157,6 +193,7 @@ async function videosForTrace(db: AppDb, traceId: string): Promise<RunVideo[]> {
         scriptId: script.id,
         hook: script.hook,
         keywords: extractKeywords({ hook: script.hook, body: script.body, debateQuestion: script.debateQuestion }),
+        shots: shotsByScriptId.get(script.id) ?? [],
         wordCount: script.wordCount,
         createdAt: script.createdAt,
         renderId: render?.id ?? null,

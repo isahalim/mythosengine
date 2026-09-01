@@ -16,3 +16,8 @@ coverage/
 # disk-backed KV, and the rendered MP4s. Real artefacts, but from a laptop
 # and not from a scheduled run - never a build input, never committed.
 .local-pipeline/
+
+# Downloaded YouTube sources, reused for a day and swept by age
+# (src/lib/footage/source-cache.ts). Never committed: no sourced footage is
+# permanent, and these are gigabytes.
+.footage-cache/

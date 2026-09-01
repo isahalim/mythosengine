@@ -150,19 +150,39 @@ export const researchBriefs = sqliteTable(
   (t) => [index("idx_research_signal").on(t.signalId, t.createdAt)],
 );
 
-export const footageSources = sqliteTable("footage_sources", {
-  id: text("id").primaryKey(),
-  channelUrl: text("channel_url").notNull(),
-  game: text("game").notNull(),
-  licenseNote: text("license_note").notNull(),
-  // Mirrors `sources.enabled` (ARCHITECTURE.md §5.1): a channel is retired
-  // by flipping this, never by deleting the row. `renders.footage_segment_id`
-  // is a restricting FK, so deleting a source would either fail or destroy
-  // the provenance of exports the operator has already reviewed — and §9
-  // requires that provenance to stay readable for the life of the export.
-  // Both FOOTAGE REFRESH and FOOTAGE SELECT filter on this.
-  enabled: integer("enabled").notNull().default(1),
-});
+export const footageSources = sqliteTable(
+  "footage_sources",
+  {
+    id: text("id").primaryKey(),
+    channelUrl: text("channel_url").notNull(),
+    game: text("game").notNull(),
+    licenseNote: text("license_note").notNull(),
+    /**
+     * What kind of footage this source supplies (db/migrations/0013).
+     *
+     * `gameplay` is the maintained walkthrough library: clips committed to
+     * the `assets-library` orphan branch, and `library_path` below is a path
+     * inside that branch. `stock` is a licensed stock provider (Pexels): the
+     * clip is fetched per render and its bytes are never committed, so
+     * `library_path` holds the provider's own direct URL instead.
+     *
+     * FOOTAGE SELECT filters on this (db/footage-select.ts). A stock clip
+     * must never satisfy a gameplay run's claim — the two are chosen for
+     * different reasons, and a run asking for GTA V footage that silently
+     * got a stock shot of a sunset would be a defect the operator only
+     * discovers in review.
+     */
+    kind: text("kind", { enum: ["gameplay", "stock"] }).notNull().default("gameplay"),
+    // Mirrors `sources.enabled` (ARCHITECTURE.md §5.1): a channel is retired
+    // by flipping this, never by deleting the row. `renders.footage_segment_id`
+    // is a restricting FK, so deleting a source would either fail or destroy
+    // the provenance of exports the operator has already reviewed — and §9
+    // requires that provenance to stay readable for the life of the export.
+    // Both FOOTAGE REFRESH and FOOTAGE SELECT filter on this.
+    enabled: integer("enabled").notNull().default(1),
+  },
+  (t) => [check("chk_footage_source_kind", sql`${t.kind} IN ('gameplay','stock')`)],
+);
 
 export const footageSegments = sqliteTable(
   "footage_segments",
@@ -175,7 +195,32 @@ export const footageSegments = sqliteTable(
     clipStartS: integer("clip_start_s").notNull(),
     clipEndS: integer("clip_end_s").notNull(),
     motionScore: real("motion_score").notNull(),
+    /**
+     * Where this clip's bytes come from, discriminated by the parent
+     * source's `kind` (db/migrations/0013):
+     *
+     * - `gameplay` — a path on the `assets-library` orphan branch, read with
+     *   `readClipFromLibrary` (src/lib/footage/library.ts).
+     * - `stock` — the provider's direct mp4 URL, fetched per render.
+     *
+     * One column rather than two because there is exactly one answer per
+     * row and a nullable pair would make "neither is set" representable.
+     * Never read it without the source row: `clipSourceForSegment`
+     * (src/lib/footage/clip-source.ts) is the only place that resolves it.
+     */
     libraryPath: text("library_path").notNull(),
+    /**
+     * Stock attribution — null on a gameplay row, set together on a stock
+     * one. The Pexels licence is per clip and per photographer, so an export
+     * that names neither cannot be licence-checked by the human reviewer
+     * ARCHITECTURE.md §9 exists for.
+     */
+    provider: text("provider"),
+    providerClipId: text("provider_clip_id"),
+    photographer: text("photographer"),
+    pageUrl: text("page_url"),
+    /** The keyword that retrieved this clip — why this shot is in this video. */
+    searchQuery: text("search_query"),
     usedCount: integer("used_count").notNull().default(0),
     lastUsedAt: text("last_used_at"),
     fetchedAt: text("fetched_at").notNull(),
@@ -183,6 +228,88 @@ export const footageSegments = sqliteTable(
   (t) => [
     check("chk_segment_range", sql`${t.clipEndS} > ${t.clipStartS}`),
     index("idx_segments_source").on(t.footageSourceId, t.usedCount),
+  ],
+);
+
+/**
+ * The clips one render is made of, in the order they appear on screen
+ * (db/migrations/0013).
+ *
+ * A gameplay render is one clip looped for the whole narration and has a
+ * single row here; a stock montage is several, each cut to the span of the
+ * script beat it illustrates. `renders.footage_segment_id` still holds part
+ * 0, so every reader that predates this table — the console's export list,
+ * the diversity queries, the audit package's primary footage record — keeps
+ * working unchanged, and a montage of one is indistinguishable from what
+ * the pipeline did before.
+ *
+ * `start_ms`/`end_ms` are positions in the finished video, not offsets into
+ * the source clip: what a reviewer needs from this table is "which shot is
+ * on screen at 0:42", and the source offsets are already on the segment.
+ */
+/**
+ * The shot plan for one video, and how far each shot got
+ * (db/migrations/0014).
+ *
+ * Written by PLAN (src/lib/pipeline/shot-plan.ts) before any footage is
+ * fetched, and advanced by SOURCE (src/lib/footage/source-agent.ts) as each
+ * shot is actually found, downloaded and cut. Stage 5 reads it.
+ *
+ * `status` moves only on something that really happened, because stage 5's
+ * contract is that it never reports a stage the pipeline has not recorded.
+ * There is no `progress` column and no percentage here for the same reason.
+ */
+export const shotPlans = sqliteTable(
+  "shot_plans",
+  {
+    id: text("id").primaryKey(),
+    scriptId: text("script_id")
+      .notNull()
+      .references(() => scripts.id, { onDelete: "cascade" }),
+    /** The run this plan belongs to, so stage 5 can read a whole run's plans in one query. */
+    traceId: text("trace_id").notNull(),
+    position: integer("position").notNull(),
+    /** The beat this shot covers; null for the opening image over the hook. */
+    beatIndex: integer("beat_index"),
+    intent: text("intent").notNull(),
+    /** What was typed into the search box — why this shot is in this video. */
+    query: text("query").notNull(),
+    source: text("source", { enum: ["youtube", "pexels"] }).notNull(),
+    status: text("status", { enum: ["planned", "searching", "downloading", "clipped", "composited", "failed"] }).notNull(),
+    /** Set once the clip exists and has provenance. Null before that, and null forever on a shot that failed. */
+    footageSegmentId: text("footage_segment_id"),
+    error: text("error"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    check("chk_shot_source", sql`${t.source} IN ('youtube','pexels')`),
+    check("chk_shot_status", sql`${t.status} IN ('planned','searching','downloading','clipped','composited','failed')`),
+    check("chk_shot_position", sql`${t.position} >= 0`),
+    uniqueIndex("uq_shot_position").on(t.scriptId, t.position),
+    index("idx_shot_trace").on(t.traceId),
+  ],
+);
+
+export const renderFootageParts = sqliteTable(
+  "render_footage_parts",
+  {
+    id: text("id").primaryKey(),
+    renderId: text("render_id")
+      .notNull()
+      .references(() => renders.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    footageSegmentId: text("footage_segment_id")
+      .notNull()
+      .references(() => footageSegments.id),
+    startMs: integer("start_ms").notNull(),
+    endMs: integer("end_ms").notNull(),
+  },
+  (t) => [
+    check("chk_part_range", sql`${t.endMs} > ${t.startMs}`),
+    check("chk_part_position", sql`${t.position} >= 0`),
+    uniqueIndex("uq_render_part_position").on(t.renderId, t.position),
+    index("idx_part_segment").on(t.footageSegmentId),
   ],
 );
 

@@ -6,8 +6,19 @@ name: FOOTAGE REFRESH
 # CLAUDE.md NEVER block and ARCHITECTURE.md §5.0's guardrails) — never run
 # this more often, and never call it from the daily render job.
 on:
-  schedule:
-    - cron: "0 3 * * 0" # Sunday 03:00 UTC
+  # The weekly cron was removed on 2026-09-01.
+  #
+  # This job exists to build a PERMANENT clip library on the assets-library
+  # branch, and the operator's direction that day was that no sourced footage
+  # is permanent — every clip is now fetched per render and dropped with the
+  # video it was for (src/lib/footage/source-agent.ts, db/exports-reap.ts).
+  # RENDER no longer reads the library at all, so a weekly run would push
+  # gigabytes to a branch nothing consumes.
+  #
+  # Kept as a manual trigger rather than deleted: it is the only code that
+  # can rebuild a maintained library, and reversing this decision should not
+  # require rewriting the job. Running it today still pushes clips to
+  # assets-library, which is the one thing it always did.
   workflow_dispatch: {}
 
 permissions:

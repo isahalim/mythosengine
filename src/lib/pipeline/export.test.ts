@@ -33,7 +33,28 @@ const auditResult: AuditResult = {
   originalityScore: 0.8,
   clearsOriginalityFloor: true,
   policyFlags: [],
-  footage: { segmentId: "seg1", footageSourceId: "fsrc1", sourceVideoId: "v1", clipStartS: 0, clipEndS: 20, usedCount: 1 },
+  footage: {
+    segmentId: "seg1",
+    footageSourceId: "fsrc1",
+    sourceVideoId: "v1",
+    clipStartS: 0,
+    clipEndS: 20,
+    usedCount: 1,
+    parts: [
+      {
+        position: 0,
+        segmentId: "seg1",
+        startMs: 0,
+        endMs: 20_000,
+        provider: null,
+        providerClipId: null,
+        photographer: null,
+        pageUrl: null,
+        searchQuery: null,
+        beatIndex: null,
+      },
+    ],
+  },
   footageRecentlyUsed: true,
   research: {
     model: "openai/gpt-oss-20b",
@@ -166,5 +187,15 @@ describe("runExport", () => {
     const rows = ctx.db.select().from(exportsTable).all();
     const parsed = JSON.parse(rows[0]?.auditJson ?? "") as { ttsSettings: unknown };
     expect(parsed.ttsSettings).toEqual({ voice: "Kore", rate: null, pitch: null, volume: null });
+  });
+});
+
+describe("the review window", () => {
+  it("is two days, whether or not the video is downloaded or reviewed", () => {
+    // Operator direction 2026-09-01, shortened from three. The sweep that
+    // enforces it runs from WATCH as well as RENDER (db/exports-reap.ts),
+    // because a sweep that only ran at the top of a render made "two days"
+    // mean "whenever you next make a video".
+    expect(EXPORT_TTL_SECONDS).toBe(2 * 86_400);
   });
 });

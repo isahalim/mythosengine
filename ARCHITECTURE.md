@@ -153,7 +153,7 @@ export interface ExportStoreRequest {
   key: string;
   bytes: Uint8Array<ArrayBuffer>;
   mimeType: string;
-  ttlSeconds: number; // 3 days by default — see §9
+  ttlSeconds: number; // 2 days by default — see §9
 }
 export interface ExportStoreResponse {
   key: string;
@@ -273,7 +273,7 @@ CREATE TABLE exports (
   contains_synthetic_media INTEGER NOT NULL DEFAULT 1, -- reminder for the operator's manual upload, not enforced
   audit_json    TEXT NOT NULL,                 -- script + critic output + footage provenance + TTS settings + audit_result
   created_at    TEXT NOT NULL,
-  expires_at    TEXT NOT NULL,                 -- created_at + 3 days; KV TTL enforces the actual deletion
+  expires_at    TEXT NOT NULL,                 -- created_at + 2 days; db/exports-reap.ts enforces the deletion (R2 has no per-object TTL)
   status        TEXT NOT NULL CHECK (status IN
                   ('ready_for_review','downloaded','reviewed','discarded','expired'))
 );
@@ -665,10 +665,25 @@ Output is persisted to `research_briefs` (§4) and travels into the export's
 - Flags anything resembling defamation of a named real person, medical/legal claims stated as fact, or content that reads as a verbatim repost of the source discussion.
 - **Advisory only.** A low score or a flag does not stop the script from proceeding — it's carried forward into the AUDIT SUMMARY (§9) and surfaced prominently to the human reviewer.
 
-### 5. FOOTAGE SELECT
-- Picks a `footage_segments` row matching the directive's focus game(s), weighted away from recently-`last_used_at` segments. Increments `used_count`.
-- **Only from an enabled `footage_sources` row** (§4). A retired channel's segments stay in the library and keep backing the exports that already used them, but are never claimed again — and the console's footage-health count excludes them for the same reason, since inventory nothing can claim is not inventory.
-- When `diversity_mode` is on, the game itself is chosen first: exclude games already used by today's earlier renders (via `renders.created_at`) before calling `claimNextFootageSegment` — so a day's 3 videos default to 3 different games rather than 3 different clips of the same game.
+### 4.5. PLAN (Groq, `openai/gpt-oss-20b`) — what the audience sees
+*Added 2026-09-01 by operator direction. `src/lib/pipeline/shot-plan.ts`, prompt `prompts/shot-plan.v1.md`.*
+
+- Turns the script into an ordered shot list: `{ beatIndex, intent, query, source: "youtube" | "pexels" }`, one shot per beat plus an opening image over the hook, capped at 8.
+- **Why a model here when `keywords.ts` is deliberately not one.** The first stock montage searched for the frequency-ranked keywords of a script about moral collapse and got `maybe`, `yet` and `perhaps` — three of eight shots illustrated nothing. "Which phrase in this beat is a *picture*" is not a counting problem. This is the one footage decision with real ambiguity, so it is the one that spends a token.
+- **Deterministic validation after it.** `isFilmableQuery` rejects a single-word query and one that is abstract all the way through once articles and prepositions are stripped. Rejected shots are dropped, never repaired — a query invented to patch a hole would be exactly the filler this stage exists to stop.
+- **Never fatal.** A failed PLAN falls back to `extractKeywords`, marked `origin: "heuristic"` with the reason, exactly as §2.5 lets RESEARCH fail. The fallback gets the same filmability filter, so it cannot reintroduce `maybe`.
+- **`viral` never reaches the model.** Its background is always a GTA 6 walkthrough (operator direction), and once the topic has decided the footage there is nothing left to decide. It short-circuits and spends nothing.
+
+### 5. SOURCE (formerly FOOTAGE SELECT)
+*Rewritten 2026-09-01. `src/lib/footage/source-agent.ts`. The maintained-library claim path (`claimNextFootageSegment`) is no longer used by RENDER.*
+
+- Executes the plan. **Pexels** answers "an ordinary scene, shot well" — the returned clip is already the whole shot. **YouTube** answers "the actual thing", and a YouTube result is an hour of video with one usable minute in it, so the window is chosen by motion scoring rather than taken from the front, which is where a channel puts its intro.
+- **Sourcing is open.** `ChannelTopVideoRequest.query` searches YouTube freely; the maintained-channel rule (migration 0008) binds only the weekly FOOTAGE REFRESH, whose cron was removed the same day. Operator decision, recorded because it is a real change to the footage policy.
+- **`viral` cuts at random** from the top motion-scored shortlist after a head/tail buffer — operator's words, "clipped from random locations with buffers at the beginning and end". Everything else takes the highest-scoring windows outright, because a shot chosen to illustrate a beat should be the best moment available, not a random one.
+- **Two YouTube downloads per render, hard.** Each is potentially a gigabyte through a converter site on the operator's own connection. A shot past the cap falls back to Pexels and the reason is reported. A cache hit does not spend a slot — it costs no bandwidth, so counting it would refuse footage already on disk.
+- **Nothing is retained.** Clip bytes live in the render's work directory and die with it; provenance rows are dropped when the export retires (§9). The one exception is the 24h YouTube *source* cache (`.footage-cache/`, `src/lib/footage/source-cache.ts`), which exists solely so a viral run does not re-pull 1.6 GB hourly. No clip and no Pexels byte is written there.
+- **Provenance is now the only record.** Since no bytes survive, every clip's `footage_segments` row — provider, source video, exact window, and the query that found it — is written *before* the clip reaches the encoder, and `render_footage_parts` records which second of the finished video it occupies.
+- Shot status (`planned → searching → downloading → clipped → composited | failed`) is written to `shot_plans` as each thing actually happens, which is what stage 5 displays.
 
 ### 6. TTS + CAPTION SYNC (Edge TTS by default, Gemini as the upgrade)
 - `src/lib/drivers/tts-edge.ts` shells out to `scripts/edge_tts_synth.py`, a thin wrapper around the `edge_tts` Python library requesting `WordBoundary` events explicitly (the bare `edge-tts` CLI hard-codes sentence-level boundaries and has no flag to change that — confirmed by testing it directly, not assumed). Returns audio bytes plus one `{word, startMs, endMs}` entry per word — no separate forced-alignment step needed.
@@ -684,10 +699,13 @@ Output is persisted to `research_briefs` (§4) and travels into the export's
 - ALIGN is also the only source of **beat boundaries**: the beat texts are known, so mapping them onto the returned word sequence puts each beat on the clock. The mapping is an LCS alignment (`src/lib/pipeline/align.ts`), not a positional assumption — a transcript that says "gonna" where the script wrote "going to" would otherwise shift every subsequent boundary.
 - **Refuses rather than approximates.** Below a 60% word match the alignment is rejected outright: a bad alignment does not look like an error downstream, it looks like a video whose captions drift and whose cuts land mid-word, discovered minutes of render time later.
 - **The Edge path skips this stage entirely** — its timings are native and exact, and cost no call.
+- **A failure here no longer costs the video** (operator direction 2026-09-01, `src/lib/pipeline/align-stage.ts`). It used to throw, so a complete narration, a complete script and a complete footage montage were discarded because one transcription call failed. The words are now spread across the narration's *measured* duration, weighted by word length, and the audit package carries `narration.captionTiming`: `native` (Edge's own events, exact), `aligned` (this stage, accurate to `alignMatchRatio`), or `estimated` (this stage failed; captions stay in step across the video and drift within a sentence). `estimated` is flagged, because a reviewer cannot tell drifting captions from a bad take without being told which they are watching.
 
 ### 7. RENDER (FFmpeg, local to the GitHub Actions runner)
-- Crop/scale the footage segment to 1080×1920, filling ≥75% of frame height with gameplay (matches the "transformative" visual treatment the operator specified).
-- Mute the source segment's original audio entirely; mix in the narration track.
+- Crop/scale **every** footage clip to 1080×1920, filling ≥75% of frame height (matches the "transformative" visual treatment the operator specified), then `concat` them into one track. Normalising first is not optional: `concat` requires its inputs to agree on size, pixel format, frame rate and sample aspect, and clips from different photographers agree on none of them.
+- **Cuts land on the argument, not on a timer** (`src/lib/pipeline/montage-timeline.ts`): a shot acquired for beat 3 starts on the first word of beat 3 and holds until the next shot's beat begins. A shot that would run under 900ms is dropped and its neighbour holds through it, so every millisecond is covered by exactly one shot.
+- **The output length is set explicitly**, from the narration's measured duration. `-shortest` alone does not settle it once the footage track has a definite end: the host is composited with `overlay=...:shortest=0` so a looping character can never truncate the video, and that keeps the video stream alive past the audio — a 12.0s narration produced a 13.5s render. A single looped clip never hit this, because nothing in that graph ever ended.
+- Mute the source clips' original audio entirely; mix in the narration track.
 - Burn in captions via an ASS subtitle file (word-timed fade, not a static SRT box) using FFmpeg's `ass` filter. Each cue is emitted one event per word so the spoken word is accented as it lands, and keywords (`src/lib/pipeline/keywords.ts`, no model call) stay accented for the cue's whole life.
 - **Composite the keyed host** over the footage (`assets/character/right_person.gif`, plan v2 §2). `colorkey=0xe5505c:0.10:0.0` — measured, not guessed, and **0.10 is a ceiling: 0.14 begins eating her face and 0.20 destroys it.** She is anchored bottom-centre and composited *before* the captions are burned in, which is the only order in which she cannot cover a word. A missing asset degrades the video to footage-plus-captions and records why in the audit package, rather than failing the render.
 - Loop or trim the footage segment to the narration's exact duration.

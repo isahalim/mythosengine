@@ -15,7 +15,22 @@ type Db = AppDb;
  * system — this never calls a YouTube endpoint.
  */
 
-export const EXPORT_TTL_SECONDS = 3 * 86_400; // 3 days, operator-chosen — docs/DECISIONS.md
+/**
+ * How long a finished video stays downloadable.
+ *
+ * Two days, operator direction 2026-09-01: "delete rendered videos after 2
+ * days ... whether or not it gets downloaded or reviewed". Was three
+ * (docs/DECISIONS.md). Applied to new exports only — an existing row keeps
+ * the `expires_at` it was stamped with, because shortening a window the
+ * operator was already told about would delete a video out from under them.
+ *
+ * The sweep that enforces it is `reapExpiredExports`, and it now runs from
+ * WATCH as well as RENDER: it used to run only at the top of a render, so
+ * "expires in two days" quietly meant "expires whenever you next make a
+ * video", which for a system the operator drives by hand is not the same
+ * sentence.
+ */
+export const EXPORT_TTL_SECONDS = 2 * 86_400;
 
 interface CriticVerdict {
   originalityScore: number | null;

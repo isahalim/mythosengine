@@ -218,11 +218,42 @@ export interface CharacterOverlay {
   heightRatio: number;
 }
 
+/**
+ * One clip in a render's footage track.
+ *
+ * `durationS` is how long this clip is on screen in the finished video, not
+ * how long the file is: a clip shorter than its slot is looped to fill it
+ * and a longer one is cut. Omitted only in the single-clip case, where the
+ * clip loops for the whole narration — which is what a gameplay render has
+ * always done, expressed rather than implied.
+ */
+export interface FootageClip {
+  filePath: string;
+  durationS?: number;
+}
+
 export interface RenderRequest {
-  footageClipPath: string;
+  /**
+   * The footage track, in order. One clip is the gameplay path; several are
+   * a stock montage cut to the script's beats (src/lib/footage/stock.ts).
+   */
+  footageClips: FootageClip[];
   narrationAudioPath: string;
   captionCues: CaptionCue[];
   outputPath: string;
+  /**
+   * How long the finished video should be — the narration's measured
+   * length.
+   *
+   * Explicit rather than left to `-shortest`, because `-shortest` alone does
+   * not settle it once the footage track has a definite end: the character
+   * overlay is composited with `shortest=0` (so a looping host can never
+   * truncate the video) and keeps the video stream alive past the audio,
+   * which produced a 13.5s render over a 12.0s narration the first time a
+   * montage was composited. A single looped clip never hit this because
+   * nothing in that graph ever ended.
+   */
+  outputDurationS?: number;
   /** Absent means no character — the v1 look, and what a render falls back to when the asset is missing. */
   characterOverlay?: CharacterOverlay;
 }
@@ -246,7 +277,7 @@ export interface ExportStoreRequest {
   key: string;
   bytes: Uint8Array<ArrayBuffer>;
   mimeType: string;
-  /** 3 days by default — ARCHITECTURE.md §9. */
+  /** 2 days by default — ARCHITECTURE.md §9, shortened from 3 by operator direction 2026-09-01. */
   ttlSeconds: number;
 }
 
@@ -279,12 +310,28 @@ export interface ExportDriver {
 }
 
 export interface ChannelTopVideoRequest {
-  /** A channel handle, without the leading @ (e.g. "HollowPoiint"). */
-  channelHandle: string;
+  /**
+   * A channel handle, without the leading @ (e.g. "HollowPoiint").
+   *
+   * Optional since 2026-09-01: the sourcing agent searches YouTube openly,
+   * by `query` below, rather than within one maintained channel. The weekly
+   * FOOTAGE REFRESH still passes a handle, and that path is unchanged.
+   */
+  channelHandle?: string;
   /** Only consider videos at least this long — filters out another Short. */
   minDurationS: number;
-  /** The footage source's game (footage_sources.game) — folded into the agentic search query alongside channelHandle. Optional so a caller without this context still gets a valid, if less targeted, search. */
+  /** The footage source's game (footage_sources.game) — folded into the search query alongside channelHandle. Optional so a caller without this context still gets a valid, if less targeted, search. */
   game?: string;
+  /**
+   * A free-form search query, used verbatim when present.
+   *
+   * Operator direction 2026-09-01 opened footage sourcing beyond the
+   * maintained channel: a shot plan asks for "courtroom gavel" or "GTA 6
+   * walkthrough gameplay" and there is no channel in that question. When
+   * this is set it wins outright — `channelHandle` and `game` are not
+   * folded in, because a query the planner wrote is already the query.
+   */
+  query?: string;
 }
 
 export interface ChannelTopVideoResponse {
@@ -292,6 +339,13 @@ export interface ChannelTopVideoResponse {
   title: string;
   durationS: number;
   viewCount: number;
+}
+
+/** Everything a search needs to be reproducible in an audit: what was asked, and what came back. */
+export interface SourcedVideo extends ChannelTopVideoResponse {
+  /** The query that found it — recorded per clip, so "why is this shot here" is answerable. */
+  query: string;
+  url: string;
 }
 
 export interface YoutubeSearchDriver {

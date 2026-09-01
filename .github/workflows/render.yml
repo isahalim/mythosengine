@@ -4,8 +4,9 @@ name: RENDER
 # one signal end-to-end (RESEARCH -> SCRIPT -> CRITIC -> FOOTAGE SELECT ->
 # TTS -> ALIGN -> RENDER -> AUDIT -> EXPORT); this job invokes it `count`
 # times, which is how many videos the operator lit shards for in stage 2.
-# ALIGN runs only on the Gemini narration path; PLAN is not built yet
-# (plan v2 §8 item 4).
+# ALIGN runs only on the Gemini narration path, and since 2026-09-01 its
+# failure costs the render its exact caption timings rather than the whole
+# video; PLAN is not built yet (plan v2 §8 item 4).
 #
 # The 3x/day cron was removed 2026-08-31. It was never the right shape for
 # this system and the self-hosted runner is what settled it: footage only
@@ -230,6 +231,11 @@ jobs:
           # narration is upgraded to Gemini within its 10-requests-per-day
           # budget (src/lib/pipeline/tts-select.ts).
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Required only by the stock-montage footage mode
+          # (src/lib/footage/stock.ts). A gameplay run never reads it, and a
+          # stock run without it fails at FOOTAGE naming this variable
+          # rather than quietly rendering something else.
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           # Multi-statement writes go through the Worker's real D1 .batch()
           # (src/server/internal/d1-batch.ts); D1's REST API cannot do
           # parameterized and atomic in one call.

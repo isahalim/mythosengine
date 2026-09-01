@@ -96,6 +96,41 @@ export async function claimNextRunPick(db: AppDb, traceId: string, nowIso: strin
   };
 }
 
+/**
+ * Returns picks claimed by a run that is no longer alive.
+ *
+ * A render killed mid-flight — an Actions job timeout, a Ctrl-C, a laptop
+ * closing — leaves its pick `claimed` forever, and the operator's queued
+ * story silently never gets made. `reapStaleRuns` already does exactly this
+ * for `runs` rows; picks had no equivalent, and the gap showed up the first
+ * time a viral render was killed mid-download: the next run found an empty
+ * queue, fell back to the diversity-weighted pick, and made a video about
+ * something the operator had not chosen (2026-09-01).
+ *
+ * Scoped to picks whose signal is still `scored` — a pick whose story has
+ * since been written is genuinely spent, and requeueing it would make a
+ * second video about the same thing.
+ */
+export async function releaseStrandedPicks(db: AppDb, liveTraceIds: readonly string[]): Promise<number> {
+  const claimed = await db.select().from(runPicks).where(eq(runPicks.status, "claimed")).all();
+  const live = new Set(liveTraceIds);
+  const stranded = claimed.filter((row) => row.claimedTraceId === null || !live.has(row.claimedTraceId));
+  if (stranded.length === 0) return 0;
+
+  const signalRows = await db.select().from(signals).where(inArray(signals.id, stranded.map((row) => row.signalId))).all();
+  const stillScored = new Set(signalRows.filter((row) => row.state === "scored").map((row) => row.id));
+
+  const requeueable = stranded.filter((row) => stillScored.has(row.signalId)).map((row) => row.id);
+  if (requeueable.length === 0) return 0;
+
+  await db
+    .update(runPicks)
+    .set({ status: "queued", claimedTraceId: null, claimedAt: null })
+    .where(inArray(runPicks.id, requeueable))
+    .run();
+  return requeueable.length;
+}
+
 /** Everything still waiting to be rendered, in claim order — what the run view shows as "queued". */
 export async function listQueuedPicks(db: AppDb): Promise<QueuedPick[]> {
   const rows = await db.select().from(runPicks).where(eq(runPicks.status, "queued")).all();

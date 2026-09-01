@@ -14,6 +14,20 @@
  * are the cracks, and the whole thing free-floats around the centre until
  * the video is made and the fracture solidifies.
  *
+ * Operator direction (2026-09-01): the fragments are ordinary glass until
+ * the cursor is on one. Eight stills cross-fading at once read as a collage
+ * printed on the card rather than as glass with something behind it, and it
+ * made the fracture — the thing this pane exists to show — the least
+ * legible layer on screen. Each fragment now holds ONE still for the life
+ * of the pane and reveals it only while hovered, so the reveal is an act
+ * the operator performs rather than an animation that runs at them.
+ *
+ * Stage 6 keeps its stills on (`reveal="always"`). That grid is the whole
+ * library of past work and the still is what tells one finished video from
+ * another at a glance; blanking it would make the operator hover every card
+ * to find the one they came for. Stage 5 has the hook printed under each
+ * pane and only a handful of them, so it loses nothing.
+ *
  * The fracture is NOT an estimate. src/server/console/runs.ts is explicit
  * that the waiting screen "does not interpolate a percentage, estimate a
  * finish time, or report a stage the pipeline has not actually recorded",
@@ -22,7 +36,7 @@
  * exists) and nothing else. A pane at half fracture means exactly two of
  * those four things are true, not "about halfway".
  */
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useMemo, useRef, type CSSProperties } from "react";
 import { CRACKS, MOBILE, preloadAtlas } from "./geometry.ts";
 import { Shard } from "./Shard.tsx";
 import { useShardField, type Placement } from "./useShardField.ts";
@@ -36,8 +50,6 @@ import type { MontageClip } from "../types.ts";
  * rectangle drawn around it.
  */
 const FORGE_PIECES = ["mobile-02a", "mobile-01b", "mobile-05b", "mobile-04a", "mobile-03b", "mobile-06a", "mobile-07b", "mobile-04c"];
-/** How often each fragment swaps the keyword it is dreaming about. */
-const CYCLE_MS = 3_600;
 
 interface ForgePaneProps {
   /** 0 = whole, 1 = fully fractured. Derived from observed milestones by the caller. */
@@ -46,12 +58,13 @@ interface ForgePaneProps {
   clips: MontageClip[];
   /** Pulse the cracks while the pipeline is actually working on this one. */
   working: boolean;
+  /** Whether a fragment's still is shown only under the cursor (stage 5) or always (stage 6). */
+  reveal?: "hover" | "always";
 }
 
-export function ForgePane({ fracture, glow, clips, working }: ForgePaneProps) {
+export function ForgePane({ fracture, glow, clips, working, reveal = "hover" }: ForgePaneProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const ready = useAtlasReady("mobile", preloadAtlas);
-  const [tick, setTick] = useState(0);
 
   const placements = useMemo<Placement[]>(
     () =>
@@ -75,17 +88,6 @@ export function ForgePane({ fracture, glow, clips, working }: ForgePaneProps) {
     [],
   );
 
-  // Board 3: "each shard piece reflects different aspect of video and
-  // cycles." One timer for the pane; each fragment reads a different
-  // offset into the clip list, so they are never all dreaming the same
-  // thing at the same moment.
-  useEffect(() => {
-    if (clips.length === 0) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-    const id = window.setInterval(() => setTick((t) => t + 1), CYCLE_MS);
-    return () => window.clearInterval(id);
-  }, [clips.length]);
-
   useShardField(rootRef, placements, { ready, hoverLift: 46 });
 
   const cracks = CRACKS.mobile;
@@ -95,7 +97,10 @@ export function ForgePane({ fracture, glow, clips, working }: ForgePaneProps) {
       <div className="forge-shards">
         {ready &&
           placements.map((p, i) => {
-            const clip = clips.length === 0 ? null : clips[(i + tick) % clips.length];
+            // Stable for the life of the pane: fragment i always holds the
+            // same still, so hovering the same piece twice shows the same
+            // thing and the operator can go back to one they half-saw.
+            const clip = clips.length === 0 ? null : clips[i % clips.length];
             return (
               <Shard
                 key={p.key}
@@ -104,15 +109,22 @@ export function ForgePane({ fracture, glow, clips, working }: ForgePaneProps) {
                 style={{ left: `${p.x}%`, top: `${p.y}%`, width: `${p.w}%`, height: `${p.h}%`, zIndex: p.z }}
               >
                 {clip !== null && (
-                  // The dream. A still rather than a decoder per fragment:
-                  // seven playing videos per card, times up to six cards,
-                  // is not a page — and a slow cross-fade between keyword
-                  // stills is what actually reads as dreaming.
+                  // The dream, revealed under the cursor. A still rather than
+                  // a decoder per fragment: eight playing videos per card,
+                  // times up to six cards, is not a page.
+                  //
+                  // Mounted always and revealed by CSS (`.shard--hot` — the
+                  // class useShardField already writes on pointerenter)
+                  // rather than mounted on hover: a still that starts loading
+                  // when the cursor arrives shows nothing for the first
+                  // moments of the reveal, which is exactly the moment the
+                  // operator is looking at it. `loading="lazy"` still keeps a
+                  // pane that is scrolled away from costing nothing.
                   <img
                     key={clip.id}
                     src={clip.thumbnailUrl}
                     alt=""
-                    className="forge-dream forge-dream--on"
+                    className={`forge-dream ${reveal === "always" ? "forge-dream--on" : ""}`}
                     loading="lazy"
                     decoding="async"
                     // A still that will not load is hidden rather than left

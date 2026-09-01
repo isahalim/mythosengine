@@ -312,6 +312,290 @@ Prerequisites and their failure modes:
 | `GROQ_API_KEY` | RESEARCH/SCRIPT/CRITIC cannot run — the pipeline stops and names the variable |
 | **ffmpeg built with libass** | RENDER fails with `No such filter: 'ass'`. Homebrew's plain `ffmpeg` 9.0.1 bottle has no libass; `ffmpeg-full` does |
 | `edge_tts` (Python) | TTS fails. `pip install edge-tts` |
-| `assets-library` branch | No footage to draw from; `local-seed` refuses rather than inventing a clip |
+| `assets-library` branch | No footage to draw from in `gameplay` mode; `local-seed` refuses rather than inventing a clip |
 | `GEMINI_API_KEY` | Optional. Narration falls back to Edge TTS and the audit records that it did |
-| `PEXELS_API_KEY` | Optional. Stage 5 shows no preview stills and says so |
+| `PEXELS_API_KEY` | Optional in `gameplay` mode — stage 5 then shows no preview stills and says so. **Required** in `stock_montage` mode, where FOOTAGE fails naming this variable |
+
+To run one video in stock-montage mode without touching the saved directive:
+
+```sh
+PIPELINE_LOCAL=1 FOOTAGE_MODE=stock_montage npx tsx scripts/pipeline/render.ts
+```
+
+`render.yml` takes the same thing as a `footage_mode` dispatch input, empty
+by default so an ordinary console run uses the directive.
+
+## Revision — 2026-09-01, hover to look inside the glass
+
+**Stage 5's fragments are ordinary glass until the cursor is on one.**
+Eight stills cross-fading on a 3.6s timer, across up to six panes, read as a
+collage printed on the card rather than as glass with something behind it —
+and they made the fracture, the one thing the pane exists to show, the least
+legible layer on screen. Each fragment now holds **one** still for the life
+of the pane and reveals it only while hovered, so the reveal is an act the
+operator performs rather than an animation that runs at them.
+
+Driven by `.shard--hot`, the class `useShardField` already writes on
+`pointerenter`, so the reveal and the fragment's lift and specular are one
+gesture rather than two systems each guessing at the same hover. The
+image is mounted the whole time and revealed by opacity: a still that starts
+loading when the cursor arrives shows nothing for the first moments of the
+reveal, which is exactly the moment being looked at. The transition is
+asymmetric in the same direction and for the same reason as `.shard`'s —
+~160ms out, ~420ms in.
+
+**Stage 6 keeps its stills on** (`ForgePane`'s new `reveal="always"`). That
+grid is the whole library of past work and the sneak peek is what tells one
+finished video from another at a glance; blanking it would make the operator
+hover every card to find the one they came for. Stage 5 has the hook printed
+under each pane and only a handful of them, so it loses nothing.
+
+Stage 5's caption changed with the behaviour, and not only to mention
+hovering. It used to promise that the preview stills "are not the rendered
+footage — that comes from the maintained, provenance-tracked library and
+never from here." As of the stock-montage mode below, that sentence is no
+longer true of every run, so the stage now says previews are *not
+necessarily* the rendered footage and points at the audit package, which
+answers the question per video instead of in general.
+
+## Revision — 2026-09-01, footage that is not gameplay
+
+Operator direction: *"include footage from pexels (multiple) and stitch them
+together as relevant to the script ... to see if the pipeline is capable of
+making more robust videos (instead of only using gta v footage)."*
+
+`directive.footageMode` now chooses between two strategies, and RENDER reads
+it like every other directive field:
+
+| Mode | Footage |
+|---|---|
+| `gameplay` (default) | One clip from the walkthrough library, looped for the whole narration. Unchanged. |
+| `stock_montage` | Several licensed Pexels clips, one per script beat, each cut to that beat's own span. |
+
+**This is not a hole in CLAUDE.md's footage rule.** The rule is that a render
+never uses footage from outside the *maintained, provenance-tracked
+library* — a constraint on provenance, not on genre. Every stock clip is
+registered in `footage_sources`/`footage_segments` before a frame of it is
+encoded, carrying its provider, clip id, page, photographer, licence and the
+keyword that retrieved it; `render_footage_parts` (migration 0013) records
+which second of the finished video each clip occupies; and the export names
+all of it. What is *not* stored is the bytes — operator direction: ephemeral
+— so a stock segment's `library_path` holds the provider's own URL, with
+`footage_sources.kind` as the discriminator. `claimNextFootageSegment`
+filters on that same column, so a stock clip can never satisfy a gameplay
+run's claim.
+
+The cuts land on the **argument**, not on a timer
+(`src/lib/pipeline/montage-timeline.ts`): a shot acquired for beat 3 starts
+on the first word of beat 3 and holds until the next shot's beat begins. A
+shot that would run under 900ms is dropped and its neighbour holds through
+it, so the montage never flickers, and every millisecond of the video is
+covered by exactly one shot.
+
+Two things the first real composite taught us:
+
+- **`concat` refuses inputs that disagree** on size, pixel format, frame rate
+  or sample aspect — and stock clips from different photographers agree on
+  none of them. Every clip is normalised to 1080x1920, yuv420p, 30fps,
+  square pixels first.
+- **`-shortest` does not settle the length** once the footage track has a
+  definite end. The host is composited with `overlay=...:shortest=0` so a
+  looping character can never truncate the video, and that keeps the video
+  stream alive past the audio: a 12.0s narration produced a 13.5s render.
+  The narration's measured duration is now passed as an explicit `-t`. A
+  single looped clip never hit this, because nothing in that graph ever
+  ended.
+
+## Revision — 2026-09-01, an ALIGN failure no longer costs the video
+
+ALIGN used to throw. The consequence was that a complete narration, a
+complete script and a complete footage montage were all discarded because
+one transcription call failed — the same bad trade ARCHITECTURE.md §5.2.5
+already refuses to make for RESEARCH.
+
+A failure now costs the render its exact caption timings and nothing else.
+The words are spread across the narration's *measured* duration, weighted by
+word length (`src/lib/pipeline/estimate-timings.ts`), the run row records the
+real error class, and the audit package carries a third state:
+
+| `captionTiming` | Meaning |
+|---|---|
+| `native` | Edge TTS's own WordBoundary events. Exact. |
+| `aligned` | ALIGN force-aligned a transcript of the Gemini audio. Accurate to `alignMatchRatio`. |
+| `estimated` | ALIGN failed. Captions stay in step across the video and drift within a sentence. |
+
+`estimated` is flagged in the audit summary, because a reviewer cannot tell
+drifting captions from a bad take without being told which one they are
+watching.
+
+## Revision — 2026-09-01, the agents get a plan
+
+Operator direction, in their words: *"make the agents deployed section have
+a robust instruction/process for the agents to source multiple footage from
+youtube/pexels (multiple from each to be diverse and sophisticated) and make
+them have a proper plan to stitch the footage and clip significant/important
+sections."*
+
+### Why this was needed, in one table
+
+The first stock montage searched Pexels for the keywords a frequency
+heuristic ranked highest in a script about moral collapse:
+
+| shot | on screen | keyword |
+|---|---|---|
+| 0 | a woman's face | `want` |
+| 1 | a skateboarder doing a flip | `flip` |
+| 2 | two people on a hill | `maybe` |
+| 4 | a woman underwater | `drown` |
+| 5 | a crystal mobile | `yet` |
+| 6 | a ferry railing | `perhaps` |
+
+`maybe`, `yet` and `perhaps` are function words. They ranked because the
+script repeats them. Three of eight shots illustrated nothing, and no amount
+of tuning the counting fixes that — "which phrase in this beat is a
+*picture*" is not a counting problem.
+
+### PLAN
+
+`src/lib/pipeline/shot-plan.ts`, prompt at `prompts/shot-plan.v1.md`, on the
+20b model. It turns the script into an ordered shot list — `{ beatIndex,
+intent, query, source }` — and it is the one place in this pipeline where a
+model is spent on footage, because it is the one place with real ambiguity
+(CLAUDE.md's rule about where tokens go).
+
+Deterministic validation follows it. `isFilmableQuery` rejects a query that
+is a single word, or that is abstract all the way through once articles and
+prepositions are stripped. Rejected shots are **dropped, not repaired**: a
+montage with one shot fewer is fine, and a query invented to patch a hole
+would be exactly the filler the stage exists to stop.
+
+The first live run of it, on an F1 contract story, planned: *clock showing
+year 2030 · pit lane car wrapped in red tape · pit crew pouring fluid into
+car · hand holding signed contract · race car on ladder · pit crew with
+fewer tools · calendar with dates highlighted.* Every one names something a
+camera can point at.
+
+A failed PLAN falls back to the old keyword extraction, marked degraded —
+never fatal, the same contract §5.2.5 gives RESEARCH. The fallback gets the
+same filmability filter, so it cannot reintroduce `maybe`.
+
+### `viral` never reaches the model
+
+Operator direction: a viral video's background is always a **GTA 6
+walkthrough**. Once the topic has decided the footage there is nothing left
+for a model to decide, so `viral` short-circuits `planShots` entirely and
+spends no token. Which second of the run to take is answered by motion
+scoring and chance: windows are drawn at random from the top motion-scored
+shortlist, after a head/tail buffer, which is what the operator asked for
+("clipped from random locations with buffers at the beginning and end") and
+what stops three videos opening on the same twenty seconds.
+
+### SOURCE
+
+`src/lib/footage/source-agent.ts` executes the plan.
+
+- **Pexels** answers "an ordinary scene, shot well" — the returned clip is
+  already the whole shot.
+- **YouTube** answers "the actual thing", and a YouTube result is an hour of
+  video with one usable minute in it. So the window is motion-scored rather
+  than taken from the front, which is where a channel puts its intro.
+- **Sourcing is open.** `ChannelTopVideoRequest` gained a free-form `query`
+  and the maintained-channel rule (migration 0008) no longer binds this
+  path — operator decision, this session, recorded because it is a real
+  change to the footage policy. The weekly FOOTAGE REFRESH is unchanged.
+- **Two YouTube downloads per render, hard.** Each is potentially a gigabyte
+  through a converter site on the operator's own connection. A shot past the
+  cap falls back to Pexels — a worse picture and a finished video — and the
+  reason is reported rather than the shot vanishing.
+- **A cache hit does not spend a download slot.** It costs no bandwidth and
+  no converter round trip, so counting one against the ceiling would refuse
+  footage already on disk.
+
+### Stage 5 shows it happening
+
+`shot_plans` (migration 0014) holds every shot and its status. Stage 5
+renders it under each pane: source, query, intent, and how far it got —
+`planned → searching → downloading → clipped → in the video`.
+
+Every status is a row the pipeline wrote **after** doing the thing. There is
+no progress bar and no percentage here, for the same reason there is none
+anywhere else on this stage: neither would be a fact.
+
+## Revision — 2026-09-01, nothing is permanent
+
+Operator direction: *"don't make any footage permanent, delete them after
+use (both game footage and pexel footages) ... delete rendered videos after
+2 days ... At the end no sourced footage should survive."*
+
+- **Exports live two days**, not three, and the deadline is now real. The
+  sweep ran only at the top of RENDER, and this system makes videos only
+  when the operator dispatches a run — so "expires in two days" meant
+  "expires whenever you next make a video". WATCH is hourly and now runs the
+  same sweep. Existing exports keep the window they were stamped with;
+  shortening a window the operator was already told about would delete a
+  video out from under them.
+- **Footage rows die with the video they were sourced for.** Retiring an
+  export drops its `render_footage_parts` and every `footage_segments` row
+  no reviewable video still points at. Provenance outlives the video by
+  exactly zero days — not one more, because nothing needs it; not one less,
+  because §9 requires it for as long as there is something to review.
+- **One stub row per render survives, structurally.**
+  `renders.footage_segment_id` is NOT NULL and restricting, and the render
+  row has to stay because `pickVoicesForToday` reads the day's renders to
+  rotate. A montage's clips all go; its first clip leaves ~200 bytes of row.
+  No media survives either way — the bytes were never stored.
+- **Clip bytes never outlive the run.** Every clip is written into the
+  render's work directory, which is removed in a `finally`. Nothing is
+  committed to `assets-library` any more.
+- **One exception, and it is the operator's:** downloaded YouTube *sources*
+  live in `.footage-cache/` for 24 hours (`src/lib/footage/source-cache.ts`),
+  swept by age at the top of every render, so a viral run does not re-pull
+  1.6 GB hourly. No clip and no Pexels byte is ever written there.
+
+`directive.footageMode` was removed in the same pass. It had one session of
+life and the topic decides the strategy now, so it was a knob with nothing
+behind it.
+
+### What the degraded PLAN path does, and why it looks like that
+
+PLAN is a Groq call and Groq has an 8,000-token-per-minute bucket, so a run
+that has already spent RESEARCH, SCRIPT and CRITIC can find PLAN rate-limited
+— which happened on the first day it existed. The fallback therefore matters
+as much as the stage, and it took three attempts to get right:
+
+1. **Keyword extraction, unfiltered.** Produced `maybe`, `yet`, `perhaps`.
+   This is what motivated PLAN in the first place.
+2. **Keyword extraction, single words allowed through the filmability
+   check.** Produced `ever`, `there's`, `it's`, `see`, `gets` — function
+   words that are simply not in the denylist, because a denylist cannot
+   enumerate them. Reverted within the hour.
+3. **What it does now.** Only phrases clearing the *same* two-content-word
+   bar the model is held to, topped up to a montage with a short list of
+   neutral B-roll ("city street crowd walking", "rain on a window pane").
+
+The third makes no claim to illustrate the argument, and the plan is marked
+`origin: "heuristic"` so the audit package says the video was not planned.
+That is a much smaller lie than a chessboard standing in for "perhaps", and
+it is the difference between a degraded video and a misleading one.
+
+### One known lag
+
+A render killed mid-flight leaves its run pick `claimed`. `releaseStrandedPicks`
+(`db/run-picks.ts`) requeues it, but only once the run rows behind it have
+been reaped — **up to 45 minutes** (`STALE_RUN_THRESHOLD_MS`). That threshold
+is not shortened on purpose: releasing a pick a live render is still working
+on would produce two videos about the same story, which is worse than
+waiting. A pick whose signal has since been scripted is never requeued at
+all, for the same reason.
+
+### `viral` is gameplay or nothing
+
+`sourceShots` does **not** fall a viral shot back to Pexels the way it does
+for every other plan. The operator's direction is that a viral video's
+background is *always* a GTA 6 walkthrough, and a stock sunset standing in
+for it would quietly break that promise in a way only a reviewer watching
+the finished video would catch.
+
+The cost is real and worth stating: if the converter is down or YouTube
+returns nothing for the query, a viral render fails at SOURCE and says so.
+Every other topic degrades to stock instead.

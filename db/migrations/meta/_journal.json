@@ -92,6 +92,20 @@
       "when": 1788207547868,
       "tag": "0012_script_beats",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1788300000000,
+      "tag": "0013_stock_footage",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1788310000000,
+      "tag": "0014_shot_plans",
+      "breakpoints": true
     }
   ]
 }

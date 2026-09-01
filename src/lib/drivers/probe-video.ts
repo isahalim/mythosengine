@@ -49,6 +49,35 @@ export function classifyProbeError(cause: unknown): DriverError {
  * in what makes one acceptable, so this check lives once. Keeping it in one
  * place is what makes swapping acquisition routes a safe operation.
  */
+/**
+ * Duration of any media file, without asserting what kind it is.
+ *
+ * Split out from `probeVideo` because RENDER needs the narration audio's
+ * length in two places — to spread caption timings when ALIGN fails, and to
+ * cut a stock montage's shots to the narration — and `probeVideo`'s
+ * video-stream check would reject a WAV for not being a video, which is the
+ * one thing it is certainly allowed not to be.
+ */
+export async function probeDurationS(filePath: string, ffprobeBin = "ffprobe"): Promise<Result<number, DriverError>> {
+  try {
+    const { stdout } = await execFileAsync(ffprobeBin, ["-v", "quiet", "-print_format", "json", "-show_format", filePath], {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    const parsed: unknown = JSON.parse(stdout);
+    if (!isFfprobeOutput(parsed)) {
+      return err({ kind: "invalid_response", message: "ffprobe returned no usable output", retryable: false });
+    }
+    const durationS = Number(parsed.format?.duration);
+    if (!Number.isFinite(durationS) || durationS <= 0) {
+      return err({ kind: "invalid_response", message: `ffprobe returned no usable duration for ${filePath}`, retryable: false });
+    }
+    return ok(durationS);
+  } catch (cause) {
+    return err(classifyProbeError(cause));
+  }
+}
+
 export async function probeVideo(filePath: string, ffprobeBin = "ffprobe"): Promise<Result<{ durationS: number }, DriverError>> {
   try {
     const { stdout } = await execFileAsync(

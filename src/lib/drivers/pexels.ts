@@ -4,19 +4,22 @@ import { err, ok, type Result } from "../result.ts";
 import { Vault, type VaultKv } from "../vault.ts";
 
 /**
- * Pexels stock video search — the console's *preview* footage source (plan
- * v2 §7's waiting screen, and §5's News + Pexels drivers ahead of it).
+ * Pexels stock video search, and the fetch that pulls one clip's bytes.
  *
- * What this is for, precisely, because the distinction is load-bearing: the
- * clips this returns are shown to the operator while a run works, chosen
- * from the keywords of the script the run is writing. They are **not** the
- * footage that ends up in the video. Nothing here writes to
- * `footage_segments`, and nothing here can be selected by FOOTAGE SELECT —
- * CLAUDE.md's "never use footage outside the maintained,
- * provenance-tracked library" is a constraint on what gets rendered, and
- * this never reaches a render. The UI labels every clip as a preview and
- * carries its Pexels attribution, so a reviewer cannot mistake one for
- * library footage.
+ * Two callers, and the difference between them is worth stating because it
+ * used to be the whole point of this file:
+ *
+ * - **The console's preview montage** (`src/server/console/montage.ts`)
+ *   shows the operator stills while a run works. Nothing about that path
+ *   reaches a render.
+ * - **Stock footage** (`src/lib/footage/stock.ts`, operator direction
+ *   2026-09-01) does reach the render. CLAUDE.md's "never use footage
+ *   outside the maintained, provenance-tracked library" is a constraint on
+ *   *provenance*, not on genre, so those clips are registered in
+ *   `footage_sources`/`footage_segments` with their licence, photographer,
+ *   clip page and the keyword that retrieved them before a single frame is
+ *   encoded — the same audit trail a gameplay clip carries, and the export
+ *   names every one of them.
  *
  * Same shape as every other driver in this directory: `Result<T,
  * DriverError>`, `fetchWithRetry`, no throw across the boundary.
@@ -24,6 +27,10 @@ import { Vault, type VaultKv } from "../vault.ts";
 
 const API_BASE = "https://api.pexels.com/videos/search";
 const DEFAULT_TIMEOUT_MS = 8_000;
+/** A search is a JSON round trip; a clip is tens of megabytes over a home connection. */
+const DOWNLOAD_TIMEOUT_MS = 120_000;
+/** Per-clip ceiling. The rendition picker asks for the smallest sharp file; this refuses one that is somehow still enormous. */
+const MAX_CLIP_BYTES = 120 * 1024 * 1024;
 
 /**
  * Pexels' documented ceiling is 200 requests/hour, 20,000/month on the free
@@ -55,6 +62,13 @@ export interface PexelsSearchOptions {
   orientation?: "landscape" | "portrait" | "square";
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
+  /**
+   * Smallest acceptable rendition width. The montage plays these in cards a
+   * few hundred pixels wide and wants the cheapest sharp file; RENDER crops
+   * them to fill a 1080x1920 frame and wants at least that much detail, or
+   * the montage is visibly softer than the gameplay footage beside it.
+   */
+  minWidth?: number;
 }
 
 /** The fields of Pexels' response this driver reads. Everything else in the payload is ignored. */
@@ -95,7 +109,7 @@ function asNumber(value: unknown): number | null {
  */
 const MIN_WIDTH = 640;
 
-function pickRendition(files: unknown): { link: string; width: number; height: number } | null {
+function pickRendition(files: unknown, minWidth: number): { link: string; width: number; height: number } | null {
   if (!Array.isArray(files)) return null;
 
   const candidates = files
@@ -111,7 +125,7 @@ function pickRendition(files: unknown): { link: string; width: number; height: n
     .filter((file): file is { link: string; width: number; height: number } => file !== null)
     .sort((a, b) => a.width - b.width);
 
-  return candidates.find((file) => file.width >= MIN_WIDTH) ?? candidates[candidates.length - 1] ?? null;
+  return candidates.find((file) => file.width >= minWidth) ?? candidates[candidates.length - 1] ?? null;
 }
 
 export class PexelsDriver {
@@ -127,6 +141,7 @@ export class PexelsDriver {
     }
 
     const perPage = Math.min(options.perPage ?? this.options.perPage ?? DEFAULT_PER_PAGE, MAX_PER_PAGE);
+    const minWidth = options.minWidth ?? this.options.minWidth ?? MIN_WIDTH;
     const orientation = options.orientation ?? this.options.orientation ?? "portrait";
     const url = `${API_BASE}?query=${encodeURIComponent(trimmed)}&per_page=${perPage}&orientation=${orientation}`;
 
@@ -163,7 +178,7 @@ export class PexelsDriver {
       const sourceUrl = asString(video.url);
       const thumbnailUrl = asString(video.image);
       const photographer = asString(video.user?.name);
-      const rendition = pickRendition(video.video_files);
+      const rendition = pickRendition(video.video_files, minWidth);
       if (id === null || sourceUrl === null || thumbnailUrl === null || photographer === null || rendition === null) return [];
 
       return [
@@ -181,6 +196,65 @@ export class PexelsDriver {
     });
 
     return ok(clips);
+  }
+
+  /**
+   * One clip's bytes, for the render path.
+   *
+   * Separate from `searchVideos` and deliberately dumb: it takes a
+   * `videoUrl` this driver itself produced, so there is no URL construction
+   * and nothing to get wrong. A response that is not a video is rejected
+   * here on its content type and again by `probeVideo` on the written file
+   * (src/lib/footage/stock.ts) — a stock CDN serving an HTML error page with
+   * a 200 is the exact failure that check exists for.
+   *
+   * `maxBytes` is a real ceiling, not a formality. A render pulls several of
+   * these per video on the operator's own laptop over their own connection,
+   * and Pexels' 4K masters run to hundreds of megabytes; the rendition
+   * picker already asks for the smallest sharp file, and this refuses to
+   * stream one that is somehow still enormous rather than filling a disk.
+   */
+  async downloadClip(videoUrl: string, options: { timeoutMs?: number; maxBytes?: number; fetchImpl?: typeof fetch } = {}): Promise<Result<Uint8Array<ArrayBuffer>, DriverError>> {
+    const response = await fetchWithRetry(
+      videoUrl,
+      { method: "GET", headers: { authorization: this.apiKey } },
+      {
+        timeoutMs: options.timeoutMs ?? DOWNLOAD_TIMEOUT_MS,
+        maxAttempts: 2,
+        baseDelayMs: 500,
+        fetchImpl: options.fetchImpl ?? this.options.fetchImpl,
+      },
+    );
+    if (!response.ok) return response;
+
+    const contentType = response.value.headers.get("content-type") ?? "";
+    if (contentType.length > 0 && !contentType.startsWith("video/")) {
+      return err({ kind: "invalid_response", message: `Pexels served ${contentType} for a clip download, not a video`, retryable: false });
+    }
+
+    const maxBytes = options.maxBytes ?? MAX_CLIP_BYTES;
+    const declared = Number(response.value.headers.get("content-length") ?? Number.NaN);
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      return err({ kind: "invalid_response", message: `clip is ${declared} bytes, over the ${maxBytes}-byte ceiling`, retryable: false });
+    }
+
+    let buffer: ArrayBuffer;
+    try {
+      buffer = await response.value.arrayBuffer();
+    } catch (cause) {
+      return err({ kind: "provider_error", message: `Pexels clip download failed mid-transfer: ${String(cause)}`, retryable: true });
+    }
+
+    // Checked again against the body actually received: `content-length` is
+    // the server's claim, and a chunked response does not send one at all.
+    if (buffer.byteLength > maxBytes) {
+      return err({ kind: "invalid_response", message: `clip body was ${buffer.byteLength} bytes, over the ${maxBytes}-byte ceiling`, retryable: false });
+    }
+    if (buffer.byteLength === 0) {
+      return err({ kind: "invalid_response", message: "Pexels returned an empty clip body", retryable: true });
+    }
+
+    return ok(new Uint8Array(buffer));
   }
 }
 
