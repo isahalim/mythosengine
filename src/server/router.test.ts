@@ -67,6 +67,9 @@ describe("router", () => {
       hotKv,
       vaultKv,
       vaultMasterKey: MASTER_KEY_B64,
+      // Undefined on purpose: the tests exercise the model-free ideas path,
+      // and a Worker with no Groq credential must still serve stage 4.
+      groqApiKeyFallback: undefined,
       sessionSigningKey: SESSION_SIGNING_KEY,
       consoleEnrollmentToken: ENROLLMENT_TOKEN,
       pexelsApiKeyFallback: undefined,
@@ -471,6 +474,35 @@ describe("router", () => {
         .values({ id, sourceId: `src-${id}`, canonicalUrl: `http://x/${id}/1`, title, observedAt: "2026-08-31T00:00:00.000Z", engagementScore: 5, simhash: id, state: "scored" })
         .run();
     }
+
+    it("serves stage 4 in BM25 order when this Worker has no model credential", async () => {
+      // `groqApiKeyFallback: undefined` above. A missing credential must
+      // degrade the ordering and say so, never fail the screen — the same
+      // rule the TTS and RESEARCH upgrades follow.
+      const cookie = await completeRegistrationAndLogin();
+      const res = await handleApiRequest(apiRequest("/console/ideas?topic=ai&rerank=1", { cookie }), deps);
+      expect(res?.status).toBe(200);
+      const body = (await res?.json()) as { ideas: unknown[]; rerankedBy: string | null; degradedReason: string | null };
+      expect(Array.isArray(body.ideas)).toBe(true);
+      expect(body.rerankedBy).toBeNull();
+      expect(body.degradedReason).toContain("no Groq credential");
+    });
+
+    it("keeps the unflagged ideas read a bare array, so nothing that polls it pays for a model", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      const res = await handleApiRequest(apiRequest("/console/ideas?topic=ai", { cookie }), deps);
+      expect(Array.isArray(await res?.json())).toBe(true);
+    });
+
+    it("refreshes the sources behind a session, and reports what it managed", async () => {
+      expect((await handleApiRequest(apiRequest("/console/ideas/refresh", { method: "POST" }), deps))?.status).toBe(401);
+
+      const cookie = await completeRegistrationAndLogin();
+      const res = await handleApiRequest(apiRequest("/console/ideas/refresh", { cookie, method: "POST" }), deps);
+      expect(res?.status).toBe(200);
+      // No enabled sources in the test corpus: a clean no-op, not a failure.
+      expect(await res?.json()).toMatchObject({ sourcesFetched: 0, newSignals: 0, degradedReason: null });
+    });
 
     it("requires a session for ideas and for the plan", async () => {
       expect((await handleApiRequest(apiRequest("/console/ideas?topic=ai"), deps))?.status).toBe(401);

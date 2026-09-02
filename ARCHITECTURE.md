@@ -829,7 +829,9 @@ Runs between SOURCE and RENDER — strictly, after the montage timeline exists, 
 | `GET /console/mcp-tokens` | list issued MCP access tokens (label, timestamps — never the token itself) | session |
 | `POST /console/mcp-tokens` | issue a new MCP access token, shown once | session + reauth (< 5 min old) — credential-equivalent, same bar as key rotation |
 | `DELETE /console/mcp-tokens/:id` | revoke an MCP access token | session |
-| `GET /console/ideas?topic=&limit=&exclude=` | ranked candidate signals for one topic — BM25 over `signals` plus engagement, **no model call** (`src/server/console/ideas.ts`); the guided run's step 3 | session |
+| `GET /console/ideas?topic=&limit=&exclude=` | ranked candidate signals for one topic — BM25 over `signals` plus engagement, **no model call** (`src/server/console/ideas.ts`); the guided run's step 3. Returns a bare array | session |
+| `GET /console/ideas?...&rerank=1` | the same candidates ordered by `openai/gpt-oss-120b` (`src/server/console/ideas-refresh.ts`, 2026-09-02). **The Worker's only model call** — the chat and voice agents that were its others went with the console on 2026-08-31. Answers `{ideas, rerankedBy, degradedReason}`, not a bare array, because a caller must be able to tell a model-ordered list from the BM25 fallback before deciding whether it may re-sort. No credential, or a rate-limited model, degrades the *ordering* and says so; it never fails the screen | session |
+| `POST /console/ideas/refresh` | re-runs WATCH's ingest and SCORE once, for the stage 3 -> stage 4 transition. Sources are fetched concurrently with an 8s ceiling, unlike the scheduled poll (§5.1), because a person is waiting on it. Reports `{sourcesFetched, sourcesFailed, newSignals, degradedReason}` — a feed outage shows as "3 of 5 answered", never as a silently shorter list | session |
 | `GET /console/run-plan` / `POST /console/run-plan` | list / queue the operator's picks (`run_picks`); RENDER claims them in order. Queueing never triggers a render | session + schema validation |
 | `DELETE /console/run-plan/:id` | cancel a still-queued pick (a claimed one is being rendered, and is not cancellable) | session |
 | `GET /console/runs` | recent runs, grouped by `runs.trace_id` | session |
@@ -930,7 +932,7 @@ system spends on its own.
 
 | Resource | Per-day consumption | Free ceiling | Headroom |
 |---|---|---|---|
-| Groq requests | ~24 score-passes + 3 research turns × up to 6 iterations + 3 scripts + 3 critics + 3 metadata-gens ≈ 51/day. FOOTAGE REFRESH contributes nothing — it makes no model calls (§5.0) | ~14,400/day | huge |
+| Groq requests | ~24 score-passes + 3 research turns × up to 6 iterations + 3 scripts + 3 critics + 3 metadata-gens ≈ 51/day, plus one small rerank per Ideas-stage entry (§ console API) — operator-driven rather than per-render, so an afternoon of browsing stage 4 adds tens of requests. RESEARCH usually costs Groq nothing now: it tries Gemini first (§5.2.5). FOOTAGE REFRESH contributes nothing — it makes no model calls (§5.0) | ~14,400/day | huge |
 | GitHub Actions minutes | hourly WATCH × 24 (~1 min each) + up to 6 dispatched render jobs × ~5 min (FFmpeg is the expensive part) + weekly footage job (~15–20 min — a headless Chromium launch per candidate adds a little over the old yt-dlp job) ≈ ~55 min/day amortized at the ceiling | 2,000 min/mo private | fine — public repo removes the ceiling entirely, and RENDER runs on the self-hosted runner, which bills no minutes at all |
 | KV writes | batch manifest + rate-limit counters + 3 export blobs ≈ well under 50 | 1,000/day | fine |
 | KV storage | 3 exports/day × 3-day TTL ≈ ~9 exports resident at once × (MP4 size, TBD — see §3's `ExportDriver` note) | 1GB total | needs the real render-size check before this is a settled "fine," not before |

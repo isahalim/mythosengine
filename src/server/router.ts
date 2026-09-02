@@ -23,6 +23,8 @@ import { setPipelineEnabled } from "./console/killswitch.ts";
 import { approveScript } from "./console/scripts.ts";
 import { getRunProgress, listRecentRuns } from "./console/runs.ts";
 import { isTopic, rankIdeas } from "./console/ideas.ts";
+import { ingestLatest, rankIdeasReranked } from "./console/ideas-refresh.ts";
+import { createGroqDriverFromVault, createGroqLimiter } from "../lib/drivers/resolve-groq-driver.ts";
 import { cancelPlanPick, listPlan, queuePlan, queuedSignalIds } from "./console/run-plan.ts";
 import { getExportPreviews, getRunMontage } from "./console/montage.ts";
 import { handleD1Batch } from "./internal/d1-batch.ts";
@@ -40,6 +42,16 @@ export interface RouterEnv {
   CONSOLE_ENROLLMENT_TOKEN: string;
   /** Optional — Pexels supplies the run view's *preview* montage only (src/server/console/montage.ts). Unset means no montage, never a broken console. */
   PEXELS_API_KEY?: string;
+  /**
+   * Optional fallback for the vault's `GROQ_API_KEY`, read only by the Ideas
+   * screen's rerank (src/server/console/ideas-refresh.ts).
+   *
+   * This is the first model call the Worker has made since the in-console
+   * chat and voice agents were deleted on 2026-08-31, and it is deliberately
+   * the only one. Unset — in the vault *and* here — means stage 4 still
+   * refreshes and still ranks, in BM25 order, and says so.
+   */
+  GROQ_API_KEY?: string;
   /** Shared secret for POST /internal/d1/batch. Optional in the type, fail-closed in the handler: an unset secret must close the endpoint, never open it. */
   PIPELINE_BATCH_TOKEN?: string;
   /**
@@ -98,6 +110,8 @@ export interface RouterDeps {
   renderRef: string;
   /** Undefined when this Worker has no EXPORTS binding — the export routes then say so rather than guessing. */
   exportBucket: R2Bucket | undefined;
+  /** Env fallback for the vault's Groq key. Undefined is a supported state — see `RouterEnv.GROQ_API_KEY`. */
+  groqApiKeyFallback: string | undefined;
 }
 
 function depsFromEnv(env: RouterEnv): RouterDeps {
@@ -106,6 +120,7 @@ function depsFromEnv(env: RouterEnv): RouterDeps {
     rawClient: env.DB,
     hotKv: env.HOT,
     vaultKv: env.VAULT,
+    groqApiKeyFallback: env.GROQ_API_KEY,
     vaultMasterKey: env.VAULT_MASTER_KEY,
     sessionSigningKey: env.SESSION_SIGNING_KEY,
     consoleEnrollmentToken: env.CONSOLE_ENROLLMENT_TOKEN,
@@ -302,10 +317,20 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
     }
 
     // ---- the guided run's first three steps: count, topic, ranked ideas ----
-    // The ideas endpoint is a read over the signals corpus (BM25, no model
-    // call — src/server/console/ideas.ts). The plan endpoints are the only
-    // *write* the run view owns, and they write to a queue RENDER claims
-    // from; nothing here triggers a render itself.
+    // The plan endpoints are the only *write* the run view owns, and they
+    // write to a queue RENDER claims from; nothing here triggers a render.
+    //
+    // `?rerank=1` has the model order one topic's candidates (operator
+    // direction, 2026-09-02) and answers `{ideas, rerankedBy,
+    // degradedReason}` rather than a bare array, because a caller must be
+    // able to tell a model-ordered list from a BM25 one before deciding
+    // whether it may re-sort. Without the flag this stays exactly what it
+    // was: one BM25 read, no network, no model, a bare array.
+    //
+    // The ingest half is POST /console/ideas/refresh below, called once per
+    // stage entry — a video set to "let the agent decide" asks this endpoint
+    // for all seven topics at once, and seven crawls of the same five feeds
+    // is a race rather than a refresh.
     if (pathname === "/console/ideas" && method === "GET") {
       const topic = url.searchParams.get("topic") ?? "";
       if (!isTopic(topic)) return json({ error: "unknown_topic" }, 422);
@@ -315,7 +340,28 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
       // whatever is already queued from a previous one: neither should be
       // offered again, or one run makes two videos about one story.
       const exclude = [...(url.searchParams.get("exclude")?.split(",").filter((id) => id !== "") ?? []), ...(await queuedSignalIds(ctx.db))];
-      return json(await rankIdeas(ctx.db, topic, limit, exclude));
+
+      if (url.searchParams.get("rerank") !== "1") {
+        return json(await rankIdeas(ctx.db, topic, limit, exclude));
+      }
+
+      // Vault first, env second — the same resolution every other provider
+      // key uses, and the reason it lives behind a driver factory rather
+      // than a `vault.get()` here (CLAUDE.md: no vault reads outside
+      // src/lib/drivers/**). No credential is a supported state, not an
+      // error: the operator gets the BM25 order and is told why.
+      if (deps.groqApiKeyFallback === undefined) {
+        return json({ ideas: await rankIdeas(ctx.db, topic, limit, exclude), rerankedBy: null, degradedReason: "this Worker has no Groq credential" });
+      }
+      const llm = await createGroqDriverFromVault(ctx.vaultKv, deps.vaultMasterKey, deps.groqApiKeyFallback, createGroqLimiter());
+      return json(await rankIdeasReranked(ctx.db, topic, limit, exclude, llm));
+    }
+
+    // The ingest half of the stage 3 -> stage 4 transition, once per entry
+    // rather than once per topic — see src/server/console/ideas-refresh.ts.
+    // POST because it writes: new `signals` rows, and SCORE over them.
+    if (pathname === "/console/ideas/refresh" && method === "POST") {
+      return json(await ingestLatest(ctx.db));
     }
 
     if (pathname === "/console/run-plan" && method === "GET") {

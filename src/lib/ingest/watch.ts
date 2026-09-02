@@ -13,6 +13,15 @@ export interface WatchOptions {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   userAgent?: string;
+  /**
+   * Fetch every enabled source at once instead of one after another.
+   *
+   * Off by default, because the scheduled job's serial poll is a deliberate
+   * choice and not an oversight — see `watchAllEnabledSources`. On for the
+   * Ideas screen's refresh (src/server/console/ideas-refresh.ts), where a
+   * person is waiting on the result and the source list is small and known.
+   */
+  concurrent?: boolean;
 }
 
 export interface WatchSourceResult {
@@ -112,10 +121,21 @@ export async function watchSource(
 
 export async function watchAllEnabledSources(db: Db, options: WatchOptions = {}): Promise<WatchSourceResult[]> {
   const enabled = await db.select().from(sources).where(eq(sources.enabled, 1)).all();
+
+  // Serialized by default, not Promise.all: the scheduled poll hits external
+  // sites on a timer, and there is no reason to hit several at once and
+  // every reason not to (rate limits, being a considerate crawler).
+  //
+  // `concurrent` is the exception the Ideas refresh asks for, and it is a
+  // different situation rather than the same one in a hurry: a person
+  // triggered it, is waiting on it, and the list is five conditional GETs
+  // that mostly come back 304. Serializing those would multiply a wait
+  // somebody is watching by the number of sources.
+  if (options.concurrent) {
+    return Promise.all(enabled.map((source) => watchSource(db, source, options)));
+  }
+
   const results: WatchSourceResult[] = [];
-  // Serialized, not Promise.all: this is polling external sites on a
-  // schedule, not a burst — no reason to hit several at once and every
-  // reason not to (rate limits, being a considerate crawler).
   for (const source of enabled) {
     results.push(await watchSource(db, source, options));
   }

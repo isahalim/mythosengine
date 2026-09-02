@@ -1,10 +1,35 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GeminiTtsDriver, wrapPcmInWav } from "./tts-gemini.ts";
+import { GeminiTtsDriver, timeoutForText, wrapPcmInWav } from "./tts-gemini.ts";
 
 /** 16-bit little-endian PCM, so an even byte count and a decodable header are both meaningful. */
 const PCM = new Uint8Array([0x00, 0x01, 0xff, 0x7f, 0x10, 0x20]);
 const PCM_B64 = Buffer.from(PCM).toString("base64");
+
+describe("timeoutForText", () => {
+  it("gives a real narration more time than it was measured to need", () => {
+    // The 1,440-character script that timed out on 2026-09-02 synthesized in
+    // 245.1s against a flat 120,000ms ceiling. Anything at or below that
+    // measurement reintroduces the bug.
+    const measuredMs = 245_100;
+    expect(timeoutForText("x".repeat(1440))).toBeGreaterThan(measuredMs);
+  });
+
+  it("does not drop below the old floor for a short input", () => {
+    // 48 words synthesized in 19.8s, so short inputs were never the problem
+    // and must not become slower to fail.
+    expect(timeoutForText("x".repeat(253))).toBe(120_000);
+  });
+
+  it("scales with length, because synthesis cost does", () => {
+    expect(timeoutForText("x".repeat(3000))).toBeGreaterThan(timeoutForText("x".repeat(1500)));
+  });
+
+  it("covers the longest narration this system produces", () => {
+    // A 180s script is ~450 words, ~2,700 characters.
+    expect(timeoutForText("x".repeat(2700))).toBeGreaterThanOrEqual(1_080_000);
+  });
+});
 
 describe("wrapPcmInWav", () => {
   it("writes a canonical 44-byte RIFF/WAVE header ahead of the samples", () => {
@@ -154,7 +179,12 @@ describe("GeminiTtsDriver", () => {
     expect(result.error.kind).toBe("rate_limited");
   });
 
-  it("defaults to at most two attempts, because each one spends a tenth of the daily budget", async () => {
+  it("sends exactly one request per synthesize, so the daily ledger cannot under-count", async () => {
+    // The ledger (src/lib/pipeline/tts-budget.ts) records once per
+    // synthesize() call. It was two attempts until 2026-09-02, so a failing
+    // synthesis spent two of the ten daily requests while the KV entry
+    // reported one — measured on that day's render, whose single "failed"
+    // attempt took 243 seconds, which is two 120s timeouts.
     let calls = 0;
     handler = (_req, res) => {
       calls++;
@@ -162,6 +192,6 @@ describe("GeminiTtsDriver", () => {
       res.end(JSON.stringify({ error: "boom" }));
     };
     await new GeminiTtsDriver({ apiKey: "test-key", baseUrl, baseDelayMs: 1 }).synthesize(request);
-    expect(calls).toBe(2);
+    expect(calls).toBe(1);
   });
 });

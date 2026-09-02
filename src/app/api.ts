@@ -12,7 +12,7 @@
 import { err, ok, type Result } from "../lib/result.ts";
 import { fetchWithRetry } from "../lib/drivers/http.ts";
 import type { DriverError } from "../lib/drivers/types.ts";
-import type { ExportListItem, ExportMetadata, ExportPreviews, ExportStatus, QueuedPickView, RankedIdea, RunMontage, RunProgress, Topic } from "./types.ts";
+import type { ExportListItem, ExportMetadata, ExportPreviews, ExportStatus, IdeasIngestResult, QueuedPickView, RankedIdea, RerankedIdeas, RunMontage, RunProgress, Topic } from "./types.ts";
 
 const READ_TIMEOUT_MS = 8_000;
 const WRITE_TIMEOUT_MS = 10_000;
@@ -82,6 +82,32 @@ export function listIdeas(topic: Topic, limit = 5, exclude: string[] = []): Prom
   const params = new URLSearchParams({ topic, limit: String(limit) });
   if (exclude.length > 0) params.set("exclude", exclude.join(","));
   return get<RankedIdea[]>(`/console/ideas?${params.toString()}`);
+}
+
+/**
+ * The same candidates, ordered by the model instead of by BM25.
+ *
+ * Answers `{ideas, rerankedBy, degradedReason}` rather than a bare array on
+ * purpose: **the returned order is the answer**, and a caller has to be able
+ * to tell a model-ordered list from a fallback before deciding whether it may
+ * re-sort. `RankedIdea.score` is BM25's blend and the reranker does not touch
+ * it, so sorting by it silently undoes the rerank.
+ */
+export function listIdeasReranked(topic: Topic, limit = 5, exclude: string[] = []): Promise<Result<RerankedIdeas, DriverError>> {
+  const params = new URLSearchParams({ topic, limit: String(limit), rerank: "1" });
+  if (exclude.length > 0) params.set("exclude", exclude.join(","));
+  return get<RerankedIdeas>(`/console/ideas?${params.toString()}`);
+}
+
+/**
+ * Re-run WATCH's ingest for the stage 3 -> stage 4 transition.
+ *
+ * Called once per entry, never per topic. Failure is not fatal and is not
+ * hidden — the response says how many sources answered and what did not, and
+ * the screen shows the corpus as it stands either way.
+ */
+export function refreshIdeaSources(): Promise<Result<IdeasIngestResult, DriverError>> {
+  return send<IdeasIngestResult>("/console/ideas/refresh", "POST");
 }
 
 export function getRunPlan(): Promise<Result<QueuedPickView[], DriverError>> {

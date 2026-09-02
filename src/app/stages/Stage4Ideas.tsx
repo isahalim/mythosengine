@@ -5,14 +5,24 @@
  * each video grows a third, larger fragment, and the same caustic dial
  * picks which story it carries.
  *
- * Candidates come from GET /console/ideas — a BM25 read over the signals
- * corpus, no model call. A video whose operator chose "let the agent
- * decide" is ranked across every topic and the strongest signal wins; the
- * topic that won is recorded, because "agent" is not a topic the queue
- * accepts.
+ * Candidates come from GET /console/ideas. Entering this stage now does two
+ * things it did not before 2026-09-02 (operator direction): it re-runs
+ * WATCH's ingest **once**, so the corpus holds the latest discourse rather
+ * than whatever the last scheduled poll left, and it has the model order one
+ * topic's candidates rather than BM25.
+ *
+ * Both halves are optional and neither can fail the screen. A feed that does
+ * not answer, or a Worker with no Groq credential, leaves the operator
+ * looking at the ideas they would have seen anyway, with a line saying so.
+ *
+ * A video whose operator chose "let the agent decide" is ranked across every
+ * topic and the strongest signal wins; the topic that won is recorded,
+ * because "agent" is not a topic the queue accepts. **That path stays on
+ * BM25** — see the fetch effect for why merging seven reranked lists is not
+ * something a score-sort can do.
  */
 import { useCallback, useEffect, useState } from "react";
-import { cancelRunPick, describeError, getRunPlan, listIdeas } from "../api.ts";
+import { cancelRunPick, describeError, getRunPlan, listIdeas, listIdeasReranked, refreshIdeaSources } from "../api.ts";
 import type { DriverError } from "../../lib/drivers/types.ts";
 import { FloatingField, FloatingGroup, ringPositions } from "../glass/FloatingField.tsx";
 import { videoShards } from "../glass/videoGlass.ts";
@@ -55,6 +65,21 @@ export function Stage4Ideas({ videos, onSetIdea, onConfirm, onUnauthorized, comp
    */
   const [stale, setStale] = useState<QueuedPickView[]>([]);
   const [clearing, setClearing] = useState(false);
+  /**
+   * What the entry refresh managed, or null before it has finished.
+   *
+   * Held rather than discarded because "the ideas look the same as last
+   * time" has two very different causes — nothing new was published, or the
+   * feeds did not answer — and only one of them is worth the operator's
+   * attention.
+   */
+  const [freshness, setFreshness] = useState<string | null>(null);
+  /**
+   * Whether the one-per-entry ingest has finished. The per-topic fetch waits
+   * on it: ranking the corpus before the refresh lands would show the
+   * operator yesterday's ideas and then not update them.
+   */
+  const [refreshed, setRefreshed] = useState(false);
 
   const openVideo = videos.find((v) => v.slot === open) ?? null;
   const positions = ringPositions(videos.length);
@@ -92,6 +117,38 @@ export function Stage4Ideas({ videos, onSetIdea, onConfirm, onUnauthorized, comp
     };
   }, []);
 
+  /**
+   * The stage 3 -> stage 4 refresh: WATCH's ingest, once, on entry.
+   *
+   * On mount rather than per topic, because a video set to "let the agent
+   * decide" asks for all seven topics at once and seven crawls of the same
+   * five feeds is a race rather than a refresh.
+   *
+   * `setRefreshed(true)` runs on both paths. A failed refresh must not leave
+   * the per-topic fetch waiting forever for an ingest that is never coming —
+   * the operator gets the corpus as it stands, which is what they had before
+   * this existed.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    void refreshIdeaSources().then((result) => {
+      if (cancelled) return;
+      if (!result.ok) {
+        setFreshness(`Could not refresh the sources (${describeError(result.error)}) — showing the stories already gathered.`);
+      } else if (result.value.degradedReason !== null) {
+        setFreshness(`Refreshed with ${result.value.newSignals} new story(s); ${result.value.degradedReason}.`);
+      } else if (result.value.newSignals > 0) {
+        setFreshness(`${result.value.newSignals} new story(s) from ${result.value.sourcesFetched} source(s).`);
+      } else {
+        setFreshness(`No new stories since the last check — ${result.value.sourcesFetched} source(s) answered.`);
+      }
+      setRefreshed(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const clearStale = useCallback(async () => {
     setClearing(true);
     // Sequential, not Promise.all: these are mutations, and the router
@@ -111,6 +168,10 @@ export function Stage4Ideas({ videos, onSetIdea, onConfirm, onUnauthorized, comp
 
   useEffect(() => {
     if (open === null) return;
+    // Waits on the entry refresh. Ranking before the ingest lands would show
+    // the operator the previous corpus and never correct it, which is the
+    // exact failure this stage was changed to fix.
+    if (!refreshed) return;
     const video = videos.find((v) => v.slot === open);
     if (video === undefined || video.topic === null) return;
     const choice = video.topic;
@@ -129,9 +190,39 @@ export function Stage4Ideas({ videos, onSetIdea, onConfirm, onUnauthorized, comp
 
     // The agent's pick genuinely ranks across every topic rather than
     // quietly defaulting to one — that is what the dial promised.
-    const topicsToRank: Topic[] = isAgentChoice(choice) ? [...TOPICS] : [choice];
+    // ---- one topic: the model orders it ----
+    //
+    // The returned order IS the ranking, so nothing here re-sorts it.
+    // `RankedIdea.score` is BM25's blend and the reranker deliberately does
+    // not write to it, so a score-sort would silently undo the model's work
+    // and leave a feature that costs a request and changes nothing.
+    if (!isAgentChoice(choice)) {
+      void listIdeasReranked(choice, PER_TOPIC, taken).then((result) => {
+        if (cancelled) return;
+        setLoading(false);
+        if (!result.ok) {
+          fail(result.error);
+          return;
+        }
+        if (result.value.degradedReason !== null) {
+          setError(`Ranked by keyword rather than by the model (${result.value.degradedReason}).`);
+        }
+        setCandidates(result.value.ideas.map((idea) => ({ idea, topic: choice })));
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
 
-    void Promise.all(topicsToRank.map((t) => listIdeas(t, PER_TOPIC, taken).then((r) => ({ topic: t, result: r })))).then((settled) => {
+    // ---- "let the agent decide": every topic, still on BM25 ----
+    //
+    // Deliberately not reranked. Merging seven model-ordered lists needs a
+    // score that compares across them, and the reranker produces positions
+    // within one topic rather than a number — so the merge below would throw
+    // the ordering away, at the cost of seven model calls per stage entry.
+    // BM25's `score` is the only value here that is comparable across
+    // topics, which is what this path has always sorted on.
+    void Promise.all([...TOPICS].map((t) => listIdeas(t, PER_TOPIC, taken).then((r) => ({ topic: t, result: r })))).then((settled) => {
       if (cancelled) return;
       setLoading(false);
 
@@ -152,7 +243,7 @@ export function Stage4Ideas({ videos, onSetIdea, onConfirm, onUnauthorized, comp
       if (firstFailure !== undefined) setError("Some topics could not be ranked — showing the ones that answered.");
 
       gathered.sort((a, b) => b.idea.score - a.idea.score);
-      setCandidates(gathered.slice(0, isAgentChoice(choice) ? 6 : PER_TOPIC));
+      setCandidates(gathered.slice(0, 6));
     });
 
     return () => {
@@ -160,7 +251,7 @@ export function Stage4Ideas({ videos, onSetIdea, onConfirm, onUnauthorized, comp
     };
     // `videos` is the reducer's own array, so its identity is stable between
     // unrelated renders — safe to depend on directly.
-  }, [open, videos, fail]);
+  }, [open, videos, fail, refreshed]);
 
   const dialItems: DialItem[] = candidates.map((c, i) => ({
     id: c.idea.signalId,
@@ -224,7 +315,18 @@ export function Stage4Ideas({ videos, onSetIdea, onConfirm, onUnauthorized, comp
       {openVideo !== null && (
         <RadialDial
           items={dialItems}
-          hint={loading ? "Ranking the corpus…" : (error ?? (dialItems.length === 0 ? "No eligible signals for this topic right now." : "Move across a story to light it."))}
+          // Freshness is the last line, not the first: it is context for the
+          // list, and it must never displace an error or the pick prompt.
+          // "The ideas look the same" has two causes — nothing new was
+          // published, or the feeds did not answer — and only the operator
+          // can tell which matters.
+          hint={
+            !refreshed
+              ? "Checking the sources for new stories…"
+              : loading
+                ? "Ranking the corpus…"
+                : (error ?? (dialItems.length === 0 ? "No eligible signals for this topic right now." : (freshness ?? "Move across a story to light it.")))
+          }
           center={
             <FloatingGroup seed={openVideo.slot + 1} box={{ x: 0, y: 0, w: 100, h: 100 }} shards={glassFor(openVideo)} />
           }

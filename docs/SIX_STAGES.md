@@ -80,11 +80,44 @@ no topic was named.
 
 ### Stage 4 — where the stories come from
 
-`GET /console/ideas` is a BM25 read over the `signals` corpus. No model
-writes that list, and the stage says so. A video whose operator chose "let
-the agent choose" is ranked across **every** topic and the strongest signal
-wins; the topic that won is recorded separately from the operator's choice,
-because `agent` is not a topic the queue accepts and queuing it would 422.
+Entering this stage does two things, both added 2026-09-02 by operator
+direction so that "each time I enter the ideas section the ideas could be
+different" is true rather than nearly true.
+
+**`POST /console/ideas/refresh`, once.** WATCH's ingest and SCORE re-run on
+entry, so the corpus holds what was published since the last scheduled poll
+rather than whatever that poll left behind. Once per entry, never per topic:
+a video set to "let the agent choose" asks for all seven topics at once, and
+seven concurrent crawls of the same five feeds is a race, not a refresh. The
+sources are fetched concurrently with an 8-second ceiling, because a person
+is watching this one — the scheduled job is serial and patient for good
+reasons that do not apply here.
+
+**`GET /console/ideas?rerank=1`, per topic.** BM25 picks three times as many
+candidates as the operator will see and `openai/gpt-oss-120b` orders them,
+judging headlines the way the operator does. This is the Worker's only model
+call; the chat and voice agents that were its others went with the console on
+2026-08-31.
+
+The ingest half is what makes the list *new* and the rerank half is what
+makes it *good*. Reranking alone would have been the feature in appearance
+only: the same corpus reordered by the same prompt lands in nearly the same
+order every visit.
+
+**Neither half may fail the screen.** A dead feed, a Worker with no Groq
+credential, a rate-limited reranker — each costs the list its freshness or
+its ordering, is reported in the dial's hint line, and leaves the operator
+able to pick a story. The stage says which it got: `rerankedBy` is null when
+the order is BM25's.
+
+A video whose operator chose "let the agent choose" is ranked across **every**
+topic and the strongest signal wins; the topic that won is recorded
+separately from the operator's choice, because `agent` is not a topic the
+queue accepts and queuing it would 422. **That path stays on BM25 on
+purpose** — it merges seven topics by `score`, and the reranker returns
+positions within one topic rather than a number comparable across them, so
+reranking there would cost seven model calls and then be thrown away by the
+merge.
 
 Anything already spoken for elsewhere in the run is excluded, so one run
 never makes two videos about the same story.

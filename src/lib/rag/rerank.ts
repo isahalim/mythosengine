@@ -58,8 +58,8 @@ const RERANK_MAX_TOKENS = 1536;
  */
 const RerankResponseSchema = z.object({ ranked_positions: z.array(z.number().int()) });
 
-function buildPrompt(query: string, candidates: readonly RetrievedPassage[]): string {
-  const list = candidates.map((c, i) => `${i + 1}. ${c.sourceKind} | ${c.title}`).join("\n");
+function buildPrompt(query: string, labels: readonly string[]): string {
+  const list = labels.map((label, i) => `${i + 1}. ${label}`).join("\n");
   return `You are ranking retrieved headlines by how useful each one is for researching a specific topic.
 
 <topic>${query}</topic>
@@ -72,7 +72,7 @@ Order the candidates from most to least useful for writing a grounded, factual b
 
 Judge topical relevance, not word overlap. A headline that shares words with the topic but discusses something else is NOT relevant — that is exactly the mistake the keyword ranking already made, and the reason you are being asked. A headline that reports the actual event, its consequences, or the argument about it is relevant even if it shares no wording with the topic.
 
-Return every candidate's NUMBER, exactly once, most useful first. Use only the numbers 1 to ${candidates.length}; invent nothing.
+Return every candidate's NUMBER, exactly once, most useful first. Use only the numbers 1 to ${labels.length}; invent nothing.
 
 Output JSON only, as: {"ranked_positions": [3, 1, 7]}`;
 }
@@ -92,13 +92,41 @@ export async function rerankPassages(
   topK: number,
   onEvent: (event: string) => void = () => {},
 ): Promise<RetrievedPassage[]> {
+  const result = await rerankByLabel(llm, query, candidates, (c) => `${c.sourceKind} | ${c.title}`, topK, onEvent);
+  return result.ranked;
+}
+
+/**
+ * The reranking itself, over anything that can be described as one line of
+ * text.
+ *
+ * Extracted on 2026-09-02 when the Ideas screen needed the same reordering
+ * over a different row type (src/server/console/ideas-refresh.ts). The parts
+ * worth sharing are not the prompt — they are the three checks under it: a
+ * position off the end of the list must not conjure an item, a repeated
+ * position must not duplicate one, and a partial answer must degrade to
+ * "partially reranked" rather than to a silently shorter list. Those are
+ * exactly the properties a second copy would get subtly wrong.
+ *
+ * Returns the reason alongside the order, because a caller rendering this to
+ * a person needs to say why the list is merely BM25-ordered, where RESEARCH
+ * only needed it logged.
+ */
+export async function rerankByLabel<T>(
+  llm: LlmDriver,
+  query: string,
+  candidates: readonly T[],
+  describe: (candidate: T) => string,
+  topK: number,
+  onEvent: (event: string) => void = () => {},
+): Promise<{ ranked: T[]; reason: string | null }> {
   // Nothing to reorder. Two items are also not worth a request — the model
-  // would spend a call of the render's token budget to possibly swap a pair.
-  if (candidates.length < 3) return candidates.slice(0, topK);
+  // would spend a call of the daily token budget to possibly swap a pair.
+  if (candidates.length < 3) return { ranked: candidates.slice(0, topK), reason: null };
 
   const completion = await llm.complete({
     model: GROQ_REASONING_MODEL,
-    messages: [{ role: "system", content: buildPrompt(query, candidates) }],
+    messages: [{ role: "system", content: buildPrompt(query, candidates.map(describe)) }],
     jsonSchema: true,
     maxTokens: RERANK_MAX_TOKENS,
     // Ranking is a judgement with a right answer, not a creative act.
@@ -106,8 +134,9 @@ export async function rerankPassages(
   });
 
   if (!completion.ok) {
-    onEvent(`RERANK: ${completion.error.kind} (${completion.error.message}) — keeping the BM25 order.`);
-    return candidates.slice(0, topK);
+    const reason = `${completion.error.kind}: ${completion.error.message}`;
+    onEvent(`RERANK: ${reason} — keeping the BM25 order.`);
+    return { ranked: candidates.slice(0, topK), reason };
   }
 
   let parsed: unknown;
@@ -115,13 +144,13 @@ export async function rerankPassages(
     parsed = JSON.parse(completion.value.content);
   } catch {
     onEvent("RERANK: the model's answer was not JSON — keeping the BM25 order.");
-    return candidates.slice(0, topK);
+    return { ranked: candidates.slice(0, topK), reason: "the model's answer was not JSON" };
   }
 
   const validated = RerankResponseSchema.safeParse(parsed);
   if (!validated.success) {
     onEvent("RERANK: the model's answer did not match the expected shape — keeping the BM25 order.");
-    return candidates.slice(0, topK);
+    return { ranked: candidates.slice(0, topK), reason: "the model's answer did not match the expected shape" };
   }
 
   // Only positions that were actually offered, each at most once. A model
@@ -129,7 +158,7 @@ export async function rerankPassages(
   // conjure a passage, and one that repeats a position must not be able to
   // duplicate a citation. The prompt is 1-based; the array is not.
   const seen = new Set<number>();
-  const ranked: RetrievedPassage[] = [];
+  const ranked: T[] = [];
   for (const position of validated.data.ranked_positions) {
     const index = position - 1;
     if (index < 0 || index >= candidates.length || seen.has(index)) continue;
@@ -144,7 +173,7 @@ export async function rerankPassages(
     if (!seen.has(index)) ranked.push(candidate);
   });
 
-  return ranked.slice(0, topK);
+  return { ranked: ranked.slice(0, topK), reason: null };
 }
 
 /**

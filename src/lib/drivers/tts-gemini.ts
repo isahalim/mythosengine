@@ -124,6 +124,41 @@ export interface GeminiTtsDriverOptions {
  * records that it did. That fallback is logged and written into the audit
  * package, never silent.
  */
+/**
+ * How long one synthesis may take, from the length of what it is speaking.
+ *
+ * **Measured, not assumed** (2026-09-02, `gemini-3.1-flash-tts-preview`,
+ * live):
+ *
+ *   253 chars /  48 words ->  19.8s
+ *   1,440 chars / 234 words -> 245.1s   <- a real render's narration
+ *
+ * Two things follow. Synthesis cost is **superlinear** in length — 0.41
+ * s/word at 48 words, 1.05 s/word at 234 — so a constant chosen against a
+ * short clip is not merely tight for a long one, it is out by multiples.
+ * And the flat 120,000 that lived here was below the *measured* cost of an
+ * ordinary script, so every full-length Gemini narration timed out, retried,
+ * timed out again, and fell back to Edge after four minutes. The audit
+ * package recorded the fallback honestly every time; nothing recorded that
+ * the ceiling was the cause.
+ *
+ * 400ms per character is roughly 2.3x the slowest rate measured, which is
+ * the right kind of margin for a ceiling whose only job is to catch a
+ * genuinely dead request: too low and it discards work that would have
+ * succeeded, too high and it costs one render one slow fallback. The floor
+ * covers short inputs, where the per-character rate is least representative.
+ *
+ * A 180-second narration — the longest format this system produces — is
+ * ~450 words, so this yields ~15 minutes of headroom for something measured
+ * at ~8. `maxAttempts: 1` is what keeps that ceiling from ever being paid
+ * twice.
+ */
+export function timeoutForText(text: string): number {
+  const MS_PER_CHAR = 400;
+  const FLOOR_MS = 120_000;
+  return Math.max(FLOOR_MS, text.length * MS_PER_CHAR);
+}
+
 export class GeminiTtsDriver implements TtsDriver {
   private readonly baseUrl: string;
   private readonly model: string;
@@ -136,15 +171,27 @@ export class GeminiTtsDriver implements TtsDriver {
     this.baseUrl = options.baseUrl ?? GEMINI_INTERACTIONS_URL;
     this.model = options.model ?? "gemini-3.1-flash-tts-preview";
     this.fetchImpl = options.fetchImpl;
-    // Up to 180 seconds of synthesized speech in one response. The 30s used
-    // for a 47-second Edge clip is nowhere near enough.
-    this.timeoutMs = options.timeoutMs ?? 120_000;
-    // Two, not three. Every attempt spends one of ten daily requests, so a
-    // driver that retries freely can burn a third of the day's budget on a
-    // single failing video. The second attempt is for a 5xx or a dropped
-    // connection only — `retryOn429: false` below keeps it away from the
-    // one error where trying again is guaranteed to fail *and* charged.
-    this.maxAttempts = options.maxAttempts ?? 2;
+    // Derived per request, not a constant — see `timeoutForText`. A flat
+    // 120_000 was here until 2026-09-02 and it silently cost every
+    // full-length narration its voice.
+    this.timeoutMs = options.timeoutMs ?? 0;
+    // **One attempt.** It was two until 2026-09-02, "for a 5xx or a dropped
+    // connection only", and that reasoning missed what the retry costs.
+    //
+    // The ledger (src/lib/pipeline/tts-budget.ts) records once per
+    // `synthesize()` call, because that is where the caller can see it. A
+    // driver that sends two requests per call therefore under-reports spend
+    // against a budget of ten a day: the 2026-09-02 render's KV entry shows
+    // one `failed` attempt for a synthesis that took 243 seconds, which is
+    // two 120s timeouts and two real requests Google counted. A ledger that
+    // is wrong about a ten-a-day quota is worse than no ledger, and
+    // CLAUDE.md's rule is to count every request including the ones that
+    // fail.
+    //
+    // Losing the retry costs little. `retryOn429` was already false, a
+    // timeout is now nearly impossible (below), and the fallback is Edge
+    // TTS with the reason recorded — never a failed render.
+    this.maxAttempts = options.maxAttempts ?? 1;
     this.baseDelayMs = options.baseDelayMs ?? 1_000;
   }
 
@@ -169,7 +216,7 @@ export class GeminiTtsDriver implements TtsDriver {
         }),
       },
       {
-        timeoutMs: this.timeoutMs,
+        timeoutMs: this.timeoutMs > 0 ? this.timeoutMs : timeoutForText(input),
         maxAttempts: this.maxAttempts,
         baseDelayMs: this.baseDelayMs,
         fetchImpl: this.fetchImpl,

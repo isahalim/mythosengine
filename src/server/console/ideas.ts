@@ -36,7 +36,7 @@ export function isTopic(value: string): value is Topic {
  * a query expansion, not a taxonomy, and every term here is one that shows
  * up in real headline text.
  */
-const TOPIC_QUERIES: Record<Topic, string> = {
+export const TOPIC_QUERIES: Record<Topic, string> = {
   viral: "viral trending outrage backlash internet reaction video meme celebrity drama",
   politics: "politics election government policy law senate parliament vote president minister protest",
   tech: "tech technology software app startup chip platform company launch data privacy security",
