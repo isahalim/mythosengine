@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { heuristicPlan, isFilmableQuery, planShots, validateShots, VIRAL_QUERY } from "./shot-plan.ts";
 import type { DiscourseBeat } from "./script-schema.ts";
-import type { LlmDriver } from "../drivers/types.ts";
+import type { LlmDriver, LlmRequest } from "../drivers/types.ts";
+import { GROQ_REASONING_MODEL } from "../../config/models.ts";
 import { err, ok } from "../result.ts";
 
 const beats: DiscourseBeat[] = [
@@ -61,6 +62,21 @@ describe("isFilmableQuery", () => {
 });
 
 describe("planShots", () => {
+  it("defaults to the reasoning model the pipeline actually runs on", async () => {
+    const asked: LlmRequest[] = [];
+    const llm: LlmDriver = {
+      complete: async (req) => {
+        asked.push(req);
+        return ok({ content: JSON.stringify({ shots: [] }), finishReason: "stop", quotaRemaining: null, tokensUsed: null });
+      },
+    };
+    await planShots(llm, input);
+    // An empty plan is retried once, so this is two calls, not one — and
+    // the retry has to be on the same model as the first attempt.
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.every((r) => r.model === GROQ_REASONING_MODEL)).toBe(true);
+  });
+
   it("uses the model's shots when they name pictures", async () => {
     const llm = llmReturning({
       shots: [

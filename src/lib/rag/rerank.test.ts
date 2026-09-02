@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { RerankingRetriever, rerankPassages } from "./rerank.ts";
+import { GROQ_REASONING_MODEL } from "../../config/models.ts";
 import type { RetrievedPassage, Retriever } from "./retriever.ts";
 import type { DriverError, LlmDriver } from "../drivers/types.ts";
 import { err, ok, type Result } from "../result.ts";
@@ -31,6 +32,22 @@ function fixedRetriever(results: RetrievedPassage[]): Retriever & { lastTopK: nu
 }
 
 describe("rerankPassages", () => {
+  // This stage names its own model — no caller passes one in — so a wrong
+  // one here is a stage that silently stops reranking in production while
+  // every other test still passes. It shipped exactly that way on
+  // 2026-09-01: the string sent was "gemini-ladder", which Groq rejects.
+  it("asks the reasoning model the pipeline actually runs on", async () => {
+    const asked: string[] = [];
+    const llm: LlmDriver = {
+      complete: (req) => {
+        asked.push(req.model);
+        return Promise.resolve(ok({ content: JSON.stringify({ ranked_signal_ids: ["a", "b", "c", "d"] }), finishReason: "completed", quotaRemaining: null, tokensUsed: 1 }));
+      },
+    };
+    await rerankPassages(llm, "prisons", candidates, 4);
+    expect(asked).toEqual([GROQ_REASONING_MODEL]);
+  });
+
   it("reorders the candidates into the model's order", async () => {
     const llm = answering(JSON.stringify({ ranked_signal_ids: ["c", "a", "d", "b"] }));
     const ranked = await rerankPassages(llm, "prisons", candidates, 4);

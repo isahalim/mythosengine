@@ -311,11 +311,11 @@ Prerequisites and their failure modes:
 
 | Needs | If missing |
 |---|---|
-| `GROQ_API_KEY` | CRITIC cannot run, and neither can the fallback for any Gemini stage — the pipeline stops and names the variable |
+| `GROQ_API_KEY` | Nothing that reasons can run — RESEARCH, reranking, SCRIPT, CRITIC, PLAN and EDIT are all on it — so the pipeline stops and names the variable |
 | **ffmpeg built with libass** | RENDER fails with `No such filter: 'ass'`. Homebrew's plain `ffmpeg` 9.0.1 bottle has no libass; `ffmpeg-full` does |
 | `edge_tts` (Python) | TTS fails. `pip install edge-tts` |
 | `assets-library` branch | No footage to draw from in `gameplay` mode; `local-seed` refuses rather than inventing a clip |
-| `GEMINI_API_KEY` | Optional, and used by two different things. Narration falls back to Edge TTS and the audit records that it did; RESEARCH/SCRIPT/PLAN/EDIT all fall back to Groq exactly as they ran before 2026-09-01, and the run says so once at the top. An upgrade must never become a dependency |
+| `GEMINI_API_KEY` | Optional, and narration only since the 2026-09-01 revert. Absent, narration runs on Edge TTS and the audit package records that it did. No reasoning stage reads it — an upgrade must never become a dependency, and this one briefly was |
 | `uv` / `uvx` + Kinocut | Optional. EDIT is skipped and every clip is used as sourced, flagged in the audit package. `brew install uv` enables it |
 | `PEXELS_API_KEY` | Optional in `gameplay` mode — stage 5 then shows no preview stills and says so. **Required** in `stock_montage` mode, where FOOTAGE fails naming this variable |
 
@@ -581,14 +581,14 @@ behind it.
 
 ### What the degraded PLAN path does, and why it looks like that
 
-PLAN runs on the Gemini ladder now, whose free tier allows 5 requests/minute
-per model — which is why RENDER pauses 61 seconds between consecutive Gemini
-stages, so PLAN does not arrive inside the window RESEARCH just spent. When
-the whole ladder is exhausted it falls back to Groq, and Groq has an
-8,000-token-per-minute bucket, so a run
-that has already spent RESEARCH, SCRIPT and CRITIC can find PLAN rate-limited
-— which happened on the first day it existed. The fallback therefore matters
-as much as the stage, and it took three attempts to get right:
+PLAN runs last of the four reasoning stages, on the same Groq model and
+behind the same 8,000-token-per-minute bucket as the three before it — so a
+run that has already spent RESEARCH, SCRIPT and CRITIC can find PLAN rate
+limited, which happened on the first day it existed. (It spent a few hours
+on the Gemini ladder on 2026-09-01, with RENDER pausing 61s between stages
+to stay under 5 requests/minute; the operator reverted that the same day
+after the ceiling cost a render.) The fallback therefore matters as much as
+the stage, and it took three attempts to get right:
 
 1. **Keyword extraction, unfiltered.** Produced `maybe`, `yet`, `perhaps`.
    This is what motivated PLAN in the first place.

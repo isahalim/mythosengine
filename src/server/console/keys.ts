@@ -3,6 +3,7 @@ import { Vault, type VaultKv } from "../../lib/vault.ts";
 import { fetchWithRetry } from "../../lib/drivers/http.ts";
 import type { DriverError } from "../../lib/drivers/types.ts";
 import { ok, type Result } from "../../lib/result.ts";
+import { GROQ_REASONING_MODEL } from "../../config/models.ts";
 
 export const ROTATABLE_KEY_NAMES = ["GROQ_API_KEY", "YOUTUBE_API_KEY", "PEXELS_API_KEY", "GEMINI_API_KEY"] as const;
 export type RotatableKeyName = (typeof ROTATABLE_KEY_NAMES)[number];
@@ -28,7 +29,10 @@ async function liveCheck(name: RotatableKeyName, candidate: string, fetchImpl?: 
       {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${candidate}` },
-        body: JSON.stringify({ model: "openai/gpt-oss-20b", messages: [{ role: "user", content: "hi" }], max_tokens: 1 }),
+        // The model the pipeline actually runs on (src/config/models.ts), so
+        // a key that validates here is a key that can do the work. One token
+        // of it.
+        body: JSON.stringify({ model: GROQ_REASONING_MODEL, messages: [{ role: "user", content: "hi" }], max_tokens: 1 }),
       },
       { timeoutMs: 8_000, maxAttempts: 1, baseDelayMs: 0, fetchImpl },
     );

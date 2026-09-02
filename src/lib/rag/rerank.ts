@@ -1,11 +1,11 @@
 import { z } from "zod";
 import type { DriverError, LlmDriver } from "../drivers/types.ts";
-import { LADDER_PLACEHOLDER_MODEL } from "../drivers/gemini-ladder.ts";
+import { GROQ_REASONING_MODEL } from "../../config/models.ts";
 import { ok, type Result } from "../result.ts";
 import type { RetrievedPassage, Retriever } from "./retriever.ts";
 
 /**
- * Reranking — the second half of "use Gemini for the RAG calling and for
+ * Reranking — the second half of "use the model for the RAG calling and for
  * ranking too" (operator direction, 2026-09-01).
  *
  * **What BM25 gets wrong that this fixes.** BM25 ranks by term overlap, so
@@ -72,11 +72,11 @@ export async function rerankPassages(
   onEvent: (event: string) => void = () => {},
 ): Promise<RetrievedPassage[]> {
   // Nothing to reorder. Two items are also not worth a request — the model
-  // would spend a call of a 5-per-minute budget to possibly swap a pair.
+  // would spend a call of the render's token budget to possibly swap a pair.
   if (candidates.length < 3) return candidates.slice(0, topK);
 
   const completion = await llm.complete({
-    model: LADDER_PLACEHOLDER_MODEL,
+    model: GROQ_REASONING_MODEL,
     messages: [{ role: "system", content: buildPrompt(query, candidates) }],
     jsonSchema: true,
     maxTokens: RERANK_MAX_TOKENS,

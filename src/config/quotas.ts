@@ -25,14 +25,18 @@ export const QUOTAS = {
      * was then deleted outright on 2026-08-29: both footage legs are plain
      * code now, so FOOTAGE REFRESH spends no tokens whatsoever and the
      * whole 200K gpt-oss budget belongs to SCRIPT/CRITIC/metadata again.
-     * Limits are per-model, so spreading work across models spreads the
-     * daily allowance too — which is exactly why the RESEARCH agent
-     * (ARCHITECTURE.md §5.2.5, added 2026-08-30) runs on gpt-oss-20b. It is
-     * the one stage whose token cost scales with how hard it works (up to 6
-     * tool iterations, each re-sending the conversation plus tool schemas,
-     * plus up to 6K characters per source read: ~15-25K tokens per render,
-     * ~75K/day for three), and putting that on the 20b model keeps it out
-     * of the 120b budget SCRIPT and CRITIC depend on.
+     * Limits are per-model, so spreading work across models would spread
+     * the daily allowance too — and this project deliberately does not.
+     * RESEARCH ran on gpt-oss-20b for that reason from 2026-08-30 until the
+     * operator's direction of 2026-09-01 put every reasoning stage on
+     * gpt-oss-120b (src/config/models.ts). So this one 200K/day is now the
+     * whole reasoning budget, and RESEARCH is the stage that eats it: its
+     * cost scales with how hard it works (up to 6 tool iterations, each
+     * re-sending the conversation plus tool schemas, plus up to 6K
+     * characters per source read — ~15-25K tokens per render, ~75K/day for
+     * three). Three renders a day fit; a day of re-runs might not, and the
+     * symptom would be a late render failing at SCRIPT rather than
+     * anything named "quota".
      */
     tokensPerDayGptOss: 200_000,
     tokensPerDayQwen3: 2_000_000,
@@ -58,27 +62,15 @@ export const QUOTAS = {
    * fits.
    */
   gemini: {
-    /**
-     * The **text** models' free-tier limits, read off the operator's own AI
-     * Studio rate-limit page on 2026-09-01 — measured, not taken from a
-     * pricing page.
-     *
-     * The single most important property here is that these are **per
-     * model**. The page lists Gemini 3.7 Flash, 3.6 Flash and 3.5 Flash each
-     * at 5 requests/minute and 250K tokens/day, and 3.5 Flash Lite at
-     * 15/minute and its own 250K/day. So the ladder in
-     * src/lib/drivers/gemini-ladder.ts is not merely a failover — descending
-     * it buys a genuinely separate allowance, and the day's real text budget
-     * is closer to 1M tokens across four models than to 250K.
-     *
-     * 5 requests/minute is what forces the inter-stage pacing in
-     * scripts/pipeline/render.ts: RESEARCH alone can spend six calls on its
-     * tool loop, and SCRIPT and PLAN follow immediately behind it.
+    /*
+     * The text models' limits used to be recorded here, for the few hours
+     * on 2026-09-01 that Gemini drove the reasoning stages. **5 requests
+     * per minute, per model** is the number that ended that: RESEARCH's
+     * tool loop alone can spend six, and the first live run peaked at 6/5
+     * on gemini-3.7-flash and lost the render. They are gone rather than
+     * kept for reference — nothing budgets against them any more, and a
+     * quota constant no code reads is a quota nobody notices going stale.
      */
-    textRequestsPerMinute: 5,
-    textTokensPerDay: 250_000,
-    /** Flash Lite is metered three times looser per minute; the daily ceiling is the same. */
-    liteRequestsPerMinute: 15,
     ttsRequestsPerMinute: 3,
     ttsTokensPerMinute: 10_000,
     ttsRequestsPerDay: 10,

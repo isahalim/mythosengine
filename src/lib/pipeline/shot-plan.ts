@@ -5,7 +5,7 @@ import type { DiscourseBeat } from "./script-schema.ts";
 import type { DriverError, LlmDriver } from "../drivers/types.ts";
 import { extractKeywords } from "./keywords.ts";
 import { requestValidatedJson } from "./request-json.ts";
-import { LADDER_PLACEHOLDER_MODEL } from "../drivers/gemini-ladder.ts";
+import { GROQ_REASONING_MODEL } from "../../config/models.ts";
 import { describeActionsForPrompt, isKnownAction, type CharacterPack } from "./character-pack.ts";
 import { ok, type Result } from "../result.ts";
 
@@ -30,16 +30,12 @@ import { ok, type Result } from "../result.ts";
  */
 
 /**
- * PLAN runs on the Gemini ladder as of 2026-09-01 (operator direction) —
- * "planning also gemini (since it is more capable so ask it to make an
- * actionable detailed plan for both footage, character to fit the script)".
- * The placeholder is not a model id; the ladder owns model selection.
- *
- * `GROQ_PLAN_MODEL` is the fallback when the ladder is spent — the model
- * this stage ran on until now.
+ * The default when RENDER does not name one. PLAN asks for an actionable,
+ * detailed plan covering both footage and the host's action per shot, which
+ * is why it is on the larger model rather than the small one it used to
+ * share with RESEARCH — see src/config/models.ts.
  */
-const PLAN_MODEL = LADDER_PLACEHOLDER_MODEL;
-export const GROQ_PLAN_MODEL = "openai/gpt-oss-20b";
+const PLAN_MODEL = GROQ_REASONING_MODEL;
 const PROMPT_PATH = join(process.cwd(), "prompts", "shot-plan.v2.md");
 
 /**

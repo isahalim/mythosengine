@@ -144,13 +144,19 @@ interface EditProvenance {
   clips: { position: number; edited: boolean; toolsRun: string[]; skippedReason: string | null }[];
 }
 
-/** Which provider actually answered a reasoning stage, and why it was not the primary one. */
+/**
+ * Which provider and model actually answered a reasoning stage.
+ *
+ * One provider answers all of them today (src/config/models.ts), so this
+ * currently records the same pair four times over. It is recorded anyway
+ * because the audit package's job is to let a reviewer answer "what wrote
+ * this?" from the export alone, months later, without knowing which build
+ * produced it — and this repo has changed that answer twice in a week.
+ */
 interface StageProvenance {
   stage: string;
-  provider: "gemini" | "groq";
+  provider: "groq";
   model: string;
-  /** Set when the primary provider was exhausted and the fallback answered. */
-  fallbackReason: string | null;
 }
 
 export interface AuditSummaryInput {
@@ -171,7 +177,7 @@ export interface AuditSummaryInput {
   character: CharacterProvenance | null;
   /** What EDIT did to each clip. Null only for callers that predate the stage. */
   edit: EditProvenance | null;
-  /** Which provider answered RESEARCH, SCRIPT and PLAN. */
+  /** Which provider and model answered RESEARCH, SCRIPT and PLAN. */
   stages: StageProvenance[];
   originalityScore: number | null;
   minOriginalityScore: number;
@@ -318,14 +324,6 @@ export function computeAuditSummary(input: AuditSummaryInput): AuditResult {
   // they are reading before they judge its specifics.
   const ungrounded = input.research === null;
   if (ungrounded) flags.push("no research brief — script written from the signal title alone");
-
-  // A stage that ran on the fallback provider produced a real result, so
-  // this is not a failure — but "which model wrote this" is the first thing
-  // a reviewer asks about a script that reads oddly, and they cannot get it
-  // from the video.
-  for (const stage of input.stages) {
-    if (stage.fallbackReason !== null) flags.push(`${stage.stage} ran on ${stage.provider} (${stage.model}) after the primary provider was exhausted`);
-  }
 
   if (input.edit?.degradedReason != null) flags.push(`EDIT did not run: ${input.edit.degradedReason} — clips are as sourced`);
 

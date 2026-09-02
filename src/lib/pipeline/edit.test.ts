@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EDIT_TOOLS, editClips, type EditableClip } from "./edit.ts";
+import { GROQ_REASONING_MODEL } from "../../config/models.ts";
 import type { DriverError, LlmDriver, LlmRequest, ToolDefinition } from "../drivers/types.ts";
 import { err, ok } from "../result.ts";
 
@@ -69,6 +70,23 @@ const deps = (llm: LlmDriver, extra: Record<string, unknown> = {}) => ({
 });
 
 describe("editClips", () => {
+  // Same reason as rerank's: EDIT names its own model, and a wrong one
+  // fails soft to "every clip as sourced" — a degradation that looks
+  // exactly like Kinocut being unavailable and is easy to misread as one.
+  it("asks the reasoning model the pipeline actually runs on", async () => {
+    writeFileSync(editedPath, "video");
+    const asked: string[] = [];
+    const inner = scripted([{ text: `FINAL: ${editedPath}` }]).llm;
+    const llm: LlmDriver = {
+      complete: (req) => {
+        asked.push(req.model);
+        return inner.complete(req);
+      },
+    };
+    await editClips([clip()], deps(llm));
+    expect(asked).toEqual([GROQ_REASONING_MODEL]);
+  });
+
   it("returns the edited file when the model produces one", async () => {
     writeFileSync(editedPath, "video");
     const { llm } = scripted([{ tool: "video_info", args: { input_path: "/tmp/sourced-0.mp4" } }, { text: `FINAL: ${editedPath}` }]);

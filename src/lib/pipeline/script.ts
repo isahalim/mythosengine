@@ -9,21 +9,15 @@ import { DiscourseScriptResponseSchema, ScriptResponseSchema, type DiscourseBeat
 import { requestValidatedJson } from "./request-json.ts";
 import { describeViolations, discourseWordCount, flattenBeats, validateBeatStructure } from "./discourse.ts";
 import type { ResearchBrief } from "../rag/research.ts";
-import { LADDER_PLACEHOLDER_MODEL } from "../drivers/gemini-ladder.ts";
+import { GROQ_REASONING_MODEL } from "../../config/models.ts";
 
 /**
- * SCRIPT runs on the Gemini ladder as of 2026-09-01 (operator direction):
- * the argument is the hard part of this stage, and it is the reason the
- * operator moved it. The placeholder is not a model id — the ladder owns
- * model selection (src/lib/drivers/gemini-ladder.ts).
- *
- * `GROQ_SCRIPT_MODEL` is what RENDER falls back to when the whole ladder is
- * spent. It is the model this stage ran on until now, so the fallback is a
- * return to a known-good path rather than an untested one, and the audit
- * package records which provider actually wrote the script.
+ * The default when RENDER does not name one, which is every model call this
+ * stage makes if a direct caller or a test leaves it out. SCRIPT spent a few
+ * hours on Gemini on 2026-09-01 and is back here — src/config/models.ts has
+ * the whole story.
  */
-const SCRIPT_MODEL = LADDER_PLACEHOLDER_MODEL;
-export const GROQ_SCRIPT_MODEL = "openai/gpt-oss-120b";
+const SCRIPT_MODEL = GROQ_REASONING_MODEL;
 const PROMPT_PATH = join(process.cwd(), "prompts", "script.v2.md");
 const DISCOURSE_PROMPT_PATH = join(process.cwd(), "prompts", "script.v3.md");
 

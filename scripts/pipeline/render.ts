@@ -13,14 +13,14 @@ import { getSettings } from "../../src/server/console/settings.ts";
 import { DEFAULT_DIRECTIVE, DEFAULT_TARGET_DURATION_S } from "../../src/server/console/directive-schema.ts";
 import { checkAndAlert } from "../../src/server/alerts/rules.ts";
 import { pickVoicesForToday, weightSourcesForToday } from "../../src/lib/pipeline/diversity.ts";
-import { generateDiscourseScript, GROQ_SCRIPT_MODEL } from "../../src/lib/pipeline/script.ts";
+import { generateDiscourseScript } from "../../src/lib/pipeline/script.ts";
 import { beatWordRanges } from "../../src/lib/pipeline/discourse.ts";
 import { buildDirectedNarration, FLAT_DIRECTION } from "../../src/lib/pipeline/tts-direction.ts";
 import { selectTtsDrivers, synthesizeWithFallback } from "../../src/lib/pipeline/tts-select.ts";
 import { CHARACTER_BOTTOM_MARGIN_RATIO, CHARACTER_HEIGHT_RATIO, HOST_GEMINI_VOICE, resolveCharacterPack } from "../../src/lib/pipeline/character.ts";
 import { buildCharacterTimeline } from "../../src/lib/pipeline/character-timeline.ts";
 import { extractKeywords } from "../../src/lib/pipeline/keywords.ts";
-import { researchSignal, GROQ_RESEARCH_MODEL, type ResearchBrief } from "../../src/lib/rag/research.ts";
+import { researchSignal, type ResearchBrief } from "../../src/lib/rag/research.ts";
 import { saveResearchBrief } from "../../src/lib/rag/research-store.ts";
 import { SignalsBm25Retriever } from "../../src/lib/rag/retriever.ts";
 import { ArticleFetchDriver } from "../../src/lib/drivers/article-fetch.ts";
@@ -31,7 +31,7 @@ import { computeAuditSummary, type FootagePart, type FootageProvenance, type Res
 import { runExport } from "../../src/lib/pipeline/export.ts";
 import { sourceShots, type SourcedShot } from "../../src/lib/footage/source-agent.ts";
 import { sweepSourceCache } from "../../src/lib/footage/source-cache.ts";
-import { GROQ_PLAN_MODEL, heuristicPlan, planShots } from "../../src/lib/pipeline/shot-plan.ts";
+import { heuristicPlan, planShots } from "../../src/lib/pipeline/shot-plan.ts";
 import { advanceShot, reapAbandonedShots, saveShotPlan } from "../../db/shot-plans.ts";
 import { DomYoutubeSearchDriver } from "../../src/lib/drivers/youtube-search-dom.ts";
 import { buildDownloadDriver } from "../../src/lib/footage/download-route.ts";
@@ -42,30 +42,12 @@ import { PexelsDriver } from "../../src/lib/drivers/pexels.ts";
 import { GroqWhisperDriver } from "../../src/lib/drivers/groq-whisper.ts";
 import { FfmpegRenderDriver } from "../../src/lib/drivers/render-ffmpeg.ts";
 import { createGroqDriverFromEnv, createGroqLimiter } from "../../src/lib/drivers/resolve-groq-driver.ts";
-import { createGeminiLadderFromEnv } from "../../src/lib/drivers/resolve-gemini-driver.ts";
-import { withGroqFallback } from "../../src/lib/drivers/gemini-ladder.ts";
+import { GROQ_REASONING_MODEL } from "../../src/config/models.ts";
 import { RerankingRetriever } from "../../src/lib/rag/rerank.ts";
 import { editClips, type EditableClip } from "../../src/lib/pipeline/edit.ts";
 import { buildPipelineEnv } from "./env.ts";
 
 const REPO_DIR = process.cwd();
-
-/**
- * How long RENDER waits between two consecutive Gemini stages.
- *
- * The free tier meters 5 requests per minute per model, and this pipeline
- * runs three Gemini stages back to back — RESEARCH (a tool loop, up to six
- * calls on its own), then SCRIPT, then PLAN. Without a gap the second and
- * third stages arrive inside RESEARCH's spent window and are rate limited
- * immediately, which costs them their place on the best model for no
- * benefit: the ladder would drop them to 3.6 or 3.5 while 3.7's window was
- * seconds from refilling.
- *
- * 61 seconds rather than 60, for the same reason the ladder waits 61: the
- * window is measured on the provider's clock and a request sent exactly on
- * the boundary is a coin flip.
- */
-const GEMINI_STAGE_GAP_MS = 61_000;
 
 /**
  * The brief as the audit package records it: the citations and the model
@@ -216,33 +198,16 @@ async function main(): Promise<void> {
   const chosenSignal = pickedSignal ?? weightedPick;
   if (pickedSignal !== undefined) console.warn(`RUN PICK: rendering the operator's queued ${claimedPick?.topic} pick — ${pickedSignal.title}`);
 
-  const llm = createGroqDriverFromEnv(env.groqApiKey, createGroqLimiter());
-
-  // The reasoning provider for RESEARCH, SCRIPT and PLAN since 2026-09-01
-  // (operator direction). CRITIC deliberately stays on `llm` above: a critic
-  // sharing a model with the writer it judges is grading its own work.
+  // One driver, one model, every reasoning stage and every tool loop:
+  // RESEARCH, reranking, SCRIPT, CRITIC, PLAN and EDIT all run on it. See
+  // src/config/models.ts for which model and why the Gemini split that
+  // briefly sat between them on 2026-09-01 was reverted the same day.
   //
-  // Absent a key, every one of those stages runs on Groq exactly as it did
-  // before Gemini existed — the same "an upgrade must not become a
-  // dependency" rule that governs the Gemini TTS path (scripts/pipeline/env.ts).
-  const gemini = env.geminiApiKey === undefined ? null : createGeminiLadderFromEnv(env.geminiApiKey);
-  if (gemini === null) console.warn("GEMINI_API_KEY is not set — RESEARCH, SCRIPT and PLAN are running on Groq.");
-
-  /**
-   * Gemini's free tier allows 5 requests/minute per model, and RESEARCH
-   * alone can spend six on its tool loop before SCRIPT and PLAN have asked
-   * for anything. Pausing between stages spends the wait where it costs
-   * nothing — between two stages that were going to run in sequence anyway
-   * — instead of inside the ladder, where it costs a stage its better model.
-   *
-   * Skipped entirely when Gemini is not in play, so a Groq-only run is not
-   * slowed down by a limit that does not apply to it.
-   */
-  const paceGemini = async (nextStage: string): Promise<void> => {
-    if (gemini === null) return;
-    console.warn(`Pausing ${(GEMINI_STAGE_GAP_MS / 1000).toFixed(0)}s before ${nextStage} so Gemini's per-minute window can refill.`);
-    await new Promise((resolve) => setTimeout(resolve, GEMINI_STAGE_GAP_MS));
-  };
+  // The single limiter matters as much as the single model. It is the
+  // account's pacing, shared by every stage below, so RESEARCH's tool loop
+  // and SCRIPT's draft queue behind one token bucket instead of racing each
+  // other into a 429.
+  const llm = createGroqDriverFromEnv(env.groqApiKey, createGroqLimiter());
 
   // ---- RESEARCH (RAG: BM25 retrieval + live source reads, driven by Groq tool-calling) ----
   // Deliberately not fatal. A retrieval outage, a rate limit, or a model
@@ -252,21 +217,13 @@ async function main(): Promise<void> {
   // which kind of script they are reading. Losing the day's video to a
   // failed research call would be a strictly worse trade.
   const researchRunId = await startRun(env.db, "research", traceId);
-  // BM25 finds the candidates; Gemini orders them (src/lib/rag/rerank.ts).
+  // BM25 finds the candidates; the model orders them (src/lib/rag/rerank.ts).
   // Reranking is wrapped around the retriever rather than built into it, so
   // a reranker outage leaves plain BM25 retrieval in place.
-  const bm25 = new SignalsBm25Retriever(env.db);
-  const retriever = gemini === null ? bm25 : new RerankingRetriever(bm25, gemini);
+  const retriever = new RerankingRetriever(new SignalsBm25Retriever(env.db), llm);
   const articles = new ArticleFetchDriver();
 
-  const researchAttempt = await withGroqFallback(
-    "RESEARCH",
-    gemini ?? llm,
-    llm,
-    (driver, model) => researchSignal(driver, retriever, articles, chosenSignal, { model }),
-    GROQ_RESEARCH_MODEL,
-  );
-  const researchResult = researchAttempt.result;
+  const researchResult = await researchSignal(llm, retriever, articles, chosenSignal, { model: GROQ_REASONING_MODEL });
   let research: ResearchBrief | null = null;
   if (researchResult.ok) {
     research = researchResult.value;
@@ -280,16 +237,8 @@ async function main(): Promise<void> {
 
   // ---- SCRIPT (v2 discourse format: beats with a `move`, plan v2 §4) ----
   const targetDurationS = directive.targetDurationS ?? DEFAULT_TARGET_DURATION_S;
-  await paceGemini("SCRIPT");
   const scriptRunId = await startRun(env.db, "script", traceId);
-  const scriptAttempt = await withGroqFallback(
-    "SCRIPT",
-    gemini ?? llm,
-    llm,
-    (driver, model) => generateDiscourseScript(env.rawClient, chosenSignal, driver, targetDurationS, research, Date.now, undefined, traceId, model),
-    GROQ_SCRIPT_MODEL,
-  );
-  const scriptResult = scriptAttempt.result;
+  const scriptResult = await generateDiscourseScript(env.rawClient, chosenSignal, llm, targetDurationS, research, Date.now, undefined, traceId, GROQ_REASONING_MODEL);
   if (!scriptResult.ok) {
     await finishRun(env.db, scriptRunId, "failed", scriptResult.error.kind);
     throw new Error(`SCRIPT failed: ${scriptResult.error.message}`);
@@ -318,7 +267,6 @@ async function main(): Promise<void> {
   // once the topic has decided the footage there is nothing about it left
   // to decide — which second of the run to take is answered by motion
   // scoring and chance, not by language.
-  await paceGemini("PLAN");
   const planRunId = await startRun(env.db, "plan", traceId);
   // The host is resolved BEFORE planning, not just before rendering: PLAN
   // now chooses which of her actions plays over each shot, and it can only
@@ -335,14 +283,7 @@ async function main(): Promise<void> {
     debateQuestion: script.debateQuestion,
     topic: claimedPick?.topic ?? null,
   };
-  const planAttempt = await withGroqFallback(
-    "PLAN",
-    gemini ?? llm,
-    llm,
-    (driver, model) => planShots(driver, planInput, { model, ...(character.present ? { pack: character.pack } : {}) }),
-    GROQ_PLAN_MODEL,
-  );
-  const planResult = planAttempt.result;
+  const planResult = await planShots(llm, planInput, { model: GROQ_REASONING_MODEL, ...(character.present ? { pack: character.pack } : {}) });
   // planShots never returns an error — the worst case is the heuristic plan.
   const plan = planResult.ok ? planResult.value : heuristicPlan({ hook: script.hook, beats: script.beats ?? [], body: script.body, debateQuestion: script.debateQuestion, topic: null }, "PLAN returned an error");
   await finishRun(env.db, planRunId, plan.degradedReason === null ? "succeeded" : "failed", plan.degradedReason ?? undefined);
@@ -536,7 +477,7 @@ async function main(): Promise<void> {
       return shot;
     };
 
-    // ---- EDIT (Gemini driving Kinocut over MCP) ----
+    // ---- EDIT (the model driving Kinocut over MCP) ----
     //
     // Runs here rather than straight after SOURCE because it needs each
     // clip's on-screen duration, and that is not known until the narration
@@ -549,7 +490,7 @@ async function main(): Promise<void> {
       const shot = shotAt(slot.position);
       return { position: slot.position, filePath: shot.filePath, durationS: slot.durationS, intent: shot.intent, query: shot.query, provider: shot.provider };
     });
-    const editResult = await editClips(editableClips, { llm: gemini ?? llm, workDir });
+    const editResult = await editClips(editableClips, { llm, workDir });
     // editClips never returns an error — the worst case is every clip unedited.
     const edits = editResult.ok ? editResult.value : { clips: editableClips.map((clip) => ({ position: clip.position, filePath: clip.filePath, edited: false, toolsRun: [], skippedReason: "EDIT returned an error" })), degradedReason: "EDIT returned an error", model: null };
     const editedCount = edits.clips.filter((clip) => clip.edited).length;
@@ -675,13 +616,14 @@ async function main(): Promise<void> {
           }
         : null,
       edit: { model: edits.model, degradedReason: edits.degradedReason, clips: edits.clips.map(({ position, edited, toolsRun, skippedReason }) => ({ position, edited, toolsRun, skippedReason })) },
-      // Which provider actually answered each reasoning stage. A script
-      // written by the fallback model is a legitimate script and a
-      // different one, and the reviewer is told rather than left to guess.
+      // Which provider and model actually answered each reasoning stage.
+      // RESEARCH reports the model its brief recorded rather than the one it
+      // was handed, because that is the one whose citations a reviewer is
+      // checking.
       stages: [
-        { stage: "RESEARCH", provider: researchAttempt.provider, model: research?.model ?? GROQ_RESEARCH_MODEL, fallbackReason: researchAttempt.fallbackReason },
-        { stage: "SCRIPT", provider: scriptAttempt.provider, model: scriptAttempt.provider === "groq" ? GROQ_SCRIPT_MODEL : "gemini-ladder", fallbackReason: scriptAttempt.fallbackReason },
-        { stage: "PLAN", provider: planAttempt.provider, model: planAttempt.provider === "groq" ? GROQ_PLAN_MODEL : "gemini-ladder", fallbackReason: planAttempt.fallbackReason },
+        { stage: "RESEARCH", provider: "groq" as const, model: research?.model ?? GROQ_REASONING_MODEL },
+        { stage: "SCRIPT", provider: "groq" as const, model: GROQ_REASONING_MODEL },
+        { stage: "PLAN", provider: "groq" as const, model: GROQ_REASONING_MODEL },
       ],
       originalityScore: critic.originalityScore,
       minOriginalityScore: directive.minOriginalityScore,

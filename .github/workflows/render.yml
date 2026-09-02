@@ -4,9 +4,10 @@ name: RENDER
 # one signal end-to-end (RESEARCH -> SCRIPT -> CRITIC -> FOOTAGE SELECT ->
 # TTS -> ALIGN -> RENDER -> AUDIT -> EXPORT); this job invokes it `count`
 # times, which is how many videos the operator lit shards for in stage 2.
-# ALIGN runs only on the Gemini narration path, and since 2026-09-01 its
+# ALIGN runs only on the Gemini TTS narration path, and since 2026-09-01 its
 # failure costs the render its exact caption timings rather than the whole
-# video; PLAN is not built yet (plan v2 §8 item 4).
+# video. PLAN and EDIT both exist now and both sit in that chain, between
+# CRITIC and SOURCE and between SOURCE and RENDER respectively.
 #
 # The 3x/day cron was removed 2026-08-31. It was never the right shape for
 # this system and the self-hosted runner is what settled it: footage only

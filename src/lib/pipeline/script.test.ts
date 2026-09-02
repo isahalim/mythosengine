@@ -6,6 +6,7 @@ import { scripts, signals, sources } from "../../../db/schema.ts";
 import { ok, type Result } from "../result.ts";
 import type { DriverError, LlmDriver, LlmRequest, LlmResponse } from "../drivers/types.ts";
 import { formatResearchBrief, generateDiscourseScript, generateScript } from "./script.ts";
+import { GROQ_REASONING_MODEL } from "../../config/models.ts";
 
 const PROMPT_TEMPLATE = "Signal: {{signal_title_and_summary}}. Research: {{research_brief}} Output JSON only.";
 
@@ -249,6 +250,12 @@ describe("generateDiscourseScript", () => {
   function generate(llm: LlmDriver, targetDurationS = 60) {
     return generateDiscourseScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, targetDurationS, null, () => Date.parse("2026-08-28T01:00:00Z"), DISCOURSE_PROMPT);
   }
+
+  it("defaults to the reasoning model the pipeline actually runs on", async () => {
+    const llm = new ScriptedLlm([llmResponse(VALID_DISCOURSE)]);
+    await generate(llm);
+    expect(llm.calls.map((c) => c.model)).toEqual([GROQ_REASONING_MODEL]);
+  });
 
   it("stores the beats and the target duration alongside the v1 columns", async () => {
     const result = await generate(new ScriptedLlm([llmResponse(VALID_DISCOURSE)]));

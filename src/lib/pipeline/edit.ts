@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import type { DriverError, LlmDriver, LlmMessage, ToolDefinition } from "../drivers/types.ts";
-import { LADDER_PLACEHOLDER_MODEL } from "../drivers/gemini-ladder.ts";
+import { GROQ_REASONING_MODEL } from "../../config/models.ts";
 import { McpStdioClient } from "../drivers/mcp-stdio.ts";
 import { ok, type Result } from "../result.ts";
 
@@ -188,7 +188,7 @@ async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdi
     }
 
     const completion = await deps.llm.complete({
-      model: LADDER_PLACEHOLDER_MODEL,
+      model: GROQ_REASONING_MODEL,
       messages,
       tools,
       toolChoice: "auto",
@@ -220,7 +220,6 @@ async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdi
       role: "assistant",
       content: completion.value.content,
       toolCalls: [call],
-      ...(completion.value.providerSteps === undefined ? {} : { providerSteps: completion.value.providerSteps }),
     });
 
     // The allowlist is enforced here, not merely by what was offered. A
@@ -294,7 +293,7 @@ export async function editClips(clips: EditableClip[], deps: EditDeps): Promise<
     for (const clip of clips) {
       const result = await editOne(clip, tools, mcp, deps);
       edited.push(result);
-      model ??= LADDER_PLACEHOLDER_MODEL;
+      model ??= GROQ_REASONING_MODEL;
       onEvent(
         result.edited
           ? `EDIT: shot ${clip.position} edited via ${result.toolsRun.join(" -> ") || "no tools"}.`

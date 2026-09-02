@@ -3,6 +3,7 @@ import type { DriverError, LlmDriver, LlmRequest, LlmResponse } from "../drivers
 import { err, ok, type Result } from "../result.ts";
 import type { Retriever, RetrievedPassage } from "./retriever.ts";
 import { researchSignal } from "./research.ts";
+import { GROQ_REASONING_MODEL } from "../../config/models.ts";
 
 const PROMPT = "<role>test researcher</role><topic>{{signal_title}}</topic>";
 
@@ -55,6 +56,12 @@ const GOOD_BRIEF = JSON.stringify({
 });
 
 describe("researchSignal", () => {
+  it("defaults to the reasoning model the pipeline actually runs on", async () => {
+    const llm = scriptedLlm([toolCall("search_discourse", { query: "GTA VI" }), { content: GOOD_BRIEF }]);
+    await researchSignal(llm, stubRetriever, stubArticles, SIGNAL, { promptTemplate: PROMPT });
+    expect(llm.requests.map((r) => r.model)).toEqual([GROQ_REASONING_MODEL, GROQ_REASONING_MODEL]);
+  });
+
   it("searches, then returns a brief whose citations carry full provenance", async () => {
     const llm = scriptedLlm([toolCall("search_discourse", { query: "GTA VI delay" }), { content: GOOD_BRIEF }]);
 

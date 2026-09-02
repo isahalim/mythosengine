@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { DriverError, LlmDriver, LlmMessage, ToolDefinition } from "../drivers/types.ts";
 import type { ArticleFetchDriver } from "../drivers/article-fetch.ts";
 import { err, ok, type Result } from "../result.ts";
-import { LADDER_PLACEHOLDER_MODEL } from "../drivers/gemini-ladder.ts";
+import { GROQ_REASONING_MODEL } from "../../config/models.ts";
 import type { Retriever } from "./retriever.ts";
 
 /**
@@ -31,36 +31,22 @@ import type { Retriever } from "./retriever.ts";
  *    degraded path, not a dead one (scripts/pipeline/render.ts) — a
  *    retrieval outage must not cost the day's video.
  *
- * **Moved from Groq to Gemini on 2026-09-01** (operator direction), along
- * with SCRIPT and PLAN; CRITIC stayed behind on Groq so that a second
- * provider still judges the writing. The move cost one real piece of
- * design: Gemini's Interactions API cannot replay a tool conversation
- * statelessly, so the loop below now carries `providerSteps` — an opaque
- * transcript it never inspects — from each response onto the next request.
- * That field is why this stage could move at all.
- *
  * Retrieval is reranked by the same model before the agent ever sees it
- * (src/lib/rag/rerank.ts): BM25 finds the candidates, Gemini orders them.
- */
-
-/**
- * RESEARCH runs on the Gemini ladder as of 2026-09-01 (operator direction).
+ * (src/lib/rag/rerank.ts): BM25 finds the candidates, the model orders
+ * them.
  *
- * The placeholder is not a model id: `GeminiLadderDriver` owns model
- * selection, starting at gemini-3.7-flash and descending only under quota
- * pressure, and `LlmResponse.modelUsed` reports which rung actually
- * answered. The brief records that, not this — a reviewer needs to know
- * which model produced their citations.
+ * This stage spent a few hours on Gemini on 2026-09-01 and was reverted the
+ * same day — see `src/config/models.ts`. The reversion took `providerSteps`
+ * with it: that field existed only because Gemini's Interactions API
+ * cannot replay a tool conversation statelessly, and the loop below is
+ * back to the plain OpenAI-shaped replay Groq accepts.
  */
-const RESEARCH_MODEL = LADDER_PLACEHOLDER_MODEL;
 
 /**
- * What RENDER falls back to when the whole Gemini ladder is spent — the
- * model this stage ran on until 2026-09-01. Kept on 20b rather than 120b
- * for the original reason: Groq's quotas are per-model, so RESEARCH's
- * tool loop stays out of the 120b budget CRITIC still depends on.
+ * The default when RENDER does not name one. RENDER always names one, so
+ * this is what a direct caller and the tests get.
  */
-export const GROQ_RESEARCH_MODEL = "openai/gpt-oss-20b";
+const RESEARCH_MODEL = GROQ_REASONING_MODEL;
 const MAX_TOOL_ITERATIONS = 6;
 const PROMPT_PATH = join(process.cwd(), "prompts", "research.v1.md");
 
@@ -195,7 +181,7 @@ export async function researchSignal(
 
     const call = completion.value.toolCalls?.[0];
     if (!call) {
-      // The rung that actually answered, not the one that was asked for.
+      // The model that actually answered, not the one that was asked for.
       return finalizeBrief(completion.value.content, seen, toolCallsMade, completion.value.modelUsed ?? model);
     }
     if (isLastIteration) {
@@ -209,17 +195,7 @@ export async function researchSignal(
       });
     }
 
-    // `providerSteps` is the opaque provider transcript, echoed back
-    // untouched on the next turn. Gemini rejects a tool conversation
-    // reconstructed from `content` + `toolCalls` alone, because its
-    // `thought` steps carry signatures that have to survive the round trip
-    // (see LlmMessage.providerSteps). Groq ignores the field.
-    messages.push({
-      role: "assistant",
-      content: completion.value.content,
-      toolCalls: [call],
-      ...(completion.value.providerSteps === undefined ? {} : { providerSteps: completion.value.providerSteps }),
-    });
+    messages.push({ role: "assistant", content: completion.value.content, toolCalls: [call] });
 
     let rawArgs: unknown;
     try {
