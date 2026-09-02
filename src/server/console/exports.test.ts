@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createTestDb } from "../../../db/client.ts";
 import { applyMigrations } from "../../../db/apply-migrations.ts";
 import { exports as exportsTable, renders, scripts, signals, sources, footageSources, footageSegments } from "../../../db/schema.ts";
-import { discardExport, downloadExport, getExport, listExports, markExportReviewed, type ExportBlobStore, exportFileName } from "./exports.ts";
+import { discardExport, downloadExport, getExport, getExportMetadata, listExports, markExportReviewed, type ExportBlobStore, exportFileName } from "./exports.ts";
 
 class FakeBlobStore implements ExportBlobStore {
   readonly store = new Map<string, ArrayBuffer>();
@@ -19,6 +19,7 @@ async function seedExport(
   id: string,
   status: "ready_for_review" | "downloaded" | "reviewed" | "discarded" | "expired",
   storageKey = `blob:${id}`,
+  overrides: { auditJson?: string; suggestedTagsJson?: string } = {},
 ) {
   await db.insert(sources).values({ id: "src1", kind: "reddit", url: "http://x" }).run();
   await db.insert(signals).values({ id: "sig1", sourceId: "src1", canonicalUrl: "http://x/1", title: "t", observedAt: "2026-01-01", engagementScore: 1, simhash: "a", state: "exported" }).run();
@@ -35,8 +36,8 @@ async function seedExport(
       sizeBytes: 100,
       suggestedTitle: "title",
       suggestedDescription: "desc",
-      suggestedTagsJson: "[]",
-      auditJson: "{}",
+      suggestedTagsJson: overrides.suggestedTagsJson ?? "[]",
+      auditJson: overrides.auditJson ?? "{}",
       createdAt: "2026-01-01",
       expiresAt: "2026-01-04",
       status,
@@ -217,5 +218,123 @@ describe("exportFileName", () => {
 
   it("bounds the length so a long title cannot produce an unusable filename", () => {
     expect(exportFileName("word ".repeat(200), "exp1").length).toBeLessThanOrEqual(80);
+  });
+});
+
+describe("getExportMetadata", () => {
+  let ctx: ReturnType<typeof createTestDb>;
+
+  beforeEach(async () => {
+    ctx = createTestDb();
+    applyMigrations(ctx.client);
+  });
+
+  /** An audit package of the shape RENDER writes: two clips, one YouTube and one stock. */
+  const AUDIT = JSON.stringify({
+    script: { hook: "h", body: "b", debateQuestion: "q" },
+    footage: {
+      segmentId: "fseg1",
+      parts: [
+        {
+          position: 0,
+          segmentId: "yt-abc-2470",
+          startMs: 0,
+          endMs: 8_000,
+          provider: "youtube",
+          providerClipId: "abc",
+          photographer: null,
+          pageUrl: "https://www.youtube.com/watch?v=abc",
+          searchQuery: "Iceland parliament voting session",
+          beatIndex: 0,
+          sourceStartS: 2470,
+          sourceEndS: 2535,
+        },
+        {
+          position: 1,
+          segmentId: "pexels-99",
+          startMs: 8_000,
+          endMs: 14_500,
+          provider: "pexels",
+          providerClipId: "99",
+          photographer: "A Photographer",
+          pageUrl: "https://www.pexels.com/video/99/",
+          searchQuery: "volcanic landscape",
+          beatIndex: 1,
+          sourceStartS: 0,
+          sourceEndS: 12,
+        },
+      ],
+    },
+    auditResult: {
+      narration: { driver: "gemini-tts", voice: "Kore", fallbackReason: null, captionTiming: "aligned" },
+      ungrounded: false,
+      research: { model: "openai/gpt-oss-120b", citations: [{ title: "A source", url: "https://example.com/a" }] },
+      edit: { model: "openai/gpt-oss-120b", degradedReason: null, clips: [{ position: 0, edited: true, toolsRun: ["video_info", "video_trim"], skippedReason: null }] },
+    },
+  });
+
+  it("answers 'which YouTube videos are in this, and which part of each'", async () => {
+    await seedExport(ctx.db, "exp1", "ready_for_review", "exports/exp1.mp4", { auditJson: AUDIT, suggestedTagsJson: '["iceland politics","EU"]' });
+    const metadata = await getExportMetadata(ctx.db, "exp1");
+
+    expect(metadata).not.toBeNull();
+    if (metadata === null) throw new Error("expected metadata");
+    expect(metadata.usedYoutube).toBe(true);
+
+    const [youtube, stock] = metadata.clips;
+    // The span of the SOURCE, not of the output — the two are different
+    // facts and the source one is what a provenance check needs.
+    expect(youtube.sourceStartS).toBe(2470);
+    expect(youtube.sourceEndS).toBe(2535);
+    expect(youtube.outStartS).toBe(0);
+    expect(youtube.outEndS).toBe(8);
+    // And a link that opens the source at that second.
+    expect(youtube.linkUrl).toBe("https://www.youtube.com/watch?v=abc&t=2470");
+    expect(youtube.edited).toBe(true);
+    expect(youtube.editToolsRun).toEqual(["video_info", "video_trim"]);
+
+    // A stock page has no time index, so none is invented for it.
+    expect(stock.linkUrl).toBe("https://www.pexels.com/video/99/");
+    expect(stock.photographer).toBe("A Photographer");
+  });
+
+  it("says plainly when nothing came from YouTube", async () => {
+    const stockOnly = JSON.parse(AUDIT) as { footage: { parts: unknown[] } };
+    stockOnly.footage.parts = [JSON.parse(AUDIT).footage.parts[1]];
+    await seedExport(ctx.db, "exp1", "ready_for_review", "exports/exp1.mp4", { auditJson: JSON.stringify(stockOnly) });
+
+    const metadata = await getExportMetadata(ctx.db, "exp1");
+    expect(metadata?.usedYoutube).toBe(false);
+  });
+
+  it("turns the render's tags into hashtags a description box will accept", async () => {
+    await seedExport(ctx.db, "exp1", "ready_for_review", "exports/exp1.mp4", { auditJson: AUDIT, suggestedTagsJson: '["iceland politics","EU vote!"]' });
+    const metadata = await getExportMetadata(ctx.db, "exp1");
+    expect(metadata?.hashtags).toEqual(["#icelandpolitics", "#EUvote"]);
+  });
+
+  it("says an export predates per-clip timestamps rather than showing it as starting at zero", async () => {
+    const old = JSON.parse(AUDIT) as { footage: { parts: Record<string, unknown>[] } };
+    for (const part of old.footage.parts) {
+      delete part.sourceStartS;
+      delete part.sourceEndS;
+    }
+    await seedExport(ctx.db, "exp1", "ready_for_review", "exports/exp1.mp4", { auditJson: JSON.stringify(old) });
+
+    const metadata = await getExportMetadata(ctx.db, "exp1");
+    expect(metadata?.clips[0].sourceStartS).toBeNull();
+    expect(metadata?.clips[0].linkUrl).toBe("https://www.youtube.com/watch?v=abc");
+    expect(metadata?.incomplete.join(" ")).toContain("predates per-clip source timestamps");
+  });
+
+  it("reports an unreadable audit package instead of throwing", async () => {
+    await seedExport(ctx.db, "exp1", "ready_for_review", "exports/exp1.mp4", { auditJson: "{not json" });
+    const metadata = await getExportMetadata(ctx.db, "exp1");
+    expect(metadata?.clips).toEqual([]);
+    expect(metadata?.incomplete.join(" ")).toContain("could not be read");
+  });
+
+  it("is null for an export that does not exist", async () => {
+    expect(await getExportMetadata(ctx.db, "nope")).toBeNull();
   });
 });

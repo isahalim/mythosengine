@@ -31,6 +31,19 @@ export interface FootagePart {
   searchQuery: string | null;
   /** The script beat this shot illustrates; null for the hook's establishing shot or a single looped clip. */
   beatIndex: number | null;
+  /**
+   * The span of the **source** this clip was cut from, in seconds — where
+   * `startMs`/`endMs` above are the span of the *output* it occupies.
+   *
+   * A reviewer asking "which YouTube videos are in this, and which part of
+   * each?" cannot answer it from anything else in the package: `pageUrl`
+   * names the video and `startMs` names a moment in the short, and neither
+   * one composed with the other gives the minute of the source that was
+   * actually used. Null on a record written before this field existed —
+   * missing reads as missing, never as "from the beginning".
+   */
+  sourceStartS: number | null;
+  sourceEndS: number | null;
 }
 
 export interface FootageProvenance {

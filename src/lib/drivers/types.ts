@@ -18,6 +18,18 @@ export interface DriverError {
   message: string;
   retryable: boolean;
   retryAfterMs?: number;
+  /**
+   * The provider's raw 4xx body, untruncated (bounded — see `fetchWithRetry`).
+   *
+   * `message` already carries the first 400 characters of it, which is the
+   * right amount for a log line and the wrong amount for a body a caller
+   * has to *parse*. Groq's `tool_use_failed` is the case that forced this:
+   * the whole model generation the request rejected travels in
+   * `error.failed_generation`, several kilobytes in, and recovering it from
+   * a truncated sentence is not possible. Present only on 4xx, absent
+   * everywhere else.
+   */
+  responseBody?: string;
 }
 
 /** Present on every driver response so the runner can back off before 429. */

@@ -327,6 +327,21 @@ describe("router", () => {
     expect(new TextDecoder().decode(await res?.arrayBuffer())).toBe("mp4!");
   });
 
+  it("serves the metadata sheet, and refuses it to a caller without a session", async () => {
+    const cookie = await completeRegistrationAndLogin();
+    await seedExport();
+
+    const anonymous = await handleApiRequest(apiRequest("/console/exports/exp1/metadata"), deps);
+    expect(anonymous?.status).toBe(401);
+
+    const res = await handleApiRequest(apiRequest("/console/exports/exp1/metadata", { cookie }), deps);
+    expect(res?.status).toBe(200);
+    expect(((await res?.json()) as { id: string }).id).toBe("exp1");
+
+    const missing = await handleApiRequest(apiRequest("/console/exports/nope/metadata", { cookie }), deps);
+    expect(missing?.status).toBe(404);
+  });
+
   it("serves the download to a plain browser navigation, which sends no JSON accept header", async () => {
     // The console renders Download as an <a href>, so the browser navigates
     // and sends `Accept: text/html,...`. The router's "a GET that doesn't

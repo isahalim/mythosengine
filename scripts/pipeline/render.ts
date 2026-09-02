@@ -17,6 +17,7 @@ import { generateDiscourseScript } from "../../src/lib/pipeline/script.ts";
 import { beatWordRanges } from "../../src/lib/pipeline/discourse.ts";
 import { buildDirectedNarration, FLAT_DIRECTION } from "../../src/lib/pipeline/tts-direction.ts";
 import { selectTtsDrivers, synthesizeWithFallback } from "../../src/lib/pipeline/tts-select.ts";
+import { readGeminiTtsBudget, recordGeminiTtsAttempt, settleGeminiTtsAttempt } from "../../src/lib/pipeline/tts-budget.ts";
 import { CHARACTER_BOTTOM_MARGIN_RATIO, CHARACTER_HEIGHT_RATIO, HOST_GEMINI_VOICE, resolveCharacterPack } from "../../src/lib/pipeline/character.ts";
 import { buildCharacterTimeline } from "../../src/lib/pipeline/character-timeline.ts";
 import { extractKeywords } from "../../src/lib/pipeline/keywords.ts";
@@ -374,12 +375,16 @@ async function main(): Promise<void> {
     const voice = pickVoicesForToday({ voicePool: directive.voicePool ?? null, preferredSourceIds: directive.preferredSourceIds, diversityMode: directive.diversityMode }, voicesUsedToday)[0];
     const rate = pickTtsRate(directive.ttsRateRange ?? null);
 
-    // How many of today's renders already spent a Gemini TTS request. The
-    // free tier's ceiling is per *day*, so this is the only count that can
-    // decide whether the upgrade is still available.
-    const geminiRendersToday = todaysRenders.filter((r) => r.ttsDriver === "gemini-tts").length;
-    const selection = selectTtsDrivers(env.geminiApiKey, geminiRendersToday);
+    // How many Gemini TTS *requests* this pipeline has already sent on the
+    // current Pacific day — the day Google's free-tier counter resets on,
+    // and every request rather than every successful render. Counting
+    // `renders` rows against a UTC day (what this used to do) read zero at
+    // 21:00 PT on 2026-09-02 while all ten were gone, and the operator got
+    // Edge TTS where they had asked for Kore. See tts-budget.ts.
+    const geminiBudget = await readGeminiTtsBudget(env.hotKv);
+    const selection = selectTtsDrivers(env.geminiApiKey, geminiBudget);
     if (selection.unavailableReason !== null) console.warn(`TTS: ${selection.unavailableReason}`);
+    else console.warn(`TTS: Gemini narration available — ${geminiBudget.spent}/${geminiBudget.budget} requests spent on ${geminiBudget.day} (Pacific).`);
 
     // The beats reach TTS two ways: Gemini gets the bracketed direction,
     // Edge gets the plain narration. Both speak the same words — only the
@@ -393,6 +398,11 @@ async function main(): Promise<void> {
       selection,
       { text: directed.text, voice: HOST_GEMINI_VOICE, styleDirection: directed.styleDirection },
       { text: script.body, voice, rate },
+      console.warn,
+      {
+        record: () => recordGeminiTtsAttempt(env.hotKv, traceId),
+        settle: (outcome, reason) => settleGeminiTtsAttempt(env.hotKv, outcome, reason),
+      },
     );
     if (!ttsResult.ok) {
       await finishRun(env.db, ttsRunId, "failed", ttsResult.error.kind);
@@ -545,6 +555,11 @@ async function main(): Promise<void> {
         pageUrl: shot.pageUrl,
         searchQuery: shot.query,
         beatIndex: shot.beatIndex,
+        // The window of the source, not of the output — the pair above is
+        // the output. Both are needed for "which videos are in this, and
+        // which part of each".
+        sourceStartS: shot.sourceStartS,
+        sourceEndS: shot.sourceEndS,
       };
     });
 

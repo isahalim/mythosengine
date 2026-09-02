@@ -13,7 +13,28 @@ export interface RetryOptions {
    * out — see the comment on `retryAfterMs` for why that is not optional.
    */
   maxRetryDelayMs?: number;
+  /**
+   * Whether a 429 is worth trying again. Default true, which is right for
+   * a per-minute throttle: waiting a second and asking again is exactly
+   * what the server asked for.
+   *
+   * It is wrong for a *daily* quota, where the second attempt cannot
+   * succeed before the quota resets and is itself charged against it.
+   * Gemini's free TTS tier allows ten requests a day, so the retry that
+   * followed the 429 on 2026-09-01 spent an eleventh — a retry that could
+   * only ever deepen the hole it was digging out of. `tts-gemini.ts` sets
+   * this false for that reason.
+   */
+  retryOn429?: boolean;
 }
+
+/**
+ * Ceiling on the provider error body kept on `DriverError.responseBody`.
+ * Big enough for a Groq `failed_generation` (a whole model turn); small
+ * enough that a provider answering a 4xx with a megabyte of HTML cannot
+ * push it into a log line or a KV value.
+ */
+const MAX_ERROR_BODY_CHARS = 16_384;
 
 /**
  * Ceiling on any single inter-attempt sleep. A caller that hasn't thought
@@ -80,11 +101,10 @@ function describeRateLimitHeaders(res: Response): string {
  * the body. Provider error bodies describe the request we sent, not our
  * credentials: the key travels in a header and is never echoed back.
  */
-async function describeErrorBody(res: Response): Promise<string> {
+async function readErrorBody(res: Response): Promise<string> {
   if (res.status < 400 || res.status >= 500) return "";
   try {
-    const text = (await res.text()).replace(/\s+/g, " ").trim();
-    return text.length > 0 ? `: ${text.slice(0, 400)}` : "";
+    return (await res.text()).replace(/\s+/g, " ").trim().slice(0, MAX_ERROR_BODY_CHARS);
   } catch {
     // The status is the finding; a body we could not read does not change it.
     return "";
@@ -108,7 +128,7 @@ export async function fetchWithRetry(
   init: RequestInit,
   options: RetryOptions,
 ): Promise<Result<Response, DriverError>> {
-  const { timeoutMs, maxAttempts, baseDelayMs, fetchImpl = fetch, maxRetryDelayMs = DEFAULT_MAX_RETRY_DELAY_MS } = options;
+  const { timeoutMs, maxAttempts, baseDelayMs, fetchImpl = fetch, maxRetryDelayMs = DEFAULT_MAX_RETRY_DELAY_MS, retryOn429 = true } = options;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const isLastAttempt = attempt === maxAttempts - 1;
@@ -119,21 +139,24 @@ export async function fetchWithRetry(
       // If-Modified-Since) — not an error, and Response.ok is false for it.
       if (res.ok || res.status === 304) return ok(res);
 
-      const retryable = res.status === 429 || res.status >= 500;
+      const retryable = (res.status === 429 && retryOn429) || res.status >= 500;
       const requestedDelay = retryAfterMs(res);
       // Waiting longer than the budget allows is not a retry, it's a hang
       // that the runtime eventually kills — report the rate limit instead.
       const waitTooLong = requestedDelay !== null && requestedDelay > maxRetryDelayMs;
       if (!retryable || isLastAttempt || waitTooLong) {
         const limitDetail = res.status === 429 ? describeRateLimitHeaders(res) : "";
-        const bodyDetail = await describeErrorBody(res);
+        const body = await readErrorBody(res);
         return err({
           kind: res.status === 429 ? "rate_limited" : "provider_error",
           message:
             waitTooLong && res.status === 429
               ? `HTTP 429 from ${url}; Retry-After ${Math.round(requestedDelay / 1000)}s exceeds the ${Math.round(maxRetryDelayMs / 1000)}s retry budget${limitDetail}`
-              : `HTTP ${res.status} from ${url}${limitDetail}${bodyDetail}`,
-          retryable,
+              : `HTTP ${res.status} from ${url}${limitDetail}${body.length > 0 ? `: ${body.slice(0, 400)}` : ""}`,
+          // `retryable` says whether *anyone* should try again, so a 429 stays
+          // retryable-in-principle even where this call declined to retry it.
+          retryable: res.status === 429 || res.status >= 500,
+          ...(body.length > 0 ? { responseBody: body } : {}),
         });
       }
 

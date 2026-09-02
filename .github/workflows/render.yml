@@ -109,6 +109,34 @@ jobs:
           fi
           python3 -c "import edge_tts; print('edge_tts', edge_tts.__version__)"
 
+      # SOURCE acquires every YouTube shot with yt-dlp
+      # (src/lib/drivers/download-ytdlp.ts). Its absence is NOT fatal — the
+      # shot falls back to a Pexels clip and the audit package says so — but
+      # it is invisible in the finished video, and that is the problem this
+      # step exists for: on 2026-09-02 both renders ran on a runner with no
+      # yt-dlp, every `youtube` shot failed `spawn yt-dlp ENOENT`, and one
+      # video silently became all-stock while a `viral` run (which is
+      # YouTube or nothing) failed outright at SOURCE.
+      #
+      # Installed where a package manager can, warned about loudly where it
+      # cannot, and never allowed to fail the job.
+      - name: Install yt-dlp (SOURCE's YouTube acquisition route) — optional, never fatal
+        continue-on-error: true
+        run: |
+          if command -v yt-dlp >/dev/null; then
+            echo "yt-dlp already present: $(yt-dlp --version)"
+            exit 0
+          fi
+          if command -v brew >/dev/null; then brew install yt-dlp || true
+          elif command -v apt-get >/dev/null; then sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends yt-dlp || true
+          else pip3 install --user yt-dlp || pip3 install --user --break-system-packages yt-dlp || true
+          fi
+          if command -v yt-dlp >/dev/null; then
+            echo "yt-dlp $(yt-dlp --version)"
+          else
+            echo "::warning::yt-dlp is not installed. Every YouTube shot will fall back to stock footage, and a 'viral' run will fail at SOURCE. Install it with 'brew install yt-dlp'."
+          fi
+
       # "an ffmpeg is present" is NOT the requirement. RENDER burns captions
       # with the `ass` filter, which only exists in a build configured with
       # libass — and Homebrew's plain `ffmpeg` bottle is not one, while

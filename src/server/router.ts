@@ -14,7 +14,7 @@ import { consumeReauthNonce, issueReauthNonce } from "./auth/reauth.ts";
 import { writeAuditLog } from "./audit.ts";
 import { DirectiveSchema } from "./console/directive-schema.ts";
 import { compileDirectiveFromRawText, dryRunSettings, getSettings, resetToDefaults, updateSettings } from "./console/settings.ts";
-import { discardExport, downloadExport, exportFileName, listExports, markExportReviewed, type ExportBlobStore, type ExportStatus } from "./console/exports.ts";
+import { discardExport, downloadExport, exportFileName, getExportMetadata, listExports, markExportReviewed, type ExportBlobStore, type ExportStatus } from "./console/exports.ts";
 import type { ExportStores } from "./console/exports.ts";
 import { rotateProviderKey, ROTATABLE_KEY_NAMES, type RotatableKeyName } from "./console/keys.ts";
 import { DEFAULT_RENDER_REF, DEFAULT_RENDER_WORKFLOW, dispatchRun } from "./console/dispatch.ts";
@@ -388,6 +388,18 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
           live.map((row) => ({ id: row.id, keywords: row.keywords })),
         ),
       );
+    }
+
+    // The upload sheet: description, hashtags, and every clip in the video
+    // with the source it came from and the span of that source it used.
+    // Registered before the id-matching routes below for the same reason
+    // "previews" is — the ordering is what keeps a literal path from being
+    // read as an export id.
+    const metadataMatch = pathname.match(/^\/console\/exports\/([^/]+)\/metadata$/);
+    if (metadataMatch && method === "GET") {
+      const metadata = await getExportMetadata(ctx.db, metadataMatch[1]);
+      if (metadata === null) return json({ error: "not_found" }, 404);
+      return json(metadata);
     }
 
     // Both halves, because export blobs moved from KV to R2 on 2026-08-31

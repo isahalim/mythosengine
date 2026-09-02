@@ -3,6 +3,7 @@ import { createGeminiTtsDriverFromEnv } from "../drivers/resolve-gemini-driver.t
 import type { DriverError, TtsDriver, TtsRequest, TtsResponse } from "../drivers/types.ts";
 import type { Result } from "../result.ts";
 import { QUOTAS } from "../../config/quotas.ts";
+import type { GeminiTtsBudget } from "./tts-budget.ts";
 
 /** What `renders.tts_driver` records, and what the audit package reports. */
 type TtsDriverName = "edge-tts" | "gemini-tts";
@@ -36,9 +37,12 @@ export interface TtsSelection {
  * Two gates, in order. **A key must exist** — Gemini is optional
  * infrastructure, and a pipeline without `GEMINI_API_KEY` runs exactly as it
  * did before this driver existed. **The daily budget must not be spent** —
- * the free tier allows ten TTS requests per *day*, so the count that matters
- * is how many of today's renders already used Gemini, not how many this run
- * has made.
+ * the free tier allows ten TTS *requests* per Pacific day, and the count
+ * that matters is how many requests this pipeline has already sent today,
+ * not how many renders came out narrated by Gemini. Those two numbers are
+ * not the same, and mistaking one for the other is what put
+ * `en-US-GuyNeural` on the 2026-09-02 export instead of Kore: see
+ * `src/lib/pipeline/tts-budget.ts`, which computes the one this takes.
  *
  * `ttsRequestsPerDayBudget` (8, not 10) is the deliberate part: a render can
  * fail after synthesis — FFmpeg, export — and the operator re-runs it. Two
@@ -48,18 +52,24 @@ export interface TtsSelection {
  */
 export function selectTtsDrivers(
   geminiApiKey: string | undefined,
-  geminiRendersToday: number,
+  budget: GeminiTtsBudget,
   edge: TtsDriver = new EdgeTtsDriver(),
 ): TtsSelection {
   if (!geminiApiKey) {
     return { gemini: null, edge, unavailableReason: "GEMINI_API_KEY is not set — narration ran on the default Edge TTS path" };
   }
-  const budget = QUOTAS.gemini.ttsRequestsPerDayBudget;
-  if (geminiRendersToday >= budget) {
+  if (!budget.readable) {
     return {
       gemini: null,
       edge,
-      unavailableReason: `today's Gemini TTS budget is spent (${geminiRendersToday}/${budget} of the free tier's ${QUOTAS.gemini.ttsRequestsPerDay} daily requests) — narration fell back to Edge TTS`,
+      unavailableReason: `today's Gemini TTS ledger (${budget.day}, Pacific) could not be read, so how much of the free tier's ${QUOTAS.gemini.ttsRequestsPerDay} daily requests is left is unknown — narration fell back to Edge TTS rather than spending into a quota it cannot see`,
+    };
+  }
+  if (budget.spent >= budget.budget) {
+    return {
+      gemini: null,
+      edge,
+      unavailableReason: `today's Gemini TTS budget is spent (${budget.spent}/${budget.budget} requests sent on ${budget.day} Pacific, of the free tier's ${QUOTAS.gemini.ttsRequestsPerDay} daily) — narration fell back to Edge TTS`,
     };
   }
   return { gemini: createGeminiTtsDriverFromEnv(geminiApiKey), edge, unavailableReason: null };
@@ -81,17 +91,29 @@ export function selectTtsDrivers(
  * Edge failing is a real failure and is returned as one. There is nothing
  * below it.
  */
+export interface TtsLedger {
+  /** Called immediately before the Gemini request goes out — see `recordGeminiTtsAttempt` for why "before". */
+  record(): Promise<void>;
+  settle(outcome: "succeeded" | "failed", reason: string | null): Promise<void>;
+}
+
 export async function synthesizeWithFallback(
   selection: TtsSelection,
   geminiRequest: TtsRequest,
   edgeRequest: TtsRequest,
   log: (message: string) => void = console.warn,
+  ledger?: TtsLedger,
 ): Promise<Result<TtsAttemptOutcome, DriverError>> {
   if (selection.gemini !== null) {
+    // Recorded before the request, not after: a process killed mid-synthesis
+    // has still spent one of the ten.
+    await ledger?.record();
     const result = await selection.gemini.synthesize(geminiRequest);
     if (result.ok) {
+      await ledger?.settle("succeeded", null);
       return { ok: true, value: { driver: "gemini-tts", response: result.value, fallbackReason: null } };
     }
+    await ledger?.settle("failed", `${result.error.kind}: ${result.error.message}`);
     log(`Gemini TTS failed (${result.error.kind}: ${result.error.message}) — falling back to Edge TTS.`);
     const edgeResult = await selection.edge.synthesize(edgeRequest);
     if (!edgeResult.ok) return edgeResult;

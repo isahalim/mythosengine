@@ -122,6 +122,22 @@ export interface SourcedShot {
   /** Null for a YouTube clip, where the channel is the attribution. */
   photographer: string | null;
   pageUrl: string;
+  /**
+   * Where inside the *source* this clip was cut from, in seconds.
+   *
+   * Distinct from the `startMs`/`endMs` an audit `FootagePart` carries,
+   * which are positions in the finished video. Both are needed and neither
+   * substitutes for the other: "shot 3 runs 0:14-0:22 of the short" answers
+   * a different question from "shot 3 is 41:10-42:15 of
+   * youtube.com/watch?v=...". Only the second lets a reviewer open the
+   * source and watch the exact footage that was used — which for a YouTube
+   * clip is the whole of the attribution.
+   *
+   * On a Pexels clip the whole file is used, so the span is 0 to its
+   * duration and the page URL is the licence check.
+   */
+  sourceStartS: number;
+  sourceEndS: number;
 }
 
 export interface SourceResult {
@@ -406,6 +422,8 @@ async function sourceFromYoutube(
       providerClipId: video.videoId,
       photographer: null,
       pageUrl: video.url,
+      sourceStartS: startS,
+      sourceEndS: startS + WINDOW_S,
     });
   }
 
@@ -494,6 +512,8 @@ async function sourceFromPexels(
       providerClipId: String(clip.id),
       photographer: clip.photographer,
       pageUrl: clip.sourceUrl,
+      sourceStartS: 0,
+      sourceEndS: Math.max(1, Math.ceil(probe.value.durationS)),
     });
   }
 

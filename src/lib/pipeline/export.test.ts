@@ -55,6 +55,8 @@ const auditResult: AuditResult = {
         pageUrl: null,
         searchQuery: null,
         beatIndex: null,
+        sourceStartS: 0,
+        sourceEndS: 20,
       },
     ],
   },

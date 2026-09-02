@@ -19,6 +19,64 @@ function isGroqChatResponse(value: unknown): value is GroqChatResponse {
   return typeof value === "object" && value !== null;
 }
 
+/**
+ * Groq's `tool_use_failed` 400, turned back into the answer the model
+ * actually produced.
+ *
+ * The gpt-oss family delivers structured output by "calling" a tool named
+ * `json` — a channel in its own prompt format, not a function anyone
+ * offered it. Groq validates every generation against the request's tool
+ * list, so the whole turn is rejected:
+ *
+ *   HTTP 400 ... "attempted to call tool 'json' which was not in
+ *   request.tools", code: "tool_use_failed",
+ *   failed_generation: "{\"name\": \"json\", \"arguments\": {...}}"
+ *
+ * The brief the model wrote is right there in `failed_generation`, and
+ * throwing it away is what cost the 2026-09-02 render its grounding:
+ * RESEARCH had finished the work, assembled a summary and citations, and
+ * the run went out flagged `ungrounded` because of the envelope it arrived
+ * in. So the arguments of that pseudo-call are unwrapped and returned as
+ * the assistant's content, which is where every caller was already looking
+ * for them.
+ *
+ * Narrow on purpose. It fires only on `tool_use_failed`, only when
+ * `failed_generation` parses, and only when the recovered payload is a
+ * *real* pseudo-call carrying arguments — never as a general "make a 400
+ * look like a success". Anything else stays the error it was.
+ */
+function recoverFailedGeneration(body: string | undefined): string | null {
+  if (body === undefined) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const error = (parsed as { error?: unknown }).error;
+  if (typeof error !== "object" || error === null) return null;
+  const { code, failed_generation: failedGeneration } = error as { code?: unknown; failed_generation?: unknown };
+  if (code !== "tool_use_failed" || typeof failedGeneration !== "string") return null;
+
+  let generation: unknown;
+  try {
+    generation = JSON.parse(failedGeneration);
+  } catch {
+    // Not JSON at all — the raw text is still the model's own words, and a
+    // caller that wanted prose can use it. A caller that wanted JSON will
+    // fail its own parse and say so, which is a better error than a 400.
+    return failedGeneration.trim().length > 0 ? failedGeneration : null;
+  }
+  if (typeof generation !== "object" || generation === null) return null;
+  const args = (generation as { arguments?: unknown }).arguments;
+  if (args === undefined) return null;
+  // `arguments` is an object on the gpt-oss `json` channel and a JSON
+  // *string* in the OpenAI wire format. Both end up as the JSON text the
+  // caller is about to parse.
+  return typeof args === "string" ? args : JSON.stringify(args);
+}
+
 export interface GroqDriverOptions {
   apiKey: string;
   limiter: TokenBucketLimiter;
@@ -102,7 +160,18 @@ export class GroqLlmDriver implements LlmDriver {
       },
     );
 
-    if (!result.ok) return result;
+    if (!result.ok) {
+      const recovered = recoverFailedGeneration(result.error.responseBody);
+      if (recovered === null) return result;
+      console.warn(`Groq rejected its own generation (${result.error.message.slice(0, 200)}) — recovered the model's structured output from failed_generation.`);
+      return ok({
+        content: recovered,
+        finishReason: "tool_use_failed_recovered",
+        toolCalls: undefined,
+        quotaRemaining: null,
+        tokensUsed: null,
+      });
+    }
 
     const res = result.value;
     const quotaRemaining = parseIntHeader(res.headers.get("x-ratelimit-remaining-requests"));

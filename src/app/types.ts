@@ -28,6 +28,55 @@ export interface ExportListItem {
   keywords: string[];
 }
 
+/**
+ * One clip of a finished video, as the metadata sheet shows it — mirrors
+ * `ExportClipUse` in src/server/console/exports.ts.
+ *
+ * The two spans are not interchangeable: `outStartS`/`outEndS` are seconds
+ * of the finished short, `sourceStartS`/`sourceEndS` are seconds of the
+ * source video the clip was cut from.
+ */
+export interface ExportClipUse {
+  position: number;
+  provider: string | null;
+  providerClipId: string | null;
+  photographer: string | null;
+  searchQuery: string | null;
+  beatIndex: number | null;
+  outStartS: number;
+  outEndS: number;
+  sourceStartS: number | null;
+  sourceEndS: number | null;
+  pageUrl: string | null;
+  linkUrl: string | null;
+  edited: boolean | null;
+  editToolsRun: string[];
+  editSkippedReason: string | null;
+}
+
+/** Mirrors `ExportMetadata` in src/server/console/exports.ts. */
+export interface ExportMetadata {
+  id: string;
+  renderId: string;
+  suggestedTitle: string;
+  suggestedDescription: string;
+  tags: string[];
+  hashtags: string[];
+  containsSyntheticMedia: boolean;
+  durationS: number | null;
+  scriptHook: string | null;
+  debateQuestion: string | null;
+  narrationDriver: string | null;
+  narrationVoice: string | null;
+  narrationFallbackReason: string | null;
+  captionTiming: string | null;
+  ungrounded: boolean;
+  researchCitations: { title: string; url: string }[];
+  clips: ExportClipUse[];
+  usedYoutube: boolean;
+  incomplete: string[];
+}
+
 /** The topic set the API offers, in order. In step with src/server/console/ideas.ts — the server rejects anything else with 422. */
 export const TOPICS = ["viral", "politics", "tech", "science", "ai", "philosophy", "concept"] as const;
 export type Topic = (typeof TOPICS)[number];

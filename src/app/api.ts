@@ -12,7 +12,7 @@
 import { err, ok, type Result } from "../lib/result.ts";
 import { fetchWithRetry } from "../lib/drivers/http.ts";
 import type { DriverError } from "../lib/drivers/types.ts";
-import type { ExportListItem, ExportPreviews, ExportStatus, QueuedPickView, RankedIdea, RunMontage, RunProgress, Topic } from "./types.ts";
+import type { ExportListItem, ExportMetadata, ExportPreviews, ExportStatus, QueuedPickView, RankedIdea, RunMontage, RunProgress, Topic } from "./types.ts";
 
 const READ_TIMEOUT_MS = 8_000;
 const WRITE_TIMEOUT_MS = 10_000;
@@ -123,6 +123,17 @@ export function listExports(status?: ExportStatus): Promise<Result<ExportListIte
 // usually spends no request at all.
 export function listExportPreviews(): Promise<Result<ExportPreviews, DriverError>> {
   return get<ExportPreviews>("/console/exports/previews", 15_000);
+}
+
+/**
+ * The upload sheet for one finished video: description, hashtags, and every
+ * clip with the source and span it came from.
+ *
+ * Fetched per export on demand rather than folded into the list — it
+ * carries the whole footage track and is read for one video at a time.
+ */
+export function getExportMetadata(id: string): Promise<Result<ExportMetadata, DriverError>> {
+  return get<ExportMetadata>(`/console/exports/${encodeURIComponent(id)}/metadata`);
 }
 
 /** A plain <a href>, never a fetch: the route answers video/mp4 with a Content-Disposition attachment. */

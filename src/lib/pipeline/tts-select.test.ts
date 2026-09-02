@@ -3,6 +3,7 @@ import { selectTtsDrivers, synthesizeWithFallback, type TtsSelection } from "./t
 import type { DriverError, TtsDriver, TtsRequest, TtsResponse } from "../drivers/types.ts";
 import { err, ok, type Result } from "../result.ts";
 import { QUOTAS } from "../../config/quotas.ts";
+import type { GeminiTtsBudget } from "./tts-budget.ts";
 
 const KEY = `AIza${"x".repeat(35)}`;
 
@@ -26,36 +27,47 @@ class StubTts implements TtsDriver {
 }
 
 const GEMINI_REQUEST: TtsRequest = { text: "directed", voice: "Kore", styleDirection: "curious" };
+
+/** A readable ledger with `spent` requests already recorded on the Pacific day named. */
+function budget(spent: number, readable = true): GeminiTtsBudget {
+  return { day: "2026-09-01", spent, budget: QUOTAS.gemini.ttsRequestsPerDayBudget, readable };
+}
 const EDGE_REQUEST: TtsRequest = { text: "plain", voice: "en-US-AriaNeural", rate: "+5%" };
 
 describe("selectTtsDrivers", () => {
   const edge = new StubTts(ok(response("audio/mpeg")));
 
   it("offers no Gemini driver when no key is configured", () => {
-    const selection = selectTtsDrivers(undefined, 0, edge);
+    const selection = selectTtsDrivers(undefined, budget(0), edge);
     expect(selection.gemini).toBeNull();
     expect(selection.unavailableReason).toContain("GEMINI_API_KEY is not set");
   });
 
   it("offers Gemini when a key exists and the day's budget is untouched", () => {
-    const selection = selectTtsDrivers(KEY, 0, edge);
+    const selection = selectTtsDrivers(KEY, budget(0), edge);
     expect(selection.gemini).not.toBeNull();
     expect(selection.unavailableReason).toBeNull();
   });
 
   it("withholds Gemini once today's budget is spent, and says so with the numbers", () => {
-    const budget = QUOTAS.gemini.ttsRequestsPerDayBudget;
-    const selection = selectTtsDrivers(KEY, budget, edge);
+    const spent = QUOTAS.gemini.ttsRequestsPerDayBudget;
+    const selection = selectTtsDrivers(KEY, budget(spent), edge);
     expect(selection.gemini).toBeNull();
-    expect(selection.unavailableReason).toContain(`${budget}/${budget}`);
+    expect(selection.unavailableReason).toContain(`${spent}/${spent}`);
     expect(selection.unavailableReason).toContain(String(QUOTAS.gemini.ttsRequestsPerDay));
+  });
+
+  it("withholds Gemini when the ledger could not be read, rather than assuming a fresh day", () => {
+    const selection = selectTtsDrivers(KEY, { day: "2026-09-01", spent: 8, budget: 8, readable: false }, edge);
+    expect(selection.gemini).toBeNull();
+    expect(selection.unavailableReason).toContain("could not be read");
   });
 
   it("holds requests back rather than spending the full daily allowance", () => {
     // The point of the reserve: at the budget the pipeline stops, but the
     // provider would still accept more. That gap is what a re-run spends.
     expect(QUOTAS.gemini.ttsRequestsPerDayBudget).toBeLessThan(QUOTAS.gemini.ttsRequestsPerDay);
-    expect(selectTtsDrivers(KEY, QUOTAS.gemini.ttsRequestsPerDayBudget - 1, edge).gemini).not.toBeNull();
+    expect(selectTtsDrivers(KEY, budget(QUOTAS.gemini.ttsRequestsPerDayBudget - 1), edge).gemini).not.toBeNull();
   });
 });
 

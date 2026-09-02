@@ -78,6 +78,210 @@ export async function getExport(db: AppDb, id: string) {
   return getOne(db.select().from(exportsTable).where(eq(exportsTable.id, id)));
 }
 
+/**
+ * One clip of a finished video, as the upload sheet shows it.
+ *
+ * Two spans, never conflated: `outStartS`/`outEndS` say when it is on
+ * screen in the short, `sourceStartS`/`sourceEndS` say which part of the
+ * source it was taken from. `linkUrl` is the second one made clickable —
+ * a YouTube watch URL with `&t=` at the start of the window — so checking
+ * a shot's provenance is one click rather than an arithmetic exercise.
+ */
+interface ExportClipUse {
+  position: number;
+  provider: string | null;
+  providerClipId: string | null;
+  photographer: string | null;
+  searchQuery: string | null;
+  beatIndex: number | null;
+  outStartS: number;
+  outEndS: number;
+  sourceStartS: number | null;
+  sourceEndS: number | null;
+  pageUrl: string | null;
+  linkUrl: string | null;
+  /** What EDIT did to this clip, if anything. Null when the export predates the stage or EDIT did not run. */
+  edited: boolean | null;
+  editToolsRun: string[];
+  editSkippedReason: string | null;
+}
+
+/**
+ * Everything the operator needs in front of them at the YouTube Studio
+ * upload form, plus the answer to "did this video use any YouTube footage,
+ * and which".
+ *
+ * Assembled from `exports.audit_json`, which is the record the render
+ * actually wrote — never recomputed from the live footage tables, which by
+ * design no longer hold this video's clips (CLAUDE.md: nothing is retained
+ * past the video it was sourced for). Every field is nullable or empty
+ * rather than defaulted, so an older export renders as an older export.
+ */
+export interface ExportMetadata {
+  id: string;
+  renderId: string;
+  suggestedTitle: string;
+  suggestedDescription: string;
+  tags: string[];
+  /** The same tags in the form that goes in a description box. */
+  hashtags: string[];
+  containsSyntheticMedia: boolean;
+  durationS: number | null;
+  scriptHook: string | null;
+  debateQuestion: string | null;
+  narrationDriver: string | null;
+  narrationVoice: string | null;
+  narrationFallbackReason: string | null;
+  captionTiming: string | null;
+  /** True when RESEARCH failed and the script was written without retrieved grounding. */
+  ungrounded: boolean;
+  researchCitations: { title: string; url: string }[];
+  clips: ExportClipUse[];
+  /** Straight answer to "did it use YouTube?" — false means every frame came from stock. */
+  usedYoutube: boolean;
+  /** Present when the export was written before a field existed, so the UI can say so instead of showing blanks. */
+  incomplete: string[];
+}
+
+/** A `#tag` from a plain tag: YouTube's own rules — no spaces, no punctuation carried in. */
+function toHashtag(tag: string): string {
+  const slug = tag.replace(/[^\p{L}\p{N}]+/gu, "");
+  return slug.length > 0 ? `#${slug}` : "";
+}
+
+/**
+ * A watch URL that opens at the moment the clip was taken from.
+ *
+ * YouTube only: a Pexels page has no time index, and appending one would
+ * invent a link that does not do what it says. Whole seconds, because `t=`
+ * is seconds and a fractional one is silently dropped.
+ */
+function deepLink(provider: string | null, pageUrl: string | null, sourceStartS: number | null): string | null {
+  if (pageUrl === null) return null;
+  if (provider !== "youtube" || sourceStartS === null) return pageUrl;
+  const separator = pageUrl.includes("?") ? "&" : "?";
+  return `${pageUrl}${separator}t=${Math.max(0, Math.floor(sourceStartS))}`;
+}
+
+interface AuditJsonShape {
+  script?: { hook?: unknown; debateQuestion?: unknown };
+  footage?: { parts?: unknown };
+  auditResult?: { narration?: unknown; ungrounded?: unknown; research?: unknown; edit?: unknown };
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function asNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+export async function getExportMetadata(db: AppDb, id: string): Promise<ExportMetadata | null> {
+  const row = await getExport(db, id);
+  if (!row) return null;
+
+  const render = await getOne(db.select().from(renders).where(eq(renders.id, row.renderId)));
+  const script = render ? await getOne(db.select().from(scripts).where(eq(scripts.id, render.scriptId))) : undefined;
+
+  let tags: string[];
+  try {
+    const parsed: unknown = JSON.parse(row.suggestedTagsJson);
+    tags = Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === "string") : [];
+  } catch {
+    tags = [];
+  }
+
+  const incomplete: string[] = [];
+  let audit: AuditJsonShape | null;
+  try {
+    audit = asRecord(JSON.parse(row.auditJson)) as AuditJsonShape | null;
+  } catch {
+    audit = null;
+  }
+  if (audit === null) incomplete.push("this export's audit package could not be read, so no per-clip provenance is available");
+
+  const narration = asRecord(audit?.auditResult?.narration);
+  const research = asRecord(audit?.auditResult?.research);
+  const editClips = asRecord(audit?.auditResult?.edit)?.clips;
+  const editByPosition = new Map<number, Record<string, unknown>>();
+  if (Array.isArray(editClips)) {
+    for (const entry of editClips) {
+      const clip = asRecord(entry);
+      const position = clip ? asNumber(clip.position) : null;
+      if (clip !== null && position !== null) editByPosition.set(position, clip);
+    }
+  }
+
+  const rawParts = audit?.footage?.parts;
+  const clips: ExportClipUse[] = (Array.isArray(rawParts) ? rawParts : []).flatMap((entry) => {
+    const part = asRecord(entry);
+    if (part === null) return [];
+    const position = asNumber(part.position) ?? 0;
+    const provider = asString(part.provider);
+    const pageUrl = asString(part.pageUrl);
+    const sourceStartS = asNumber(part.sourceStartS);
+    const edit = editByPosition.get(position);
+    const toolsRun = Array.isArray(edit?.toolsRun) ? edit.toolsRun.filter((t): t is string => typeof t === "string") : [];
+    return [
+      {
+        position,
+        provider,
+        providerClipId: asString(part.providerClipId),
+        photographer: asString(part.photographer),
+        searchQuery: asString(part.searchQuery),
+        beatIndex: asNumber(part.beatIndex),
+        outStartS: (asNumber(part.startMs) ?? 0) / 1000,
+        outEndS: (asNumber(part.endMs) ?? 0) / 1000,
+        sourceStartS,
+        sourceEndS: asNumber(part.sourceEndS),
+        pageUrl,
+        linkUrl: deepLink(provider, pageUrl, sourceStartS),
+        edited: typeof edit?.edited === "boolean" ? edit.edited : null,
+        editToolsRun: toolsRun,
+        editSkippedReason: asString(edit?.skippedReason),
+      },
+    ];
+  });
+
+  if (clips.length > 0 && clips.every((clip) => clip.sourceStartS === null)) {
+    incomplete.push("this export predates per-clip source timestamps, so only the source video is named, not the span used");
+  }
+
+  const citations = Array.isArray(research?.citations) ? research.citations : [];
+
+  return {
+    id: row.id,
+    renderId: row.renderId,
+    suggestedTitle: row.suggestedTitle,
+    suggestedDescription: row.suggestedDescription,
+    tags,
+    hashtags: tags.map(toHashtag).filter((tag) => tag.length > 0),
+    containsSyntheticMedia: row.containsSyntheticMedia === 1,
+    durationS: render?.durationS ?? null,
+    scriptHook: script?.hook ?? asString(audit?.script?.hook),
+    debateQuestion: script?.debateQuestion ?? asString(audit?.script?.debateQuestion),
+    narrationDriver: asString(narration?.driver) ?? render?.ttsDriver ?? null,
+    narrationVoice: asString(narration?.voice) ?? render?.ttsVoice ?? null,
+    narrationFallbackReason: asString(narration?.fallbackReason),
+    captionTiming: asString(narration?.captionTiming),
+    ungrounded: audit?.auditResult?.ungrounded === true,
+    researchCitations: citations.flatMap((entry) => {
+      const citation = asRecord(entry);
+      const title = citation ? asString(citation.title) : null;
+      const url = citation ? asString(citation.url) : null;
+      return title !== null && url !== null ? [{ title, url }] : [];
+    }),
+    clips,
+    usedYoutube: clips.some((clip) => clip.provider === "youtube"),
+    incomplete,
+  };
+}
+
 export type MutateExportResult = { kind: "ok" } | { kind: "not_found" } | { kind: "no_blob_store" };
 
 export async function markExportReviewed(db: AppDb, id: string): Promise<MutateExportResult> {

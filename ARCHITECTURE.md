@@ -751,7 +751,7 @@ Runs between SOURCE and RENDER — strictly, after the montage timeline exists, 
 
 ### 9. EXPORT (Cloudflare KV, via `ExportDriver`)
 - LLM-generated suggested title/description/hashtags, schema-validated — suggestions for the operator's manual upload, not submitted anywhere.
-- Assembles `audit_json`: the script, the CRITIC verdict, footage provenance (segment id, source video id/channel, clip range), the TTS settings actually used — **which driver actually spoke, the voice, the rate, the inline style direction sent, why the narration was downgraded if it was, and ALIGN's word-match ratio** (`audit_json.narration`) — whether the host was on screen and why not if she wasn't, and the AUDIT SUMMARY result.
+- Assembles `audit_json`: the script, the CRITIC verdict, footage provenance (segment id, source video id/channel, clip range, and per clip **both** the span of the finished video it occupies *and* the span of the source it was cut from — `startMs`/`endMs` and `sourceStartS`/`sourceEndS`, which answer different questions and neither of which can be derived from the other), the TTS settings actually used — **which driver actually spoke, the voice, the rate, the inline style direction sent, why the narration was downgraded if it was, and ALIGN's word-match ratio** (`audit_json.narration`) — whether the host was on screen and why not if she wasn't, and the AUDIT SUMMARY result.
 - `ExportDriver.store()` writes the rendered MP4 to KV with a 3-day TTL; inserts an `exports` row (`status = 'ready_for_review'`) pointing at the KV key. The console review queue (`CONSOLE_SPEC.md` §4) is where the operator downloads it and, eventually, uploads it to YouTube themselves.
 
 ---
@@ -770,6 +770,7 @@ Runs between SOURCE and RENDER — strictly, after the montage timeline exists, 
 | `POST /console/scripts/:id/approve` | approve a `pending_approval` script | session |
 | `GET /console/exports` | list export packages, filterable by status | session |
 | `GET /console/exports/previews` | Pexels **preview** stills for every live export's script keywords — stage 6's sneak peeks. Shares `/runs/:traceId/montage`'s per-keyword day-long KV cache. Never footage for the render | session |
+| `GET /console/exports/:id/metadata` | the upload sheet for one finished video, read out of `audit_json`: suggested title, description, hashtags, and every clip with its provider, the source it came from, **the span of that source it used**, and a link that opens the source at that second. Answers "did this run use any YouTube footage, and which" — the one §9 fact the product recorded and never displayed | session |
 | `GET /console/exports/:id/download` | stream the rendered MP4 from R2 (or from KV for rows written before 2026-08-31 — the storage key says which) | session |
 | `POST /console/exports/:id/mark-reviewed` | mark an export reviewed | session |
 | `POST /console/exports/:id/discard` | discard an export early (frees the KV blob before TTL) | session |

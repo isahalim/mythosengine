@@ -171,6 +171,56 @@ describe("fetchWithRetry", () => {
     }
   });
 
+  it("keeps the whole 4xx body on the error, past the 400 characters the message shows", async () => {
+    // The message is for a log line; `responseBody` is for a caller that has
+    // to parse it. Groq's `tool_use_failed` carries the model's entire
+    // generation several kilobytes in, and recovering it from a truncated
+    // sentence is not possible.
+    const generation = "x".repeat(2000);
+    const failing: typeof fetch = async () =>
+      new Response(JSON.stringify({ error: { code: "tool_use_failed", failed_generation: generation } }), { status: 400 });
+
+    const result = await fetchWithRetry(baseUrl, {}, { timeoutMs: 1000, maxAttempts: 1, baseDelayMs: 5, fetchImpl: failing });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message.length).toBeLessThan(600);
+      expect(result.error.responseBody).toContain(generation);
+    }
+  });
+
+  it("does not retry a 429 when the caller says a retry cannot help", async () => {
+    // Gemini's TTS 429 is a ten-a-day ceiling that resets at midnight
+    // Pacific. A second attempt cannot succeed and is itself counted.
+    let calls = 0;
+    const failing: typeof fetch = async () => {
+      calls++;
+      return new Response("{}", { status: 429 });
+    };
+
+    const result = await fetchWithRetry(baseUrl, {}, { timeoutMs: 1000, maxAttempts: 3, baseDelayMs: 5, fetchImpl: failing, retryOn429: false });
+
+    expect(calls).toBe(1);
+    expect(result.ok).toBe(false);
+    // Still a rate limit, and still retryable *in principle* — this call
+    // declined to retry it, which is not the same claim.
+    if (!result.ok) {
+      expect(result.error.kind).toBe("rate_limited");
+      expect(result.error.retryable).toBe(true);
+    }
+  });
+
+  it("still retries a 429 by default", async () => {
+    let calls = 0;
+    const failing: typeof fetch = async () => {
+      calls++;
+      return new Response("{}", { status: 429 });
+    };
+
+    await fetchWithRetry(baseUrl, {}, { timeoutMs: 1000, maxAttempts: 3, baseDelayMs: 1, fetchImpl: failing });
+    expect(calls).toBe(3);
+  });
+
   it("does not choke when a 4xx has an unreadable body", async () => {
     const failing: typeof fetch = async () =>
       new Response(null, { status: 404, headers: { "content-type": "application/json" } });

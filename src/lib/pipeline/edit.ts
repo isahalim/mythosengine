@@ -192,7 +192,16 @@ async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdi
       messages,
       tools,
       toolChoice: "auto",
-      maxTokens: 2048,
+      // 1024, not 2048. A turn here emits either one tool call or the line
+      // `FINAL: /path`, so the larger budget was never spent — but it was
+      // *reserved*: the Groq limiter paces on `maxTokens + prompt`, and on
+      // the free tier's 8K tokens/minute that reservation is what sets the
+      // pace of the whole stage. Measured on the 2026-09-02 render: nine
+      // Kinocut schemas re-sent per turn (~2.1K tokens) plus 2048 reserved
+      // put every turn over 4.5K, which is 1.6 turns a minute, which is why
+      // eight clips took nineteen minutes. Halving the reservation is the
+      // part that costs nothing — the model was never using it.
+      maxTokens: 1024,
       temperature: 0.3,
     });
     if (!completion.ok) return unedited(`${completion.error.kind}: ${completion.error.message}`);

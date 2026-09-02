@@ -58,7 +58,7 @@ across the top, the spheres still drifting.
 | 3 | Topics | Each lit shard fuses with a new one; a caustic dial gives it a topic colour | — | local only |
 | 4 | Ideas | A larger shard joins each video, carrying its story | `GET /console/ideas` | local only |
 | 5 | Agents deployed | Watches each video's pane heal as the pipeline works | `GET /console/runs/:id`, `…/montage` | `POST /console/run-plan`, `POST /console/dispatch` (on entry) |
-| 6 | Review / past work | Downloads, marks reviewed, discards, runs it again | `GET /console/exports` | mark-reviewed, discard |
+| 6 | Review / past work | Downloads, reads the upload sheet, marks reviewed, discards, runs it again | `GET /console/exports`, `…/:id/metadata` | mark-reviewed, discard |
 
 ### Stage 2 — the shard is the input
 
@@ -121,6 +121,25 @@ Every card carries the audit context an export must never travel without
 the API did not return it — never as a plausible default. There is no
 publish button, because there is no publish path: this system holds no
 upload credential by design, and the copy says so.
+
+**Metadata** (operator direction, 2026-09-02) opens the upload sheet for one
+video, under its card: the suggested title, description and hashtags with a
+copy button each, and the whole footage track as a table — every clip, the
+source it came from, **the span of that source it used**, and a link that
+opens the source at that second. The first line of it answers the question
+that sent the operator to a CI log: whether any YouTube footage is in this
+video at all, and how many of the clips are.
+
+Two spans, kept apart on purpose. "Shot 3 runs 0:14–0:22" is a fact about
+the short; "shot 3 is 41:10–42:15 of `youtube.com/watch?v=…`" is a fact
+about the source, and only the second one lets a reviewer open the original
+and check. Both were in `audit_json` from the day §9 was written; only the
+first had ever been derivable on screen.
+
+`GET /console/exports/:id/metadata` reads the export's own `audit_json` and
+nothing else — never the live footage tables, which by design no longer
+hold this video's clips. An export written before a field existed says so
+in as many words rather than rendering a blank as a zero.
 
 ---
 

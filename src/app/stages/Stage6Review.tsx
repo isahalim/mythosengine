@@ -45,6 +45,7 @@ import {
   markExportReviewed,
 } from "../api.ts";
 import { ForgePane } from "../glass/ForgePane.tsx";
+import { MetadataPanel } from "./MetadataPanel.tsx";
 import type { ExportListItem, MontageClip } from "../types.ts";
 import { Button } from "../ui/Button.tsx";
 import { StageFrame } from "../ui/StageFrame.tsx";
@@ -78,6 +79,9 @@ export function Stage6Review({ onRestart, onUnauthorized }: Stage6Props) {
   // export queue…" underneath its own error message.
   const [settled, setSettled] = useState(false);
   const [clipsByExport, setClipsByExport] = useState<Record<string, MontageClip[]>>({});
+  // One open sheet at a time. It is a long panel and two of them side by
+  // side in a three-column grid reads as noise rather than as two answers.
+  const [metadataFor, setMetadataFor] = useState<string | null>(null);
   const [previewNote, setPreviewNote] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -228,6 +232,15 @@ export function Stage6Review({ onRestart, onUnauthorized }: Stage6Props) {
                 >
                   {item.status === "reviewed" ? "Reviewed" : "Mark reviewed"}
                 </Button>
+                {/* The audit package has always carried this; nothing put
+                    it on screen. Without it "which YouTube videos are in
+                    this video" was answerable only from a CI log. */}
+                <Button
+                  className="!px-4 !py-2 !text-xs"
+                  onClick={() => setMetadataFor((current) => (current === item.id ? null : item.id))}
+                >
+                  {metadataFor === item.id ? "Hide metadata" : "Metadata"}
+                </Button>
                 <Button
                   variant="ghost"
                   className="!px-4 !py-2 !text-xs"
@@ -237,6 +250,10 @@ export function Stage6Review({ onRestart, onUnauthorized }: Stage6Props) {
                   Discard
                 </Button>
               </div>
+
+              {metadataFor === item.id && (
+                <MetadataPanel exportId={item.id} onClose={() => setMetadataFor(null)} onUnauthorized={onUnauthorized} />
+              )}
             </article>
           ))}
         </div>

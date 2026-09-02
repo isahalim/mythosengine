@@ -141,7 +141,9 @@ export class GeminiTtsDriver implements TtsDriver {
     this.timeoutMs = options.timeoutMs ?? 120_000;
     // Two, not three. Every attempt spends one of ten daily requests, so a
     // driver that retries freely can burn a third of the day's budget on a
-    // single failing video.
+    // single failing video. The second attempt is for a 5xx or a dropped
+    // connection only — `retryOn429: false` below keeps it away from the
+    // one error where trying again is guaranteed to fail *and* charged.
     this.maxAttempts = options.maxAttempts ?? 2;
     this.baseDelayMs = options.baseDelayMs ?? 1_000;
   }
@@ -171,6 +173,12 @@ export class GeminiTtsDriver implements TtsDriver {
         maxAttempts: this.maxAttempts,
         baseDelayMs: this.baseDelayMs,
         fetchImpl: this.fetchImpl,
+        // A 429 here is the ten-a-day ceiling, not a burst. It resets at
+        // midnight Pacific and nothing this process can do moves it, so a
+        // retry is a request that cannot succeed and is still counted —
+        // which is how the 2026-09-02 render spent two of the ten to
+        // discover the same thing twice.
+        retryOn429: false,
       },
     );
 

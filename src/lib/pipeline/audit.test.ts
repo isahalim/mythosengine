@@ -13,6 +13,8 @@ function gameplayPart(segmentId = "seg1") {
     pageUrl: null,
     searchQuery: null,
     beatIndex: null,
+    sourceStartS: 600,
+    sourceEndS: 665,
   };
 }
 

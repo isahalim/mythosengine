@@ -150,3 +150,93 @@ describe("GroqLlmDriver token accounting", () => {
     }
   });
 });
+
+describe("GroqLlmDriver tool_use_failed recovery", () => {
+  /** A server that answers every request with one canned status and body. */
+  function respondWith(status: number, body: string): { server: Server; baseUrl: Promise<string> } {
+    const server = createServer((_req, res) => {
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(body);
+    });
+    const baseUrl = new Promise<string>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        if (address === null || typeof address === "string") throw new Error("expected a network address");
+        resolve(`http://127.0.0.1:${address.port}`);
+      });
+    });
+    return { server, baseUrl };
+  }
+
+  it("recovers the model's structured output when Groq rejects its own `json` pseudo-tool", async () => {
+    // The exact shape that lost the 2026-09-02 render its grounding:
+    // gpt-oss delivered a finished research brief by "calling" a tool named
+    // `json`, Groq validated the generation against the request's tool list
+    // and 400'd, and RESEARCH reported a provider error over a brief that
+    // was complete.
+    const brief = { summary: "Iceland held a referendum on restarting EU accession talks.", key_points: ["the vote was tight"] };
+    const mock = respondWith(
+      400,
+      JSON.stringify({
+        error: {
+          message: "Tool call validation failed: attempted to call tool 'json' which was not in request.tools",
+          type: "invalid_request_error",
+          code: "tool_use_failed",
+          failed_generation: JSON.stringify({ name: "json", arguments: brief }),
+        },
+      }),
+    );
+    try {
+      const driver = new GroqLlmDriver({
+        apiKey: "test",
+        limiter: new TokenBucketLimiter(100, 100_000),
+        baseUrl: await mock.baseUrl,
+        maxAttempts: 1,
+      });
+      const result = await driver.complete({ model: "openai/gpt-oss-120b", messages: [{ role: "user", content: "research this" }] });
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("expected ok");
+      expect(JSON.parse(result.value.content)).toEqual(brief);
+      // Recorded as what it was, so the audit trail does not claim a clean turn.
+      expect(result.value.finishReason).toBe("tool_use_failed_recovered");
+      expect(result.value.toolCalls).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve) => mock.server.close(() => resolve()));
+    }
+  });
+
+  it("leaves every other 400 an error — this is not 'make failures look like successes'", async () => {
+    const mock = respondWith(400, JSON.stringify({ error: { message: "model `x` does not exist", type: "invalid_request_error" } }));
+    try {
+      const driver = new GroqLlmDriver({
+        apiKey: "test",
+        limiter: new TokenBucketLimiter(100, 100_000),
+        baseUrl: await mock.baseUrl,
+        maxAttempts: 1,
+      });
+      const result = await driver.complete({ model: "openai/gpt-oss-120b", messages: [{ role: "user", content: "hi" }] });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.error.message).toContain("does not exist");
+    } finally {
+      await new Promise<void>((resolve) => mock.server.close(() => resolve()));
+    }
+  });
+
+  it("keeps a tool_use_failed with no recoverable generation as an error", async () => {
+    const mock = respondWith(400, JSON.stringify({ error: { code: "tool_use_failed", failed_generation: JSON.stringify({ name: "json" }) } }));
+    try {
+      const driver = new GroqLlmDriver({
+        apiKey: "test",
+        limiter: new TokenBucketLimiter(100, 100_000),
+        baseUrl: await mock.baseUrl,
+        maxAttempts: 1,
+      });
+      const result = await driver.complete({ model: "openai/gpt-oss-120b", messages: [{ role: "user", content: "hi" }] });
+      expect(result.ok).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => mock.server.close(() => resolve()));
+    }
+  });
+});
