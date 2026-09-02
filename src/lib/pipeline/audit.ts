@@ -109,6 +109,50 @@ interface NarrationProvenance {
   captionTiming: "native" | "aligned" | "estimated";
 }
 
+/**
+ * Which of the host's actions played over each shot, and every correction
+ * made to PLAN's choices.
+ *
+ * In the audit package because it is a claim about the finished video that
+ * a reviewer cannot check from the video alone: watching it tells you the
+ * host shrugged over beat four, but not whether PLAN chose that or whether
+ * the timeline substituted it for an invented id or a chained reaction.
+ */
+interface CharacterProvenance {
+  pack: string;
+  packVersion: string;
+  /** Composited shot position -> the action that actually played. */
+  actions: { position: number; actionId: string }[];
+  /** Corrections the timeline had to make to PLAN's choices. Empty when the plan was used as given. */
+  adjustments: string[];
+}
+
+/**
+ * What EDIT did to each clip.
+ *
+ * Kinocut calls its equivalent a "Video Receipt", and the reasoning is the
+ * same one this system's audit package is built on: a human reviewing an
+ * agent's edit needs to know which operations ran, not just what came out.
+ * A clip that was trimmed to a different moment than the one SOURCE chose
+ * is a clip whose footage provenance window is no longer the whole story.
+ */
+interface EditProvenance {
+  /** The model that drove the edit, or null when EDIT did not run. */
+  model: string | null;
+  /** Why EDIT did not run, or null when it did. */
+  degradedReason: string | null;
+  clips: { position: number; edited: boolean; toolsRun: string[]; skippedReason: string | null }[];
+}
+
+/** Which provider actually answered a reasoning stage, and why it was not the primary one. */
+interface StageProvenance {
+  stage: string;
+  provider: "gemini" | "groq";
+  model: string;
+  /** Set when the primary provider was exhausted and the fallback answered. */
+  fallbackReason: string | null;
+}
+
 export interface AuditSummaryInput {
   script: { hook: string; body: string; debateQuestion: string; wordCount: number };
   /**
@@ -123,6 +167,12 @@ export interface AuditSummaryInput {
   narration: NarrationProvenance | null;
   /** Why the host is not on screen, or null when she is. */
   characterAbsentReason: string | null;
+  /** Which actions the host performed, or null when she is not on screen. */
+  character: CharacterProvenance | null;
+  /** What EDIT did to each clip. Null only for callers that predate the stage. */
+  edit: EditProvenance | null;
+  /** Which provider answered RESEARCH, SCRIPT and PLAN. */
+  stages: StageProvenance[];
   originalityScore: number | null;
   minOriginalityScore: number;
   policyFlags: string[];
@@ -145,6 +195,9 @@ export interface AuditResult {
   /** True when the narration ran on a driver other than the best one available. */
   narrationDowngraded: boolean;
   characterAbsentReason: string | null;
+  character: CharacterProvenance | null;
+  edit: EditProvenance | null;
+  stages: StageProvenance[];
   hasDebateQuestion: boolean;
   originalityScore: number | null;
   clearsOriginalityFloor: boolean;
@@ -266,12 +319,32 @@ export function computeAuditSummary(input: AuditSummaryInput): AuditResult {
   const ungrounded = input.research === null;
   if (ungrounded) flags.push("no research brief — script written from the signal title alone");
 
+  // A stage that ran on the fallback provider produced a real result, so
+  // this is not a failure — but "which model wrote this" is the first thing
+  // a reviewer asks about a script that reads oddly, and they cannot get it
+  // from the video.
+  for (const stage of input.stages) {
+    if (stage.fallbackReason !== null) flags.push(`${stage.stage} ran on ${stage.provider} (${stage.model}) after the primary provider was exhausted`);
+  }
+
+  if (input.edit?.degradedReason != null) flags.push(`EDIT did not run: ${input.edit.degradedReason} — clips are as sourced`);
+
+  // Not a flag when PLAN simply chose well; a flag when the host's plan had
+  // to be corrected, because that means PLAN is producing choices this pack
+  // cannot honour and the video may look less deliberate than it reads.
+  if (input.character !== null && input.character.adjustments.length > 0) {
+    flags.push(`the host's action plan needed ${input.character.adjustments.length} correction(s)`);
+  }
+
   return {
     schemaValid: wordCountInBounds && hasDebateQuestion,
     wordCountInBounds,
     narration: input.narration,
     narrationDowngraded,
     characterAbsentReason: input.characterAbsentReason,
+    character: input.character,
+    edit: input.edit,
+    stages: input.stages,
     hasDebateQuestion,
     originalityScore: input.originalityScore,
     clearsOriginalityFloor,

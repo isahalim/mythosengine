@@ -10,7 +10,8 @@
 
 | Service | Permanent free? | Card-free? | Role |
 |---|---|---|---|
-| **Groq Cloud** (`openai/gpt-oss-120b` / `openai/gpt-oss-20b`) | Yes — rate-limited, no credit system. ~30 req/min, ~8k tokens/min, ~14.4k req/day, enforced per organization. **Limits are per-model, and the one that binds is tokens-per-day:** 200K for gpt-oss | **Yes** | Script generation, critique, title/description/hashtag generation, the RESEARCH agent's tool-calling loop (§5.2.5, on the 20b model — per-model quotas mean the cheaper model's budget is a separate 200K), and the console chat/voice agent. **Not footage acquisition** — that ran a browser agent on `qwen/qwen3.8-27b` (2M TPD) until 2026-08-29 and now makes no model calls at all (§5.0), so the whole gpt-oss daily budget belongs to the render pipeline again. Groq deprecated `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` on 2026-06-17; the OpenAI open-weight models replaced them everywhere in `src/**` |
+| **Google Gemini** (`gemini-3.7-flash` → `3.6-flash` → `3.5-flash` → `3.5-flash-lite`) | Yes — **5 requests/minute and 250K tokens/day _per model_** (read off the operator's own AI Studio rate-limit page, 2026-09-01; Flash Lite is 15/min). Per-model metering is the whole reason the ladder exists: descending it buys a separate budget, not just a retry | **Yes** | **The reasoning stages, since 2026-09-01**: RESEARCH's tool-calling loop (§5.2.5), retrieval reranking (§5.2.4), SCRIPT, PLAN, and EDIT's Kinocut loop (§5.5.5). Driven through `GeminiLadderDriver`, which waits out a per-minute window once before dropping a rung. **Not CRITIC** — see the Groq row |
+| **Groq Cloud** (`openai/gpt-oss-120b` / `openai/gpt-oss-20b`) | Yes — rate-limited, no credit system. ~30 req/min, ~8k tokens/min, ~14.4k req/day, enforced per organization. **Limits are per-model, and the one that binds is tokens-per-day:** 200K for gpt-oss | **Yes** | **CRITIC**, permanently: a critic sharing a model with the writer it judges is grading its own work, so it stays on a different provider by design. Plus title/description/hashtag generation, and the **fallback** for every Gemini stage when the whole ladder is spent (`withGroqFallback`) — which is what keeps a bad quota day from costing the day's video. Was the sole provider for SCRIPT/RESEARCH/PLAN until 2026-09-01. **Not footage acquisition** — that ran a browser agent on `qwen/qwen3.8-27b` (2M TPD) until 2026-08-29 and now makes no model calls at all (§5.0), so the whole gpt-oss daily budget belongs to the render pipeline again. Groq deprecated `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` on 2026-06-17; the OpenAI open-weight models replaced them everywhere in `src/**` |
 | **Microsoft Edge "Read Aloud" TTS**, via the `edge_tts` Python library (LGPL-3.0, `rany2/edge-tts`), invoked as a subprocess | Yes, but **not an official product** — no SLA, can break without notice | **Yes** | Narration voice synthesis + word-level timestamps for captions |
 | **Google Gemini** (`gemini-3.1-flash-tts-preview` for TTS, `gemini-3.7-flash` for text) | Yes — and **the binding limit is 10 TTS req/day**, per day rather than per run. Also 3 TTS req/min and 10K TTS tokens/min; Pro TTS is not on the free tier at all. Measured from the operator's own AI Studio rate-limit export, 2026-08-31 | **Yes** | The expressive narration *upgrade* over Edge TTS, and the model for SCRIPT and PLAN where the reasoning is the hard part (§5.3). One TTS call per video, forced by that daily ceiling. **Edge TTS remains the default path** — Gemini returns no word timings, so it also costs an ALIGN call that Edge does not (plan v2 §4). Added 2026-08-31 on explicit operator instruction |
 | **Cloudflare Workers static assets** | Yes | **Yes** | Hosts the operator console and its API |
@@ -601,13 +602,35 @@ change, unaffected by which acquisition mechanism runs inside that job.
 ### 2. SCORE
 - Engagement-velocity scoring (upvote/comment growth rate, freshness decay), simhash dedupe against the trailing 7-day window.
 
-### 2.5. RESEARCH (Groq, `openai/gpt-oss-20b`, tool-calling — RAG)
+### 2.5. RESEARCH (Gemini ladder, tool-calling — RAG; Groq `gpt-oss-20b` as fallback)
 
 Added 2026-08-30 by operator directive. Between SCORE and SCRIPT, the picked
 signal becomes a **grounded brief**: what is actually being said about the
 topic, and which retrieved source supports each claim.
 
-**Shape.** Groq's own tool-calling is the reasoning core; the RAG pipeline is
+**Moved to Gemini, 2026-09-01** (operator direction), with Groq kept as the
+fallback. The move cost one real piece of design: Gemini's Interactions API
+**cannot replay a tool conversation statelessly**. Its responses interleave
+`thought` steps carrying a signed `signature`, and a follow-up request that
+reconstructs the turn from `content` + `toolCalls` — all `LlmMessage` used to
+carry — is rejected with a bare `invalid_request` that names nothing.
+Measured both ways against the live endpoint. `LlmMessage.providerSteps` is
+the answer: an opaque box the loop echoes back without interpreting, which
+`groq.ts` ignores entirely. Teaching the loop to speak Gemini's step
+vocabulary would have put a provider's wire format in `src/lib/rag/`.
+
+**Retrieval is reranked before the agent sees it** (`src/lib/rag/rerank.ts`,
+added the same day — "for RAG calling and for ranking too use gemini"). BM25
+finds candidates cheaply and is blind to whether a headline is *about* the
+query: searching for "prison overcrowding" it will rank "the overcrowding of
+the prison of self-regard" above a sentencing-reform report, because the
+first says both words. The model reorders; it may **only** reorder what
+retrieval returned, so it can never introduce a citation the brief would then
+fail to verify. A reranker that errors or answers badly leaves the BM25 order
+in place. `RerankingRetriever` wraps the `Retriever` seam rather than editing
+`SignalsBm25Retriever`, so the BM25 tests keep testing BM25.
+
+**Shape.** The model's own tool-calling is the reasoning core; the RAG pipeline is
 wrapped as two ordinary functions behind it. No agent framework is involved —
 the loop in `src/lib/rag/research.ts` is about thirty lines, and CrewAI or
 LangGraph would add a dependency and an indirection without adding a
@@ -665,7 +688,7 @@ Output is persisted to `research_briefs` (§4) and travels into the export's
 - Flags anything resembling defamation of a named real person, medical/legal claims stated as fact, or content that reads as a verbatim repost of the source discussion.
 - **Advisory only.** A low score or a flag does not stop the script from proceeding — it's carried forward into the AUDIT SUMMARY (§9) and surfaced prominently to the human reviewer.
 
-### 4.5. PLAN (Groq, `openai/gpt-oss-20b`) — what the audience sees
+### 4.5. PLAN (Gemini ladder; Groq `gpt-oss-20b` as fallback) — what the audience sees, and what the host is doing
 *Added 2026-09-01 by operator direction. `src/lib/pipeline/shot-plan.ts`, prompt `prompts/shot-plan.v1.md`.*
 
 - Turns the script into an ordered shot list: `{ beatIndex, intent, query, source: "youtube" | "pexels" }`, one shot per beat plus an opening image over the hook, capped at 8.
@@ -680,10 +703,22 @@ Output is persisted to `research_briefs` (§4) and travels into the export's
 - Executes the plan. **Pexels** answers "an ordinary scene, shot well" — the returned clip is already the whole shot. **YouTube** answers "the actual thing", and a YouTube result is an hour of video with one usable minute in it, so the window is chosen by motion scoring rather than taken from the front, which is where a channel puts its intro.
 - **Sourcing is open.** `ChannelTopVideoRequest.query` searches YouTube freely; the maintained-channel rule (migration 0008) binds only the weekly FOOTAGE REFRESH, whose cron was removed the same day. Operator decision, recorded because it is a real change to the footage policy.
 - **`viral` cuts at random** from the top motion-scored shortlist after a head/tail buffer — operator's words, "clipped from random locations with buffers at the beginning and end". Everything else takes the highest-scoring windows outright, because a shot chosen to illustrate a beat should be the best moment available, not a random one.
-- **Two YouTube downloads per render, hard.** Each is potentially a gigabyte through a converter site on the operator's own connection. A shot past the cap falls back to Pexels and the reason is reported. A cache hit does not spend a slot — it costs no bandwidth, so counting it would refuse footage already on disk.
+- **The YouTube download cap is topic-aware** (operator direction, 2026-09-01): **4** for `politics`, `tech`, `science` and `ai`; **2** for everything else. Each download is potentially a gigabyte through a converter site on the operator's own connection, so this stays a hard cap rather than a preference — but on those four topics the real recorded event exists and stock has no clip of it, and two real clips across an eight-shot montage means the montage is mostly stock. The trade is roughly one extra download cycle, the slowest part of the pipeline. `viral` is unaffected: it downloads one source and cuts many windows from it. A shot past the cap falls back to Pexels and the reason is reported. A cache hit does not spend a slot — it costs no bandwidth, so counting it would refuse footage already on disk.
 - **Nothing is retained.** Clip bytes live in the render's work directory and die with it; provenance rows are dropped when the export retires (§9). The one exception is the 24h YouTube *source* cache (`.footage-cache/`, `src/lib/footage/source-cache.ts`), which exists solely so a viral run does not re-pull 1.6 GB hourly. No clip and no Pexels byte is written there.
 - **Provenance is now the only record.** Since no bytes survive, every clip's `footage_segments` row — provider, source video, exact window, and the query that found it — is written *before* the clip reaches the encoder, and `render_footage_parts` records which second of the finished video it occupies.
 - Shot status (`planned → searching → downloading → clipped → composited | failed`) is written to `shot_plans` as each thing actually happens, which is what stage 5 displays.
+
+### 5.5. EDIT (Gemini + Kinocut over MCP)
+*Added 2026-09-01 by operator direction. `src/lib/pipeline/edit.ts`, `src/lib/drivers/mcp-stdio.ts`.*
+
+Runs between SOURCE and RENDER — strictly, after the montage timeline exists, because a clip's edit depends on how long it will be on screen and that is not known until the narration is timed. For each clip, Gemini probes it, detects its scenes, trims to the window worth showing, and optionally applies one subtle grade.
+
+- **It edits clips; it does not make videos.** No stitching, no host compositing, no captions, no final encode — those stay in `render-ffmpeg.ts`, which is the path the operator has verified end to end. Putting a model-driven tool loop on the critical path of the final encode would trade a working pipeline for a more capable one that sometimes produces nothing.
+- **It fails soft at two levels.** A clip whose edit fails keeps its sourced bytes and stays in the montage; a stage that cannot start at all (no `uvx`, no Kinocut, spent ladder) returns every clip untouched. Either way the render continues and produces exactly the video it would have produced before this stage existed, and the reason reaches the audit package. This is the same contract §5.2.5 gives RESEARCH, and it is the only contract under which adding a stage to a working pipeline is safe.
+- **Only ~9 of Kinocut's 196 tools are offered** (`EDIT_TOOLS`). A tool loop re-sends every schema on every turn, so the full surface would spend a large share of a 250K-token daily budget on the menu before the model looked at a frame. The allowlist is enforced on the *call*, not merely by what was offered.
+- **Schemas are fetched, never hard-coded.** `tools/list` at run time, filtered by name — a pasted schema silently drifts from the server on its next release, and the failure would be a model confidently passing an argument that no longer exists.
+- **The model's output path is checked to exist** before the encoder is told to read it. A hallucinated path would otherwise fail the whole render at encode time, long after the stage that invented it.
+- Kinocut is local-first, Apache-2.0, and needs no key or account; it wraps FFmpeg and Whisper on the same machine. The MCP client is ~150 lines of newline-delimited JSON-RPC rather than `@modelcontextprotocol/sdk`, for the same reason retrieval is not a framework (§5.2.5): three methods are used, over one transport, against one server.
 
 ### 6. TTS + CAPTION SYNC (Edge TTS by default, Gemini as the upgrade)
 - `src/lib/drivers/tts-edge.ts` shells out to `scripts/edge_tts_synth.py`, a thin wrapper around the `edge_tts` Python library requesting `WordBoundary` events explicitly (the bare `edge-tts` CLI hard-codes sentence-level boundaries and has no flag to change that — confirmed by testing it directly, not assumed). Returns audio bytes plus one `{word, startMs, endMs}` entry per word — no separate forced-alignment step needed.
@@ -707,7 +742,7 @@ Output is persisted to `research_briefs` (§4) and travels into the export's
 - **The output length is set explicitly**, from the narration's measured duration. `-shortest` alone does not settle it once the footage track has a definite end: the host is composited with `overlay=...:shortest=0` so a looping character can never truncate the video, and that keeps the video stream alive past the audio — a 12.0s narration produced a 13.5s render. A single looped clip never hit this, because nothing in that graph ever ended.
 - Mute the source clips' original audio entirely; mix in the narration track.
 - Burn in captions via an ASS subtitle file (word-timed fade, not a static SRT box) using FFmpeg's `ass` filter. Each cue is emitted one event per word so the spoken word is accented as it lands, and keywords (`src/lib/pipeline/keywords.ts`, no model call) stay accented for the cue's whole life.
-- **Composite the keyed host** over the footage (`assets/character/right_person.gif`, plan v2 §2). `colorkey=0xe5505c:0.10:0.0` — measured, not guessed, and **0.10 is a ceiling: 0.14 begins eating her face and 0.20 destroys it.** She is anchored bottom-centre and composited *before* the captions are burned in, which is the only order in which she cannot cover a word. A missing asset degrades the video to footage-plus-captions and records why in the audit package, rather than failing the render.
+- **Composite the host's action track** over the footage (`assets/character/robot_character_pack/`, operator direction 2026-09-01). The host is a *track*, not one looping asset: PLAN picks one of the pack's 19 actions per shot, `character-timeline.ts` enforces the pack's own rules over the answer, and each action is looped to fill its scene and concatenated exactly the way the footage track is. **There is no chroma key.** The previous host was a GIF on a flat `#e5505c` field whose key sat one channel away from her own face — `0.14 began eating her face and 0.20 destroyed it` — and the pack's MOVs carry a real 8-bit alpha channel instead, so the key and its tolerance window are gone. `yuva420p` (not `yuv420p`) is what carries that alpha through `concat` and `overlay`; dropping the `a` flattens the host onto a black rectangle and still encodes successfully, which makes it the one mistake in that graph worth naming. She floats clear of the bottom edge rather than sitting on it (the robot is drawn uncropped) and is composited *before* the captions are burned in, which is the only order in which she cannot cover a word. A missing pack degrades the video to footage-plus-captions and records why in the audit package, rather than failing the render.
 - **The host's loop is stretched by holds before it is composited** (operator direction, 2026-09-01; `CHARACTER_HOLDS` in `src/lib/pipeline/character.ts`). The asset is 70 frames at 12.5fps — 5.6s — so under a two-minute narration she runs the same cycle twenty times and reads as fidgeting. Three five-second holds stretch a cycle to 20.3s: frames 3–4 *cycle* (a dead stop three frames in looks like the video stalled), frames 12 and 28 freeze. They are applied by writing the loop back out once per render with ffmpeg's `loop` filter and looping *that* file — folding them into the main graph cannot work, because `loop` counts frames from the start of the stream it is given, so against an endlessly looping input the holds would land on the first pass and never again. The derived file is **lossless FFV1, never a second GIF**: re-encoding to GIF requantises the palette and moves the measured `#e5505c` key to `#fc4855`, which the 0.10 tolerance above cannot survive. Two ffmpeg-specific traps are load-bearing here — the `loop` filter's `start` is **1-based** despite reading as an index, and the holds must be emitted last-first so no hold shifts the one after it.
 - Loop or trim the footage segment to the narration's exact duration.
 - Headless export to MP4, `dist/render/<script_id>.mp4`, deleted only after a confirmed EXPORT write (§9).
@@ -829,6 +864,9 @@ Checks:
 - Similarity to the last 100 scripts < 0.85 (self-repetition / templating check — flagged, not blocked).
 - A reminder that the synthetic-media disclosure (`status.containsSyntheticMedia`, confirmed against Google's current Data API v3 docs) should be set when the operator uploads manually.
 - Caption/audio duration match within tolerance (flagged if a render's captions run past the narration audio).
+- **Which provider actually answered each reasoning stage** — RESEARCH, SCRIPT and PLAN each record whether Gemini or the Groq fallback produced them, and why the fallback was reached. A script written by the fallback model is a legitimate script and a different one, and "which model wrote this" is the first thing a reviewer asks about a script that reads oddly.
+- **What EDIT (§5.5.5) did to each clip** — which Kinocut tools ran, whether the clip changed, and why it was left alone if it was not. A clip trimmed to a different moment than the one SOURCE chose is a clip whose footage-provenance window is no longer the whole story, so the two are read together.
+- **Which of the host's actions played over each shot**, and every correction the character timeline had to make to PLAN's choices. Watching the video tells a reviewer the host shrugged over beat four; only this tells them whether PLAN chose that or whether an invented action id was substituted.
 - **The RESEARCH brief (§5.2.5) the script was written from** — its summary, the model that produced it, the tools it actually ran, and every citation with the source's title and URL. A render whose research failed carries `ungrounded: true` and a flag saying the script was written from the signal title alone. This is informational, like everything else here, but it is the piece that changes how much weight a reviewer should give the script's specifics: a grounded script's claims can be checked against the cited sources, and an ungrounded one's cannot.
 
 Every signal computed here is visible in the console's review queue (`CONSOLE_SPEC.md` §4) before the operator downloads or discards an export.
@@ -854,7 +892,7 @@ system spends on its own.
 | KV storage | 3 exports/day × 3-day TTL ≈ ~9 exports resident at once × (MP4 size, TBD — see §3's `ExportDriver` note) | 1GB total | needs the real render-size check before this is a settled "fine," not before |
 | Edge TTS | 3 × ~150 words ≈ 450 words/day | no formal quota — it's not a real product | **the actual risk isn't quota, it's the endpoint disappearing.** Alert loudly on TTS driver failure, don't silently fall back to a paid provider without telling the operator |
 
-RESEARCH is the one stage whose *token* cost grows with how hard it works: up to 6 iterations, each re-sending the whole conversation plus ~500 tokens of tool schemas, plus up to 6,000 characters per source read. Budgeted at roughly 15–25K tokens per render, ~75K/day for three — which is why it runs on `gpt-oss-20b`, against that model's own 200K/day, rather than eating into the 120b budget SCRIPT and CRITIC need. If it ever threatens that ceiling, the levers are `maxIterations` and `article-fetch.ts`'s `maxChars`, in that order.
+RESEARCH is the one stage whose *token* cost grows with how hard it works: up to 6 iterations, each re-sending the whole conversation plus ~500 tokens of tool schemas, plus up to 6,000 characters per source read. Budgeted at roughly 15–25K tokens per render, ~75K/day for three — which is why its Groq *fallback* runs on `gpt-oss-20b`, against that model's own 200K/day, rather than eating into the 120b budget CRITIC needs. On the primary path it runs on the Gemini ladder, where the same per-model reasoning applies across four separate 250K/day budgets. If it ever threatens that ceiling, the levers are `maxIterations` and `article-fetch.ts`'s `maxChars`, in that order.
 
 The two real constraints, updated from before: **KV's per-value and total storage caps** (settled once Phase 6 measures a real rendered file against them, per the open item in §3) and **Edge TTS's unofficial status** (this is a reliability risk, not a cost one — budget for it with retries and a loud alert, not with money). YouTube API quota is no longer tracked at all — there's no YouTube API key left in the system (§5.0, §7).
 

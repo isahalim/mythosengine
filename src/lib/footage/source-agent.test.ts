@@ -12,7 +12,7 @@ import { PexelsDriver } from "../drivers/pexels.ts";
 import type { DownloadDriver, YoutubeSearchDriver } from "../drivers/types.ts";
 import { ok } from "../result.ts";
 import type { ShotPlan } from "../pipeline/shot-plan.ts";
-import { sourceShots } from "./source-agent.ts";
+import { sourceShots, youtubeDownloadBudget } from "./source-agent.ts";
 
 // The ffmpeg-shaped work (probe, trim, motion-score, cut) is exercised by
 // its own modules' tests against real ffmpeg. What is under test HERE is
@@ -126,9 +126,9 @@ describe("sourceShots", () => {
   it("sources a mixed plan from both providers, in plan order", async () => {
     const result = await sourceShots(
       plan([
-        { position: 0, beatIndex: null, intent: "opening", query: "empty courtroom gallery", source: "pexels" },
-        { position: 1, beatIndex: 0, intent: "the real thing", query: "GTA 6 walkthrough gameplay", source: "youtube" },
-        { position: 2, beatIndex: 1, intent: "closing", query: "hands sorting paperwork", source: "pexels" },
+        { position: 0, beatIndex: null, intent: "opening", query: "empty courtroom gallery", source: "pexels", characterAction: null },
+        { position: 1, beatIndex: 0, intent: "the real thing", query: "GTA 6 walkthrough gameplay", source: "youtube", characterAction: null },
+        { position: 2, beatIndex: 1, intent: "closing", query: "hands sorting paperwork", source: "pexels", characterAction: null },
       ]),
       deps(),
     );
@@ -144,8 +144,8 @@ describe("sourceShots", () => {
     // the only record that a frame came from anywhere.
     await sourceShots(
       plan([
-        { position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels" },
-        { position: 1, beatIndex: 0, intent: "b", query: "GTA 6 walkthrough gameplay", source: "youtube" },
+        { position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels", characterAction: null },
+        { position: 1, beatIndex: 0, intent: "b", query: "GTA 6 walkthrough gameplay", source: "youtube", characterAction: null },
       ]),
       deps(),
     );
@@ -170,6 +170,7 @@ describe("sourceShots", () => {
         Array.from({ length: 4 }, (_, i) => ({
           position: i,
           beatIndex: i === 0 ? null : i - 1,
+          characterAction: null,
           intent: "gameplay",
           query: "GTA 6 walkthrough gameplay",
           source: "youtube" as const,
@@ -191,7 +192,7 @@ describe("sourceShots", () => {
     // A reviewer checking provenance opens the source; the head/tail buffer
     // is our bookkeeping, not theirs.
     await sourceShots(
-      plan([{ position: 0, beatIndex: null, intent: "g", query: "GTA 6 walkthrough gameplay", source: "youtube" }], "viral_gameplay"),
+      plan([{ position: 0, beatIndex: null, intent: "g", query: "GTA 6 walkthrough gameplay", source: "youtube", characterAction: null }], "viral_gameplay"),
       deps({ random: () => 0 }),
     );
 
@@ -204,9 +205,9 @@ describe("sourceShots", () => {
     const search = searchDriver([]);
     const result = await sourceShots(
       plan([
-        { position: 0, beatIndex: null, intent: "a", query: "first youtube thing", source: "youtube" },
-        { position: 1, beatIndex: 0, intent: "b", query: "second youtube thing", source: "youtube" },
-        { position: 2, beatIndex: 1, intent: "c", query: "third youtube thing", source: "youtube" },
+        { position: 0, beatIndex: null, intent: "a", query: "first youtube thing", source: "youtube", characterAction: null },
+        { position: 1, beatIndex: 0, intent: "b", query: "second youtube thing", source: "youtube", characterAction: null },
+        { position: 2, beatIndex: 1, intent: "c", query: "third youtube thing", source: "youtube", characterAction: null },
       ]),
       deps({ download: downloadDriver(downloads), search }),
     );
@@ -218,7 +219,41 @@ describe("sourceShots", () => {
     // reported rather than the shot silently vanishing.
     expect(result.value.shots).toHaveLength(3);
     expect(result.value.shots[2].source).toBe("pexels");
-    expect(result.value.failures.some((f) => f.error.includes("download ceiling"))).toBe(true);
+    expect(result.value.failures.some((f) => f.error.includes("download budget"))).toBe(true);
+  });
+
+  it("raises the download budget to 4 on the topics whose footage is the real thing", async () => {
+    // politics/tech/science/ai: the actual recorded event exists and stock
+    // has no clip of it, so two real clips across a montage is mostly stock
+    // (operator direction, 2026-09-01).
+    const downloads: string[] = [];
+    const search = searchDriver([]);
+    const result = await sourceShots(
+      plan(
+        Array.from({ length: 5 }, (_, i) => ({
+          position: i,
+          beatIndex: i === 0 ? null : i - 1,
+          intent: "a",
+          query: `youtube thing ${i}`,
+          source: "youtube" as const,
+          characterAction: null,
+        })),
+      ),
+      deps({ download: downloadDriver(downloads), search, topic: "politics" }),
+    );
+
+    expect(downloads).toHaveLength(4);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The fifth still falls back to stock — it is a raised cap, not no cap.
+    expect(result.value.shots[4].source).toBe("pexels");
+  });
+
+  it("keeps the conservative budget on a topic nobody chose", () => {
+    expect(youtubeDownloadBudget(null)).toBe(2);
+    expect(youtubeDownloadBudget("philosophy")).toBe(2);
+    expect(youtubeDownloadBudget("politics")).toBe(4);
+    expect(youtubeDownloadBudget("ai")).toBe(4);
   });
 
   it("does not spend a download slot on a source it already has cached", async () => {
@@ -231,9 +266,9 @@ describe("sourceShots", () => {
 
     const result = await sourceShots(
       plan([
-        { position: 0, beatIndex: null, intent: "a", query: "one query", source: "youtube" },
-        { position: 1, beatIndex: 0, intent: "b", query: "one query", source: "youtube" },
-        { position: 2, beatIndex: 1, intent: "c", query: "one query", source: "youtube" },
+        { position: 0, beatIndex: null, intent: "a", query: "one query", source: "youtube", characterAction: null },
+        { position: 1, beatIndex: 0, intent: "b", query: "one query", source: "youtube", characterAction: null },
+        { position: 2, beatIndex: 1, intent: "c", query: "one query", source: "youtube", characterAction: null },
       ]),
       shared,
     );
@@ -244,7 +279,7 @@ describe("sourceShots", () => {
   });
 
   it("never lets sourced footage satisfy a gameplay claim", async () => {
-    await sourceShots(plan([{ position: 0, beatIndex: null, intent: "g", query: "GTA 6 walkthrough gameplay", source: "youtube" }]), deps());
+    await sourceShots(plan([{ position: 0, beatIndex: null, intent: "g", query: "GTA 6 walkthrough gameplay", source: "youtube", characterAction: null }]), deps());
     const source = (await ctx.db.select().from(footageSources).all())[0];
     expect(source.kind).toBe("stock");
     expect(await claimNextFootageSegment(ctx.db, source.game, NOW)).toBeNull();
@@ -255,7 +290,7 @@ describe("sourceShots", () => {
       fetchImpl: (async () => new Response(JSON.stringify({ videos: [] }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch,
     });
     const result = await sourceShots(
-      plan([{ position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels" }]),
+      plan([{ position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels", characterAction: null }]),
       deps({ pexels: emptyPexels }),
     );
     expect(result.ok).toBe(false);
@@ -266,10 +301,10 @@ describe("sourceShots", () => {
     await ctx.db.insert(sources).values({ id: "s1", kind: "reddit", url: "http://x" }).run();
     await ctx.db.insert(signals).values({ id: "sig1", sourceId: "s1", canonicalUrl: "http://x/1", title: "t", observedAt: NOW, engagementScore: 1, simhash: "a", state: "scored" }).run();
     await ctx.db.insert(scripts).values({ id: "scr1", signalId: "sig1", hook: "h", body: "b", debateQuestion: "q", wordCount: 5, status: "draft", createdAt: NOW }).run();
-    await saveShotPlan(ctx.client, "scr1", "trace1", [{ position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels" }], NOW);
+    await saveShotPlan(ctx.client, "scr1", "trace1", [{ position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels", characterAction: null }], NOW);
 
     await sourceShots(
-      plan([{ position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels" }]),
+      plan([{ position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels", characterAction: null }]),
       deps({ scriptId: "scr1" }),
     );
 
@@ -332,9 +367,9 @@ describe("plan position vs composited position", () => {
     const result = await sourceShots(
       {
         shots: [
-          { position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels" },
-          { position: 1, beatIndex: 0, intent: "b", query: "prison corridor night", source: "pexels" },
-          { position: 2, beatIndex: 1, intent: "c", query: "hands sorting paperwork", source: "pexels" },
+          { position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels", characterAction: null },
+          { position: 1, beatIndex: 0, intent: "b", query: "prison corridor night", source: "pexels", characterAction: null },
+          { position: 2, beatIndex: 1, intent: "c", query: "hands sorting paperwork", source: "pexels", characterAction: null },
         ],
         origin: "model",
         degradedReason: null,

@@ -1,0 +1,483 @@
+{
+  "pack": "robot_host_character",
+  "version": "1.0",
+  "description": "Animated floating-robot presenter/host character for video. Every clip is a background-free (alpha) animation of the same character, separated by action so it can be cut against voiceover.",
+  "canvas": {
+    "width": 640,
+    "height": 680,
+    "background": "transparent",
+    "anchor": "character is horizontally centred; torso is intentionally cropped by the bottom edge so the clip can sit flush on the bottom of a frame"
+  },
+  "formats": {
+    "gif": "Transparent GIF, 640x680. 1-bit alpha, so edges are hard/aliased. Loops forever. Use for previews, slides, web embeds, and anywhere GIF is the expected format.",
+    "mov_alpha": "QuickTime MOV, PNG codec, RGBA. Lossless, with a full 8-bit alpha channel and soft antialiased edges. Use this in any video editor (Premiere, After Effects, DaVinci, Final Cut) for the actual render."
+  },
+  "note_on_formats": "The GIF and the MOV are the same animation. Prefer the MOV when the output is video; the GIF cannot represent partial transparency, so its edges will look slightly jagged over busy backgrounds.",
+  "agent_selection_rules": [
+    "If the host has an audible line in the scene, pick a clip with mouth_moving = true.",
+    "If the host is on screen but silent, pick a clip with mouth_moving = false (idle_neutral_loop or listening_attentive_loop).",
+    "Match the on-screen layout: if a graphic sits to the host's right, use talk_point_right_loop or present_open_palm_right_loop; if it sits to the left, use talk_point_left_loop.",
+    "Reaction clips (surprised_reaction, laugh_happy_loop, thumbs_up_approve, nod_yes_agree, shake_head_no_disagree, shrug_uncertain) are one beat of emphasis. Use one per moment, then return to a talking or idle clip. Do not chain two reactions back to back.",
+    "wave_hello_intro is only for the first appearance; wave_goodbye_outro only for the last.",
+    "Every clip is a seamless loop, so hold a clip for as long as the scene needs by repeating it.",
+    "If no rule clearly applies, fall back to talk_neutral_loop when there is speech and idle_neutral_loop when there is not."
+  ],
+  "defaults": {
+    "speaking": "talk_neutral_loop",
+    "silent": "idle_neutral_loop"
+  },
+  "clips": [
+    {
+      "id": "wave_hello_intro",
+      "title": "Wave hello \u2014 intro",
+      "category": "transition",
+      "use_when": "The opening shot of a video, or the host's first appearance in a scene. Greeting only \u2014 do not use mid-explanation.",
+      "mouth_moving": true,
+      "gesture": "waving right hand",
+      "seamless_loop": true,
+      "duration_ms": 3000,
+      "frames": 36,
+      "fps": 12,
+      "tags": [
+        "intro",
+        "greeting",
+        "hello",
+        "opening",
+        "first-shot"
+      ],
+      "files": {
+        "gif": "gifs/wave_hello_intro.gif",
+        "mov_alpha": "mov/wave_hello_intro.mov"
+      },
+      "gif_kb": 912.8
+    },
+    {
+      "id": "talk_neutral_loop",
+      "title": "Talking \u2014 neutral",
+      "category": "talking",
+      "use_when": "Default narration. The workhorse clip for most voiceover lines with no specific emotion or gesture needed.",
+      "mouth_moving": true,
+      "gesture": "none",
+      "seamless_loop": true,
+      "duration_ms": 2500,
+      "frames": 30,
+      "fps": 12,
+      "tags": [
+        "talking",
+        "narration",
+        "default",
+        "voiceover"
+      ],
+      "files": {
+        "gif": "gifs/talk_neutral_loop.gif",
+        "mov_alpha": "mov/talk_neutral_loop.mov"
+      },
+      "gif_kb": 755.8
+    },
+    {
+      "id": "talk_emphatic_loop",
+      "title": "Talking \u2014 emphatic",
+      "category": "talking",
+      "use_when": "Stressed or high-energy lines: a strong claim, a punchline, a warning, or the key takeaway. Bigger movement and a brighter antenna.",
+      "mouth_moving": true,
+      "gesture": "none",
+      "seamless_loop": true,
+      "duration_ms": 2500,
+      "frames": 30,
+      "fps": 12,
+      "tags": [
+        "talking",
+        "emphasis",
+        "energetic",
+        "key-line"
+      ],
+      "files": {
+        "gif": "gifs/talk_emphatic_loop.gif",
+        "mov_alpha": "mov/talk_emphatic_loop.mov"
+      },
+      "gif_kb": 756.5
+    },
+    {
+      "id": "talk_hand_raised_loop",
+      "title": "Talking \u2014 one hand raised",
+      "category": "talking",
+      "use_when": "Making a point while speaking, or gesturing toward something high on screen. Good generic 'explaining' shot with visible motion.",
+      "mouth_moving": true,
+      "gesture": "right hand raised",
+      "seamless_loop": true,
+      "duration_ms": 3000,
+      "frames": 36,
+      "fps": 12,
+      "tags": [
+        "talking",
+        "gesture",
+        "explaining",
+        "hand-raised"
+      ],
+      "files": {
+        "gif": "gifs/talk_hand_raised_loop.gif",
+        "mov_alpha": "mov/talk_hand_raised_loop.mov"
+      },
+      "gif_kb": 910.7
+    },
+    {
+      "id": "talk_both_hands_explain_loop",
+      "title": "Talking \u2014 explaining with both hands",
+      "category": "talking",
+      "use_when": "Walking through a concept, a list, or a comparison. The most 'teacher-like' talking shot; good for longer explanatory passages.",
+      "mouth_moving": true,
+      "gesture": "both hands, palms up",
+      "seamless_loop": true,
+      "duration_ms": 3000,
+      "frames": 36,
+      "fps": 12,
+      "tags": [
+        "talking",
+        "explaining",
+        "teaching",
+        "list",
+        "comparison"
+      ],
+      "files": {
+        "gif": "gifs/talk_both_hands_explain_loop.gif",
+        "mov_alpha": "mov/talk_both_hands_explain_loop.mov"
+      },
+      "gif_kb": 877.6
+    },
+    {
+      "id": "talk_point_right_loop",
+      "title": "Talking \u2014 pointing screen-right",
+      "category": "talking",
+      "use_when": "A graphic, chart, lower-third or text appears on the RIGHT side of the frame and the host is referring to it.",
+      "mouth_moving": true,
+      "gesture": "pointing screen-right",
+      "seamless_loop": true,
+      "duration_ms": 3000,
+      "frames": 36,
+      "fps": 12,
+      "tags": [
+        "talking",
+        "pointing",
+        "right",
+        "graphic",
+        "callout"
+      ],
+      "files": {
+        "gif": "gifs/talk_point_right_loop.gif",
+        "mov_alpha": "mov/talk_point_right_loop.mov"
+      },
+      "gif_kb": 914.9
+    },
+    {
+      "id": "talk_point_left_loop",
+      "title": "Talking \u2014 pointing screen-left",
+      "category": "talking",
+      "use_when": "A graphic, chart, lower-third or text appears on the LEFT side of the frame and the host is referring to it.",
+      "mouth_moving": true,
+      "gesture": "pointing screen-left",
+      "seamless_loop": true,
+      "duration_ms": 3000,
+      "frames": 36,
+      "fps": 12,
+      "tags": [
+        "talking",
+        "pointing",
+        "left",
+        "graphic",
+        "callout"
+      ],
+      "files": {
+        "gif": "gifs/talk_point_left_loop.gif",
+        "mov_alpha": "mov/talk_point_left_loop.mov"
+      },
+      "gif_kb": 919.6
+    },
+    {
+      "id": "present_open_palm_right_loop",
+      "title": "Presenting \u2014 open palm to screen-right",
+      "category": "talking",
+      "use_when": "Introducing or 'handing off' to something on the right: a product shot, a chart reveal, a guest, or the next section.",
+      "mouth_moving": true,
+      "gesture": "open palm toward screen-right",
+      "seamless_loop": true,
+      "duration_ms": 3000,
+      "frames": 36,
+      "fps": 12,
+      "tags": [
+        "presenting",
+        "handoff",
+        "reveal",
+        "right",
+        "intro-section"
+      ],
+      "files": {
+        "gif": "gifs/present_open_palm_right_loop.gif",
+        "mov_alpha": "mov/present_open_palm_right_loop.mov"
+      },
+      "gif_kb": 910.8
+    },
+    {
+      "id": "point_up_key_point",
+      "title": "Point up \u2014 key point",
+      "category": "talking",
+      "use_when": "Flagging the single most important idea: 'here's the key', 'remember this', numbered step one, or a callout appearing above the host.",
+      "mouth_moving": true,
+      "gesture": "index finger raised",
+      "seamless_loop": true,
+      "duration_ms": 3000,
+      "frames": 36,
+      "fps": 12,
+      "tags": [
+        "important",
+        "key-point",
+        "step-one",
+        "callout",
+        "above"
+      ],
+      "files": {
+        "gif": "gifs/point_up_key_point.gif",
+        "mov_alpha": "mov/point_up_key_point.mov"
+      },
+      "gif_kb": 907.7
+    },
+    {
+      "id": "thinking_hand_on_chin_loop",
+      "title": "Thinking \u2014 processing",
+      "category": "reaction",
+      "use_when": "Posing a rhetorical question, pausing before an answer, or under a line like 'so why does this happen?'. Eyes drift up and the antenna pulses like a loading indicator.",
+      "mouth_moving": false,
+      "gesture": "hand on chin",
+      "seamless_loop": true,
+      "duration_ms": 4000,
+      "frames": 48,
+      "fps": 12,
+      "tags": [
+        "thinking",
+        "question",
+        "pause",
+        "curious",
+        "pondering"
+      ],
+      "files": {
+        "gif": "gifs/thinking_hand_on_chin_loop.gif",
+        "mov_alpha": "mov/thinking_hand_on_chin_loop.mov"
+      },
+      "gif_kb": 1167.7
+    },
+    {
+      "id": "idle_neutral_loop",
+      "title": "Idle \u2014 neutral",
+      "category": "idle",
+      "use_when": "Default resting shot. Use between lines, under B-roll, on a title card, or any time the host is on screen but not speaking.",
+      "mouth_moving": false,
+      "gesture": "none",
+      "seamless_loop": true,
+      "duration_ms": 3500,
+      "frames": 42,
+      "fps": 12,
+      "tags": [
+        "idle",
+        "neutral",
+        "default",
+        "breathing",
+        "silent"
+      ],
+      "files": {
+        "gif": "gifs/idle_neutral_loop.gif",
+        "mov_alpha": "mov/idle_neutral_loop.mov"
+      },
+      "gif_kb": 1036.7
+    },
+    {
+      "id": "listening_attentive_loop",
+      "title": "Listening \u2014 attentive",
+      "category": "idle",
+      "use_when": "The host is reacting to someone else's audio, a quote, a guest clip, or an on-screen graphic. Small agreeable nods, mouth closed.",
+      "mouth_moving": false,
+      "gesture": "none",
+      "seamless_loop": true,
+      "duration_ms": 3000,
+      "frames": 36,
+      "fps": 12,
+      "tags": [
+        "listening",
+        "reacting",
+        "nod",
+        "silent",
+        "b-roll"
+      ],
+      "files": {
+        "gif": "gifs/listening_attentive_loop.gif",
+        "mov_alpha": "mov/listening_attentive_loop.mov"
+      },
+      "gif_kb": 910.2
+    },
+    {
+      "id": "nod_yes_agree",
+      "title": "Nod \u2014 yes / agree",
+      "category": "reaction",
+      "use_when": "Confirming a statement, answering yes, or acknowledging a point. Two clear nods, returns to rest.",
+      "mouth_moving": false,
+      "gesture": "none",
+      "seamless_loop": true,
+      "duration_ms": 2500,
+      "frames": 30,
+      "fps": 12,
+      "tags": [
+        "yes",
+        "agree",
+        "confirm",
+        "correct",
+        "affirm"
+      ],
+      "files": {
+        "gif": "gifs/nod_yes_agree.gif",
+        "mov_alpha": "mov/nod_yes_agree.mov"
+      },
+      "gif_kb": 754.8
+    },
+    {
+      "id": "shake_head_no_disagree",
+      "title": "Head shake \u2014 no / disagree",
+      "category": "reaction",
+      "use_when": "Negating a myth, correcting a misconception, or answering no. Pair with lines like 'not quite' or 'that's a myth'.",
+      "mouth_moving": false,
+      "gesture": "none",
+      "seamless_loop": true,
+      "duration_ms": 2500,
+      "frames": 30,
+      "fps": 12,
+      "tags": [
+        "no",
+        "disagree",
+        "myth",
+        "wrong",
+        "negate"
+      ],
+      "files": {
+        "gif": "gifs/shake_head_no_disagree.gif",
+        "mov_alpha": "mov/shake_head_no_disagree.mov"
+      },
+      "gif_kb": 758.6
+    },
+    {
+      "id": "thumbs_up_approve",
+      "title": "Thumbs up \u2014 approve",
+      "category": "reaction",
+      "use_when": "Endorsing a tip, marking a 'do this' item, or a positive verdict in a review. Reads as approval without dialogue.",
+      "mouth_moving": false,
+      "gesture": "thumbs up",
+      "seamless_loop": true,
+      "duration_ms": 3000,
+      "frames": 36,
+      "fps": 12,
+      "tags": [
+        "approve",
+        "positive",
+        "recommend",
+        "verdict",
+        "do-this"
+      ],
+      "files": {
+        "gif": "gifs/thumbs_up_approve.gif",
+        "mov_alpha": "mov/thumbs_up_approve.mov"
+      },
+      "gif_kb": 901.5
+    },
+    {
+      "id": "shrug_uncertain",
+      "title": "Shrug \u2014 uncertain / it depends",
+      "category": "reaction",
+      "use_when": "'It depends', 'nobody really knows', or presenting a trade-off with no clear winner. Shoulders lift with the hands.",
+      "mouth_moving": false,
+      "gesture": "both hands, palms up",
+      "seamless_loop": true,
+      "duration_ms": 3500,
+      "frames": 42,
+      "fps": 12,
+      "tags": [
+        "uncertain",
+        "it-depends",
+        "unknown",
+        "tradeoff"
+      ],
+      "files": {
+        "gif": "gifs/shrug_uncertain.gif",
+        "mov_alpha": "mov/shrug_uncertain.mov"
+      },
+      "gif_kb": 1054.0
+    },
+    {
+      "id": "surprised_reaction",
+      "title": "Surprised \u2014 reaction",
+      "category": "reaction",
+      "use_when": "A reveal, a shocking statistic, or a plot twist lands. Eyes snap wide and the antenna flares; use sparingly for a single beat.",
+      "mouth_moving": false,
+      "gesture": "both hands raised",
+      "seamless_loop": true,
+      "duration_ms": 3000,
+      "frames": 36,
+      "fps": 12,
+      "tags": [
+        "surprised",
+        "shock",
+        "reveal",
+        "twist",
+        "statistic"
+      ],
+      "files": {
+        "gif": "gifs/surprised_reaction.gif",
+        "mov_alpha": "mov/surprised_reaction.mov"
+      },
+      "gif_kb": 887.1
+    },
+    {
+      "id": "laugh_happy_loop",
+      "title": "Laughing \u2014 happy",
+      "category": "reaction",
+      "use_when": "After a joke, a light aside, or a fun fact. Eyes curve into happy arcs and the whole robot bounces; do not use for serious content.",
+      "mouth_moving": true,
+      "gesture": "none",
+      "seamless_loop": true,
+      "duration_ms": 2500,
+      "frames": 30,
+      "fps": 12,
+      "tags": [
+        "laughing",
+        "happy",
+        "joke",
+        "light",
+        "positive"
+      ],
+      "files": {
+        "gif": "gifs/laugh_happy_loop.gif",
+        "mov_alpha": "mov/laugh_happy_loop.mov"
+      },
+      "gif_kb": 755.9
+    },
+    {
+      "id": "wave_goodbye_outro",
+      "title": "Wave goodbye \u2014 outro",
+      "category": "transition",
+      "use_when": "The closing shot: sign-off, end card, subscribe prompt. Calmer, slower wave than the intro, with a soft smile.",
+      "mouth_moving": false,
+      "gesture": "waving right hand",
+      "seamless_loop": true,
+      "duration_ms": 3000,
+      "frames": 36,
+      "fps": 12,
+      "tags": [
+        "outro",
+        "goodbye",
+        "sign-off",
+        "closing",
+        "end-card"
+      ],
+      "files": {
+        "gif": "gifs/wave_goodbye_outro.gif",
+        "mov_alpha": "mov/wave_goodbye_outro.mov"
+      },
+      "gif_kb": 919.9
+    }
+  ]
+}

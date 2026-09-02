@@ -7,7 +7,7 @@ import { advanceShot } from "../../../db/shot-plans.ts";
 import type { DownloadDriver, DriverError, SourcedVideo, YoutubeSearchDriver } from "../drivers/types.ts";
 import type { PexelsClip, PexelsDriver } from "../drivers/pexels.ts";
 import { probeVideo } from "../drivers/probe-video.ts";
-import type { PlannedShot, ShotPlan } from "../pipeline/shot-plan.ts";
+import { prefersYoutube, type PlannedShot, type ShotPlan } from "../pipeline/shot-plan.ts";
 import { extractClip, trimHeadTail } from "./clip.ts";
 import { computeMotionSeries, findTopMotionWindows } from "./motion-score.ts";
 import { sampleMotionWindows } from "./refresh.ts";
@@ -52,6 +52,34 @@ const YOUTUBE_SOURCE_ID_PREFIX = "youtube";
  * is a worse picture and a finished video.
  */
 const MAX_YOUTUBE_DOWNLOADS = 2;
+
+/**
+ * The raised ceiling for the topics whose footage is the real thing
+ * (operator direction, 2026-09-01).
+ *
+ * Politics, tech, science and AI are the topics where the actual recorded
+ * event exists and a stock desk standing in for it is the failure mode; on
+ * those, two real clips across an eight-shot montage means the montage is
+ * mostly stock. Four is the operator's chosen trade: roughly one more
+ * download cycle — the slowest part of the pipeline, on their own laptop
+ * and connection — for a montage that is mostly real footage.
+ *
+ * Still a hard cap, and still for the original reason: each download is
+ * potentially a gigabyte through a converter site, and a plan asking for
+ * eight would spend an hour before the encoder started. Shots past the cap
+ * fall back to Pexels and say so.
+ */
+const MAX_YOUTUBE_DOWNLOADS_REAL_FOOTAGE = 4;
+
+/**
+ * How many YouTube downloads this render may make.
+ *
+ * The viral path is deliberately unaffected: it downloads ONE source and
+ * cuts many windows out of it, so its budget was never the constraint.
+ */
+export function youtubeDownloadBudget(topic: string | null): number {
+  return prefersYoutube(topic) ? MAX_YOUTUBE_DOWNLOADS_REAL_FOOTAGE : MAX_YOUTUBE_DOWNLOADS;
+}
 
 /** Seconds cut from each end of a downloaded long-form video before anything is scored or clipped. */
 const HEAD_TAIL_BUFFER_S = 120;
@@ -119,6 +147,13 @@ export interface SourceDeps {
    * displays. Absent in tests that are not exercising the plan rows.
    */
   scriptId?: string;
+  /**
+   * The operator's topic for this render, which decides how many YouTube
+   * downloads are allowed (`youtubeDownloadBudget`). Absent means the
+   * conservative budget, which is the right default for a run whose topic
+   * nobody chose.
+   */
+  topic?: string | null;
 }
 
 /**
@@ -147,9 +182,10 @@ export async function sourceShots(plan: ShotPlan, deps: SourceDeps): Promise<Res
 
   const sourcedByPosition = new Map<number, SourcedShot>();
   let downloadsUsed = 0;
+  const downloadBudget = youtubeDownloadBudget(deps.topic ?? null);
 
   for (const [query, group] of byQuery) {
-    const result = await sourceFromYoutube(query, group, deps, plan.origin === "viral_gameplay", MAX_YOUTUBE_DOWNLOADS - downloadsUsed);
+    const result = await sourceFromYoutube(query, group, deps, plan.origin === "viral_gameplay", downloadBudget - downloadsUsed);
     if (!result.ok) {
       // Not silently dropped. Every one of these falls through to Pexels
       // below, so the beat still gets a picture and the reviewer sees why
@@ -267,7 +303,7 @@ async function sourceFromYoutube(
     if (downloadBudget <= 0) {
       return err({
         kind: "policy_violation",
-        message: `over the ${MAX_YOUTUBE_DOWNLOADS}-download ceiling for one render and "${query}" is not cached — falling back to stock`,
+        message: `this render's YouTube download budget (${youtubeDownloadBudget(deps.topic ?? null)}) is spent and "${query}" is not cached — falling back to stock`,
         retryable: false,
       });
     }

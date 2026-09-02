@@ -45,6 +45,11 @@
       "args": ["edge_tts_mcp"],
       "$note": "Dev-time only: sample narration + inspect the subtitle/word-timing output shape before writing src/lib/drivers/tts-edge.ts. Requires Python + uv installed locally. NOT called at runtime by the pipeline -- the production driver speaks the underlying Edge TTS protocol directly (see ARCHITECTURE.md #3). Verified against https://pypi.org/project/edge-tts-mcp/ 2026-08-27; re-check if uvx fails."
     },
+    "kinocut": {
+      "command": "uvx",
+      "args": ["--from", "kinocut", "kino", "--mcp"],
+      "$note": "Video editing over MCP -- local-first, Apache-2.0, no key or account (wraps FFmpeg + Whisper on this machine). UNLIKE every other server here, this one IS used at runtime: the EDIT stage (src/lib/pipeline/edit.ts) launches it itself with exactly this command and drives it with Gemini to find each clip's key moment and grade it. It is listed here so an agent working on that stage can reach the same 196 tools by hand. EDIT offers the model only the ~9 in EDIT_TOOLS -- all 196 schemas re-sent every turn would spend a large share of a 250K-token daily budget on the menu. Requires uv + ffmpeg; absent, EDIT degrades to 'every clip as sourced' and never fails the render. Verified against kinocut 1.15.1, 2026-09-01."
+    },
     "tubepull": {
       "type": "http",
       "url": "https://tubepull.com/mcp",

@@ -58,6 +58,27 @@ export const QUOTAS = {
    * fits.
    */
   gemini: {
+    /**
+     * The **text** models' free-tier limits, read off the operator's own AI
+     * Studio rate-limit page on 2026-09-01 — measured, not taken from a
+     * pricing page.
+     *
+     * The single most important property here is that these are **per
+     * model**. The page lists Gemini 3.7 Flash, 3.6 Flash and 3.5 Flash each
+     * at 5 requests/minute and 250K tokens/day, and 3.5 Flash Lite at
+     * 15/minute and its own 250K/day. So the ladder in
+     * src/lib/drivers/gemini-ladder.ts is not merely a failover — descending
+     * it buys a genuinely separate allowance, and the day's real text budget
+     * is closer to 1M tokens across four models than to 250K.
+     *
+     * 5 requests/minute is what forces the inter-stage pacing in
+     * scripts/pipeline/render.ts: RESEARCH alone can spend six calls on its
+     * tool loop, and SCRIPT and PLAN follow immediately behind it.
+     */
+    textRequestsPerMinute: 5,
+    textTokensPerDay: 250_000,
+    /** Flash Lite is metered three times looser per minute; the daily ceiling is the same. */
+    liteRequestsPerMinute: 15,
     ttsRequestsPerMinute: 3,
     ttsTokensPerMinute: 10_000,
     ttsRequestsPerDay: 10,

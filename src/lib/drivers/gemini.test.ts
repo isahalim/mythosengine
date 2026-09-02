@@ -106,7 +106,7 @@ describe("GeminiLlmDriver", () => {
     expect(received?.body.input).toBe("just this");
   });
 
-  it("labels roles when a repair retry adds a second message", async () => {
+  it("sends a repair retry as typed input items, not one flattened string", async () => {
     respond(OK_BODY);
     await driver().complete({
       model: "gemini-3.7-flash",
@@ -115,22 +115,97 @@ describe("GeminiLlmDriver", () => {
         { role: "user", content: "that was not valid JSON" },
       ],
     });
-    expect(received?.body.input).toBe("[system]\nwrite a script\n\n[user]\nthat was not valid JSON");
+    // Interactions has no system role, so both turns are user input. The
+    // array form is required the moment there is history.
+    expect(received?.body.input).toEqual([
+      { type: "user_input", content: [{ type: "text", text: "write a script" }] },
+      { type: "user_input", content: [{ type: "text", text: "that was not valid JSON" }] },
+    ]);
   });
 
-  it("refuses a tool-calling request rather than silently dropping the tools", async () => {
-    handler = () => {
-      throw new Error("must not reach the network");
-    };
+  it("declares tools flat, not nested the way Groq does", async () => {
+    respond(OK_BODY);
+    await driver().complete({
+      model: "gemini-3.7-flash",
+      messages: [{ role: "system", content: "hi" }],
+      tools: [{ name: "search_discourse", description: "d", parameters: { type: "object" } }],
+    });
+    // `{type, name, description, parameters}` — verified against the live
+    // endpoint. Groq's `{type, function: {...}}` nesting is rejected here.
+    expect(received?.body.tools).toEqual([{ type: "function", name: "search_discourse", description: "d", parameters: { type: "object" } }]);
+  });
+
+  it("never asks for JSON and offers tools in the same request", async () => {
+    // A request that does both asks the model to answer in a format a tool
+    // call cannot take.
+    respond(OK_BODY);
+    await driver().complete({
+      model: "gemini-3.7-flash",
+      messages: [{ role: "system", content: "hi" }],
+      jsonSchema: true,
+      tools: [{ name: "t", description: "d", parameters: { type: "object" } }],
+    });
+    expect(received?.body.response_format).toBeUndefined();
+  });
+
+  it("reads a function_call step into a ToolCall, re-serializing its object arguments", async () => {
+    // Gemini returns `arguments` as a parsed object where Groq sends a JSON
+    // string. `ToolCall.argumentsJson` is the shared shape, so the driver
+    // absorbs the difference rather than leaking it into every caller.
+    respond({
+      status: "requires_action",
+      steps: [
+        { type: "thought", signature: "sig-abc" },
+        { id: "call_1", type: "function_call", name: "search_discourse", arguments: { query: "prisons" } },
+      ],
+    });
     const result = await driver().complete({
       model: "gemini-3.7-flash",
       messages: [{ role: "system", content: "hi" }],
       tools: [{ name: "search_discourse", description: "d", parameters: { type: "object" } }],
     });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.toolCalls).toEqual([{ id: "call_1", name: "search_discourse", argumentsJson: '{"query":"prisons"}' }]);
+    // The opaque transcript, including the signed thought step, comes back
+    // for the caller to echo.
+    expect(result.value.providerSteps).toHaveLength(2);
+  });
+
+  it("echoes provider steps verbatim and binds a tool result to its call", async () => {
+    // The signature on a thought step MUST survive the round trip: a
+    // reconstructed turn is rejected with a bare invalid_request. Measured
+    // against the live API, 2026-09-01.
+    respond(OK_BODY);
+    const steps = [
+      { type: "thought", signature: "sig-abc" },
+      { id: "call_1", type: "function_call", name: "search_discourse", arguments: { query: "prisons" } },
+    ];
+    await driver().complete({
+      model: "gemini-3.7-flash",
+      messages: [
+        { role: "system", content: "research this" },
+        { role: "assistant", content: "", toolCalls: [{ id: "call_1", name: "search_discourse", argumentsJson: "{}" }], providerSteps: steps },
+        { role: "tool", content: '{"results":[]}', toolCallId: "call_1" },
+      ],
+      tools: [{ name: "search_discourse", description: "d", parameters: { type: "object" } }],
+    });
+    const input = received?.body.input as unknown[];
+    expect(input[1]).toEqual(steps[0]);
+    expect(input[2]).toEqual(steps[1]);
+    // The function name is recovered from the assistant turn that made the
+    // call — a "tool" message carries only the id.
+    expect(input[3]).toEqual({ type: "function_result", call_id: "call_1", name: "search_discourse", result: '{"results":[]}' });
+  });
+
+  it("surfaces an error object returned with HTTP 200", async () => {
+    // Interactions answers a rejected request with 200 and an `error` field,
+    // so a bad request otherwise looks like a successful call with no steps.
+    respond({ error: { code: "invalid_request", message: "Unknown parameter 'nope'." } });
+    const result = await driver().complete({ model: "gemini-3.7-flash", messages: [{ role: "system", content: "hi" }] });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected failure");
-    expect(result.error.retryable).toBe(false);
-    expect(result.error.message).toContain("does not implement tool calling");
+    expect(result.error.message).toContain("Unknown parameter");
   });
 
   it("reports which steps it did see when there is no model_output", async () => {

@@ -5,6 +5,8 @@ import type { DiscourseBeat } from "./script-schema.ts";
 import type { DriverError, LlmDriver } from "../drivers/types.ts";
 import { extractKeywords } from "./keywords.ts";
 import { requestValidatedJson } from "./request-json.ts";
+import { LADDER_PLACEHOLDER_MODEL } from "../drivers/gemini-ladder.ts";
+import { describeActionsForPrompt, isKnownAction, type CharacterPack } from "./character-pack.ts";
 import { ok, type Result } from "../result.ts";
 
 /**
@@ -27,8 +29,37 @@ import { ok, type Result } from "../result.ts";
  * RESEARCH. A fallback plan is marked as one and the audit package says so.
  */
 
-const PLAN_MODEL = "openai/gpt-oss-20b";
-const PROMPT_PATH = join(process.cwd(), "prompts", "shot-plan.v1.md");
+/**
+ * PLAN runs on the Gemini ladder as of 2026-09-01 (operator direction) —
+ * "planning also gemini (since it is more capable so ask it to make an
+ * actionable detailed plan for both footage, character to fit the script)".
+ * The placeholder is not a model id; the ladder owns model selection.
+ *
+ * `GROQ_PLAN_MODEL` is the fallback when the ladder is spent — the model
+ * this stage ran on until now.
+ */
+const PLAN_MODEL = LADDER_PLACEHOLDER_MODEL;
+export const GROQ_PLAN_MODEL = "openai/gpt-oss-20b";
+const PROMPT_PATH = join(process.cwd(), "prompts", "shot-plan.v2.md");
+
+/**
+ * Topics whose shots should come from real recorded video rather than
+ * stock (operator direction, 2026-09-01).
+ *
+ * The reasoning is about what each library actually contains. Pexels is
+ * ordinary scenes shot well — hands, streets, offices, weather — which
+ * illustrates a philosophical argument perfectly and illustrates a specific
+ * political event not at all. There is no stock clip of the hearing, the
+ * launch, the paper, or the model everyone is arguing about; there is
+ * YouTube footage of all four. For these four topics the real thing exists
+ * and is the whole point, so PLAN is told to prefer it and SOURCE is given
+ * a bigger download budget to honour that (src/lib/footage/source-agent.ts).
+ */
+const YOUTUBE_FIRST_TOPICS: readonly string[] = ["politics", "tech", "science", "ai"];
+
+export function prefersYoutube(topic: string | null): boolean {
+  return topic !== null && YOUTUBE_FIRST_TOPICS.includes(topic);
+}
 
 /** Bounds on a montage. Below two it is not a montage; above eight the shots are too short to read. */
 const MIN_SHOTS = 2;
@@ -44,6 +75,14 @@ export const ShotPlanResponseSchema = z
             intent: z.string().min(1).max(200),
             query: z.string().min(1).max(80),
             source: z.enum(["youtube", "pexels"]),
+            /**
+             * Which of the host's actions plays over this shot. Optional in
+             * the schema, not in the prompt: a model that omits it gets the
+             * pack default rather than a rejected plan, because the action
+             * is the least important thing about a shot and losing a whole
+             * montage over one missing field would be absurd.
+             */
+            character_action: z.string().min(1).max(64).optional(),
           })
           .strict(),
       )
@@ -60,6 +99,13 @@ export interface PlannedShot {
   /** What gets searched. */
   query: string;
   source: "youtube" | "pexels";
+  /**
+   * The host's action over this shot — one of the character pack's ids, or
+   * null when PLAN named none and the timeline should apply the pack
+   * default. Validated against the loaded pack, never trusted as given:
+   * src/lib/pipeline/character-timeline.ts enforces the pack's own rules.
+   */
+  characterAction: string | null;
 }
 
 export interface ShotPlan {
@@ -133,6 +179,51 @@ export function isFilmableQuery(query: string, { allowSingleWord = false }: { al
   return content.some((word) => !UNFILMABLE.has(word));
 }
 
+export interface PlanOptions {
+  /** The loaded character pack, so the model is briefed with the real action vocabulary and the answer can be checked against it. */
+  pack?: CharacterPack;
+  /** Overridden by RENDER when the Gemini ladder is spent and Groq is answering instead. */
+  model?: string;
+  promptTemplate?: string;
+}
+
+/**
+ * What to tell the model about where footage should come from.
+ *
+ * Politics, tech, science and AI get real recorded video wherever a shot
+ * names a real event, because stock has no clip of the hearing or the
+ * launch. Everything else keeps the previous balance, where stock is the
+ * default and YouTube is the exception for things stock does not carry.
+ */
+function sourceGuidance(topic: string | null): string {
+  if (!prefersYoutube(topic)) {
+    return `  "pexels"  - a clean, well-shot stock image of an ordinary scene: people,
+            hands, streets, offices, weather, objects. Most shots.
+  "youtube" - real recorded events, gameplay, or footage of a specific
+            thing stock libraries do not carry.
+
+Vary them. A video that is all one source looks like a slideshow or like a
+let's-play. Use at least one of each unless the topic makes that absurd.`;
+  }
+
+  return `This topic is "${topic}", where the real recorded thing exists and is the
+whole point. PREFER "youtube" for any shot that names a real event, person,
+place, product, demo, launch, hearing, protest, interview or piece of
+software. There is no stock clip of the actual hearing; there is YouTube
+footage of it, and a generic office desk standing in for it is the failure
+this instruction exists to prevent.
+
+  "youtube" - the real recorded thing. Use it for MOST shots on this topic.
+              Write the query as you would type it into YouTube's own search
+              box: name the event, the person, or the product plainly.
+  "pexels"  - texture and connective tissue: hands, crowds, streets, screens,
+              weather. Use it for shots that illustrate a feeling or an
+              abstraction rather than a specific event.
+
+At most 4 shots may use "youtube"; anything past that is downloaded as stock
+instead, so put the YouTube shots where the real footage matters most.`;
+}
+
 interface PlanInput {
   hook: string;
   beats: DiscourseBeat[];
@@ -165,6 +256,10 @@ function viralPlan(beats: DiscourseBeat[]): ShotPlan {
       // recognises repeats of VIRAL_QUERY and reuses the source.
       query: VIRAL_QUERY,
       source: "youtube" as const,
+      // Null, not a named action: the viral path spends no token deciding
+      // anything, and the character timeline's pack default (a talking
+      // loop) is exactly right under continuous narration.
+      characterAction: null,
     })),
     origin: "viral_gameplay",
     degradedReason: null,
@@ -243,6 +338,9 @@ export function heuristicPlan(input: PlanInput, reason: string): ShotPlan {
           : "Keyword fallback — drawn from this beat's own words, because PLAN did not run.",
       query,
       source: "pexels",
+      // PLAN did not run, so nothing chose an action either. The timeline
+      // applies the pack default across the whole track.
+      characterAction: null,
     });
   }
 
@@ -258,6 +356,7 @@ export function heuristicPlan(input: PlanInput, reason: string): ShotPlan {
       intent: "Neutral B-roll — PLAN did not run, so this illustrates nothing in particular.",
       query,
       source: "pexels",
+      characterAction: null,
     });
   }
 
@@ -278,7 +377,11 @@ function loadPromptTemplate(): string {
  * shot fewer is fine, and a query this code invented to patch a hole would
  * be exactly the unillustrative filler the stage was built to stop.
  */
-export function validateShots(raw: z.infer<typeof ShotPlanResponseSchema>, beatCount: number): { shots: PlannedShot[]; rejected: string[] } {
+export function validateShots(
+  raw: z.infer<typeof ShotPlanResponseSchema>,
+  beatCount: number,
+  pack?: CharacterPack,
+): { shots: PlannedShot[]; rejected: string[] } {
   const seen = new Set<string>();
   const seenBeats = new Set<number>();
   const shots: PlannedShot[] = [];
@@ -325,7 +428,15 @@ export function validateShots(raw: z.infer<typeof ShotPlanResponseSchema>, beatC
     seen.add(key);
     if (shot.beat_index === null) seenOpening = true;
     else seenBeats.add(shot.beat_index);
-    shots.push({ position: shots.length, beatIndex: shot.beat_index, intent: shot.intent.trim(), query, source: shot.source });
+    // An action this pack does not have becomes null rather than a
+    // rejection: the shot's picture is the point, and the host falls back
+    // to the pack default. The timeline records the substitution for the
+    // audit package (src/lib/pipeline/character-timeline.ts), so a model
+    // that keeps inventing ids is visible rather than silently corrected.
+    const action = shot.character_action?.trim();
+    const characterAction = action !== undefined && action.length > 0 && (pack === undefined || isKnownAction(pack, action)) ? action : null;
+
+    shots.push({ position: shots.length, beatIndex: shot.beat_index, intent: shot.intent.trim(), query, source: shot.source, characterAction });
   }
 
   return { shots, rejected };
@@ -335,8 +446,15 @@ export function validateShots(raw: z.infer<typeof ShotPlanResponseSchema>, beatC
  * PLAN. Never returns an error: the worst outcome is the heuristic plan,
  * marked as degraded.
  */
-export async function planShots(llm: LlmDriver, input: PlanInput, promptTemplate: string = loadPromptTemplate()): Promise<Result<ShotPlan, DriverError>> {
+export async function planShots(
+  llm: LlmDriver,
+  input: PlanInput,
+  options: PlanOptions = {},
+): Promise<Result<ShotPlan, DriverError>> {
   if (input.topic === "viral") return ok(viralPlan(input.beats));
+
+  const promptTemplate = options.promptTemplate ?? loadPromptTemplate();
+  const pack = options.pack;
 
   const systemPrompt = promptTemplate
     .replace(
@@ -347,12 +465,21 @@ export async function planShots(llm: LlmDriver, input: PlanInput, promptTemplate
         debate_question: input.debateQuestion,
       }),
     )
-    .replace("{{topic}}", input.topic ?? "unspecified");
+    .replace("{{topic}}", input.topic ?? "unspecified")
+    // The source guidance is topic-dependent, so it is composed here rather
+    // than written into the prompt file as a static paragraph the model has
+    // to apply conditionally.
+    .replace("{{source_guidance}}", sourceGuidance(input.topic))
+    // The action vocabulary comes off the pack's own manifest, so a pack
+    // that gains or loses an action can never leave the prompt advertising
+    // a clip nobody can play.
+    .replace("{{character_actions}}", pack === undefined ? "  (no character pack loaded — omit character_action)" : describeActionsForPrompt(pack))
+    .replace("{{character_rules}}", pack === undefined ? "  (no character pack loaded)" : pack.agentSelectionRules.map((rule) => `  - ${rule}`).join("\n"));
 
-  const validated = await requestValidatedJson(llm, PLAN_MODEL, systemPrompt, ShotPlanResponseSchema);
+  const validated = await requestValidatedJson(llm, options.model ?? PLAN_MODEL, systemPrompt, ShotPlanResponseSchema);
   if (!validated.ok) return ok(heuristicPlan(input, `${validated.error.kind}: ${validated.error.message}`));
 
-  const { shots, rejected } = validateShots(validated.value, input.beats.length);
+  const { shots, rejected } = validateShots(validated.value, input.beats.length, pack);
 
   // Too few usable shots means the model did not do the job, and the
   // heuristic is not obviously worse than two shots over a three-minute

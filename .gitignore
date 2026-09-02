@@ -21,3 +21,6 @@ coverage/
 # (src/lib/footage/source-cache.ts). Never committed: no sourced footage is
 # permanent, and these are gigabytes.
 .footage-cache/
+
+# macOS Finder metadata
+.DS_Store

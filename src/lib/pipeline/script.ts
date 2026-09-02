@@ -9,8 +9,21 @@ import { DiscourseScriptResponseSchema, ScriptResponseSchema, type DiscourseBeat
 import { requestValidatedJson } from "./request-json.ts";
 import { describeViolations, discourseWordCount, flattenBeats, validateBeatStructure } from "./discourse.ts";
 import type { ResearchBrief } from "../rag/research.ts";
+import { LADDER_PLACEHOLDER_MODEL } from "../drivers/gemini-ladder.ts";
 
-const SCRIPT_MODEL = "openai/gpt-oss-120b";
+/**
+ * SCRIPT runs on the Gemini ladder as of 2026-09-01 (operator direction):
+ * the argument is the hard part of this stage, and it is the reason the
+ * operator moved it. The placeholder is not a model id — the ladder owns
+ * model selection (src/lib/drivers/gemini-ladder.ts).
+ *
+ * `GROQ_SCRIPT_MODEL` is what RENDER falls back to when the whole ladder is
+ * spent. It is the model this stage ran on until now, so the fallback is a
+ * return to a known-good path rather than an untested one, and the audit
+ * package records which provider actually wrote the script.
+ */
+const SCRIPT_MODEL = LADDER_PLACEHOLDER_MODEL;
+export const GROQ_SCRIPT_MODEL = "openai/gpt-oss-120b";
 const PROMPT_PATH = join(process.cwd(), "prompts", "script.v2.md");
 const DISCOURSE_PROMPT_PATH = join(process.cwd(), "prompts", "script.v3.md");
 
@@ -162,6 +175,7 @@ export async function generateDiscourseScript(
   now: () => number = Date.now,
   promptTemplate: string = loadDiscoursePromptTemplate(),
   traceId: string | null = null,
+  model: string = SCRIPT_MODEL,
 ): Promise<Result<GeneratedScript, DriverError>> {
   const basePrompt = promptTemplate
     .replace("{{signal_title_and_summary}}", signal.title)
@@ -177,7 +191,7 @@ export async function generateDiscourseScript(
         ? basePrompt
         : `${basePrompt}\n\n<previous_attempt_rejected>Your last draft was rejected by the structural gate:\n${lastViolations}\n\nRewrite it. Keep the angle and the research grounding; fix the structure.</previous_attempt_rejected>`;
 
-    const validated = await requestValidatedJson(llm, SCRIPT_MODEL, systemPrompt, DiscourseScriptResponseSchema);
+    const validated = await requestValidatedJson(llm, model, systemPrompt, DiscourseScriptResponseSchema);
     if (!validated.ok) return validated;
 
     const violations = validateBeatStructure(validated.value, targetDurationS);

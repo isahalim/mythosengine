@@ -260,9 +260,11 @@ defect rather than a flake:
    took whichever came first on PATH. It now probes for the filter. ffmpeg's
    error names neither libass nor the filter — it falls back to reading
    `ass=<path>` as an option assignment and says `No option name near`.
-3. **The host was in the repo root.** `right_person.gif` belongs at
+3. **The host was in the repo root.** `right_person.gif` belonged at
    `assets/character/`, so renders had been silently producing v1's look —
-   footage and captions, no host.
+   footage and captions, no host. *(That asset was retired on 2026-09-01 for
+   the 19-action robot character pack; the same degrade-don't-fail behaviour
+   now applies to a missing `assets/character/robot_character_pack/`.)*
 4. **EXPORT.** A 128s render is ~42 MB and KV caps a value at 25 MiB, so the
    whole video was made and then thrown away. Blobs moved to R2 (operator
    direction, which lifts CLAUDE.md's "no R2"), written through the Worker's
@@ -309,11 +311,12 @@ Prerequisites and their failure modes:
 
 | Needs | If missing |
 |---|---|
-| `GROQ_API_KEY` | RESEARCH/SCRIPT/CRITIC cannot run — the pipeline stops and names the variable |
+| `GROQ_API_KEY` | CRITIC cannot run, and neither can the fallback for any Gemini stage — the pipeline stops and names the variable |
 | **ffmpeg built with libass** | RENDER fails with `No such filter: 'ass'`. Homebrew's plain `ffmpeg` 9.0.1 bottle has no libass; `ffmpeg-full` does |
 | `edge_tts` (Python) | TTS fails. `pip install edge-tts` |
 | `assets-library` branch | No footage to draw from in `gameplay` mode; `local-seed` refuses rather than inventing a clip |
-| `GEMINI_API_KEY` | Optional. Narration falls back to Edge TTS and the audit records that it did |
+| `GEMINI_API_KEY` | Optional, and used by two different things. Narration falls back to Edge TTS and the audit records that it did; RESEARCH/SCRIPT/PLAN/EDIT all fall back to Groq exactly as they ran before 2026-09-01, and the run says so once at the top. An upgrade must never become a dependency |
+| `uv` / `uvx` + Kinocut | Optional. EDIT is skipped and every clip is used as sourced, flagged in the audit package. `brew install uv` enables it |
 | `PEXELS_API_KEY` | Optional in `gameplay` mode — stage 5 then shows no preview stills and says so. **Required** in `stock_montage` mode, where FOOTAGE fails naming this variable |
 
 To run one video in stock-montage mode without touching the saved directive:
@@ -455,6 +458,26 @@ script repeats them. Three of eight shots illustrated nothing, and no amount
 of tuning the counting fixes that — "which phrase in this beat is a
 *picture*" is not a counting problem.
 
+### PLAN — the picture *and* the host
+
+PLAN emits one shot per beat, and since 2026-09-01 each shot also names which
+of the host's 19 pack actions plays over it. The action vocabulary is rendered
+into the prompt from the pack's own `manifest.json`, so a pack that gains or
+loses an action cannot leave the prompt advertising a clip nobody can play.
+
+The pack's rules are then enforced *deterministically* after the model
+(`src/lib/pipeline/character-timeline.ts`), not trusted to it — a model mostly
+follows them, and "mostly" is not enough for the three whose violation is
+visible: two reactions back to back reads as a twitch, a goodbye wave
+mid-argument reads as the video ending, and an invented action id is a missing
+file at encode time. Every correction is recorded and reaches the audit
+package, so a reviewer can tell what PLAN actually chose from what it was
+given.
+
+On `politics`, `tech`, `science` and `ai`, PLAN is told to prefer `youtube`
+over stock, and SOURCE raises its download budget from 2 to 4 to honour it.
+There is no stock clip of the actual hearing.
+
 ### PLAN
 
 `src/lib/pipeline/shot-plan.ts`, prompt at `prompts/shot-plan.v1.md`, on the
@@ -558,7 +581,11 @@ behind it.
 
 ### What the degraded PLAN path does, and why it looks like that
 
-PLAN is a Groq call and Groq has an 8,000-token-per-minute bucket, so a run
+PLAN runs on the Gemini ladder now, whose free tier allows 5 requests/minute
+per model — which is why RENDER pauses 61 seconds between consecutive Gemini
+stages, so PLAN does not arrive inside the window RESEARCH just spent. When
+the whole ladder is exhausted it falls back to Groq, and Groq has an
+8,000-token-per-minute bucket, so a run
 that has already spent RESEARCH, SCRIPT and CRITIC can find PLAN rate-limited
 — which happened on the first day it existed. The fallback therefore matters
 as much as the stage, and it took three attempts to get right:

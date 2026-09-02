@@ -58,7 +58,14 @@ people disagreeing, and costs half as much to make.
 She appears in **every** video regardless of topic. She is the show's
 identity, so her profile is fixed content, not per-video generation.
 
-- **Asset:** `right_person.gif`, 800×600, 70 frames, 5.6s loop.
+> **Superseded 2026-09-01** (operator direction). The host is now the 19-action
+> `assets/character/robot_character_pack/`, cut per scene by PLAN — see
+> CLAUDE.md and ARCHITECTURE.md §5.7. Everything below describes the single
+> chroma-keyed GIF it replaced, and is kept because the measurements are the
+> reason the new pack's alpha channel matters: there is no key any more, so
+> there is no tolerance window to get wrong.
+
+- **Asset:** `right_person.gif`, 800×600, 70 frames, 5.6s loop. *(Retired.)*
 - **Background removal:** measured, not guessed. The background is a
   perfectly flat `#e5505c` at every corner; her face is `#e48080` — the same
   red channel, 48/36 apart in green/blue. `colorkey=0xe5505c:0.10:0.0`
@@ -448,10 +455,12 @@ directive's `voice_pool`, written for v1's anonymous narrator. A fallback
 video therefore has her face and a different voice. The audit package records
 what actually spoke; the fix is a host-voice setting in the console.
 
-**Blocked:** `right_person.gif` is not in the repository or on
-`assets-library`. The composite is built and tested against the measured key
-values, but no render can produce a host until that file is committed to
-`assets/character/right_person.gif`.
+**Resolved, then superseded.** The GIF was committed and rendered live, and on
+2026-09-01 it was retired for the robot character pack
+(`assets/character/robot_character_pack/`): 19 separate actions with a real
+8-bit alpha channel, chosen per scene by PLAN. The host is a track now, not a
+looping asset, and neither the chroma key nor the hand-counted frame holds
+survive. See CLAUDE.md and ARCHITECTURE.md §5.7.
 
 ---
 

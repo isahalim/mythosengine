@@ -159,6 +159,26 @@ jobs:
           "$FFMPEG" -version | head -1
           "$BIN_DIR/ffprobe" -version | head -1
 
+      # EDIT drives Kinocut over MCP (src/lib/pipeline/edit.ts), which is a
+      # Python package launched with `uvx`. Deliberately NOT a hard
+      # requirement: EDIT fails soft to "every clip as sourced", so a runner
+      # without uv still renders a complete video and the audit package says
+      # the grade did not run. Failing the job here would trade a working
+      # pipeline for a nicer-looking one.
+      #
+      # Kinocut is warmed rather than merely checked: `uvx` would otherwise
+      # download and build the environment inside the first tool call, where
+      # it counts against that call's timeout.
+      - name: Warm Kinocut (EDIT's MCP server) — optional, never fatal
+        continue-on-error: true
+        run: |
+          if ! command -v uvx >/dev/null; then
+            echo "::warning::uvx not found — EDIT will be skipped and every clip used as sourced. Install with 'brew install uv' to enable it."
+            exit 0
+          fi
+          uvx --from kinocut kino doctor || echo "::warning::kino doctor reported problems — EDIT may degrade."
+          uvx --from kinocut kino --version || true
+
       # One invocation renders one signal end-to-end. The loop is here
       # rather than inside render.ts so that stays true: each video gets a
       # clean process, its own footage claim and its own run rows, and a

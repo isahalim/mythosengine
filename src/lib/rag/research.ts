@@ -4,6 +4,7 @@ import { z } from "zod";
 import type { DriverError, LlmDriver, LlmMessage, ToolDefinition } from "../drivers/types.ts";
 import type { ArticleFetchDriver } from "../drivers/article-fetch.ts";
 import { err, ok, type Result } from "../result.ts";
+import { LADDER_PLACEHOLDER_MODEL } from "../drivers/gemini-ladder.ts";
 import type { Retriever } from "./retriever.ts";
 
 /**
@@ -11,9 +12,9 @@ import type { Retriever } from "./retriever.ts";
  * and SCRIPT, turning one picked signal into a grounded brief the drafting
  * prompt can stand on.
  *
- * Shape, per the operator's directive of 2026-08-30: Groq's own tool-calling
- * is the reasoning core, and the RAG pipeline is wrapped as ordinary
- * functions behind it — `search_discourse` (BM25 over the signals corpus,
+ * Shape, per the operator's directive of 2026-08-30: the model's own
+ * tool-calling is the reasoning core, and the RAG pipeline is wrapped as
+ * ordinary functions behind it — `search_discourse` (BM25 over the signals corpus,
  * src/lib/rag/bm25.ts) and `read_source` (the live fetch,
  * src/lib/drivers/article-fetch.ts). No agent framework is involved: the
  * loop below is thirty lines, and CrewAI/LangGraph would add a dependency
@@ -30,13 +31,36 @@ import type { Retriever } from "./retriever.ts";
  *    degraded path, not a dead one (scripts/pipeline/render.ts) — a
  *    retrieval outage must not cost the day's video.
  *
- * Runs on gpt-oss-20b rather than 120b: quotas are per-model (§10), so the
- * cheaper model keeps the whole 120b daily budget for SCRIPT and CRITIC,
- * and "summarize these five retrieved headlines with citations" is not a
- * task the larger model does better.
+ * **Moved from Groq to Gemini on 2026-09-01** (operator direction), along
+ * with SCRIPT and PLAN; CRITIC stayed behind on Groq so that a second
+ * provider still judges the writing. The move cost one real piece of
+ * design: Gemini's Interactions API cannot replay a tool conversation
+ * statelessly, so the loop below now carries `providerSteps` — an opaque
+ * transcript it never inspects — from each response onto the next request.
+ * That field is why this stage could move at all.
+ *
+ * Retrieval is reranked by the same model before the agent ever sees it
+ * (src/lib/rag/rerank.ts): BM25 finds the candidates, Gemini orders them.
  */
 
-const RESEARCH_MODEL = "openai/gpt-oss-20b";
+/**
+ * RESEARCH runs on the Gemini ladder as of 2026-09-01 (operator direction).
+ *
+ * The placeholder is not a model id: `GeminiLadderDriver` owns model
+ * selection, starting at gemini-3.7-flash and descending only under quota
+ * pressure, and `LlmResponse.modelUsed` reports which rung actually
+ * answered. The brief records that, not this — a reviewer needs to know
+ * which model produced their citations.
+ */
+const RESEARCH_MODEL = LADDER_PLACEHOLDER_MODEL;
+
+/**
+ * What RENDER falls back to when the whole Gemini ladder is spent — the
+ * model this stage ran on until 2026-09-01. Kept on 20b rather than 120b
+ * for the original reason: Groq's quotas are per-model, so RESEARCH's
+ * tool loop stays out of the 120b budget CRITIC still depends on.
+ */
+export const GROQ_RESEARCH_MODEL = "openai/gpt-oss-20b";
 const MAX_TOOL_ITERATIONS = 6;
 const PROMPT_PATH = join(process.cwd(), "prompts", "research.v1.md");
 
@@ -171,7 +195,8 @@ export async function researchSignal(
 
     const call = completion.value.toolCalls?.[0];
     if (!call) {
-      return finalizeBrief(completion.value.content, seen, toolCallsMade, model);
+      // The rung that actually answered, not the one that was asked for.
+      return finalizeBrief(completion.value.content, seen, toolCallsMade, completion.value.modelUsed ?? model);
     }
     if (isLastIteration) {
       // Asked for a brief, reached for a tool anyway. A typed error here is
@@ -184,7 +209,17 @@ export async function researchSignal(
       });
     }
 
-    messages.push({ role: "assistant", content: completion.value.content, toolCalls: [call] });
+    // `providerSteps` is the opaque provider transcript, echoed back
+    // untouched on the next turn. Gemini rejects a tool conversation
+    // reconstructed from `content` + `toolCalls` alone, because its
+    // `thought` steps carry signatures that have to survive the round trip
+    // (see LlmMessage.providerSteps). Groq ignores the field.
+    messages.push({
+      role: "assistant",
+      content: completion.value.content,
+      toolCalls: [call],
+      ...(completion.value.providerSteps === undefined ? {} : { providerSteps: completion.value.providerSteps }),
+    });
 
     let rawArgs: unknown;
     try {

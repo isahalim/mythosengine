@@ -1,0 +1,14 @@
+-- PLAN now chooses which of the host's actions plays over each shot
+-- (operator direction, 2026-09-01), so the plan row has to record it.
+--
+-- Nullable, and deliberately: a plan produced before this column existed
+-- chose no action, and so does the heuristic fallback and the viral path.
+-- NULL means "no action was chosen" and the character timeline applies the
+-- pack default (src/lib/pipeline/character-timeline.ts) — it does not mean
+-- the host was absent.
+--
+-- No CHECK constraint on the value. The valid set is the character pack's
+-- manifest, which is an asset that can gain actions without a migration;
+-- pinning the enum here would make adding one a schema change. The value is
+-- validated against the loaded pack at write time instead.
+ALTER TABLE shot_plans ADD COLUMN character_action TEXT;

@@ -42,7 +42,12 @@ if (failed) {
 }
 
 console.log("\n▶ verify-quotas (warns, never fails)");
-spawnSync("node", ["scripts/verify-quotas.mjs"], { stdio: "inherit" });
+// Through tsx, not bare node: the script dynamically imports
+// src/config/quotas.ts, and node cannot load a .ts file. Under plain node
+// this step threw ERR_UNKNOWN_FILE_EXTENSION on every run — and because it
+// is warn-only, nothing noticed, so the quota-drift check had never actually
+// run. Fixed 2026-09-01 while changing those constants.
+spawnSync("npx", ["tsx", "scripts/verify-quotas.mjs"], { stdio: "inherit" });
 
 if (PENDING.length > 0) {
   console.log("\n--- pending, not yet enforceable (see reasons) ---");

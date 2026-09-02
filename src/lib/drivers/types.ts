@@ -40,6 +40,28 @@ export interface LlmMessage {
   toolCalls?: ToolCall[];
   /** Set on a "tool" message — which call (by id) this content answers. */
   toolCallId?: string;
+  /**
+   * Opaque provider transcript state, echoed back verbatim and never read
+   * by the caller. Copy it from the `LlmResponse` that produced this turn.
+   *
+   * This exists because Gemini's Interactions API is **not** statelessly
+   * replayable the way an OpenAI-shaped `messages` array is. Its responses
+   * interleave `thought` steps carrying a signed `signature`, and a
+   * follow-up request that reconstructs the turn from `content` +
+   * `toolCalls` alone — which is all this interface used to carry — is
+   * rejected outright with `invalid_request`. Measured against the live
+   * API on 2026-09-01: echoing the response's `steps` verbatim succeeds,
+   * dropping the `thought` step fails.
+   *
+   * So the honest shape is an opaque box. A tool loop pushes whatever it
+   * received back onto the next request without interpreting it, `groq.ts`
+   * ignores the field entirely, and neither driver has to know the other
+   * exists. The alternative — teaching every tool loop to speak Gemini's
+   * step vocabulary — would put a provider's wire format in
+   * src/lib/rag/research.ts, which is exactly the leak the driver layer is
+   * here to prevent.
+   */
+  providerSteps?: unknown;
 }
 
 /** JSON-Schema-described function a tool-calling model may choose to invoke (src/server/agent/tools.ts). */
@@ -63,6 +85,20 @@ export interface LlmResponse extends Quota {
   content: string;
   finishReason: string;
   toolCalls?: ToolCall[];
+  /**
+   * This turn's opaque provider state. Push it onto the assistant message
+   * that continues the conversation; see `LlmMessage.providerSteps`.
+   * Undefined from any driver that does not need one, which is every
+   * driver but Gemini.
+   */
+  providerSteps?: unknown;
+  /**
+   * Which model actually answered. Normally `req.model`, but the Gemini
+   * ladder (src/lib/drivers/gemini-ladder.ts) drops a rung on exhaustion,
+   * and the audit package has to record the model that really spoke rather
+   * than the one that was asked for.
+   */
+  modelUsed?: string;
 }
 
 export interface LlmDriver {
@@ -218,36 +254,57 @@ export interface CaptionCue {
  * many consecutive frames for the whole hold, which keeps a little life in
  * her rather than stopping her dead.
  */
-export interface CharacterHold {
+/**
+ * One action of the host, on screen for a span of the video.
+ *
+ * The host is a *track* now, not a single looping asset (operator
+ * direction, 2026-09-01). The robot pack ships 19 separate actions and PLAN
+ * chooses one per scene, so the host is assembled the same way the footage
+ * is: an ordered list of clips, each held for as long as its scene lasts,
+ * concatenated into one stream and composited once.
+ *
+ * This replaced a single GIF stretched by hand-counted frame holds. Those
+ * holds existed only because one 5.6-second loop had to cover a
+ * two-minute narration without reading as a fidget, and they were tied to
+ * frame numbers counted off that one asset — replacing the asset meant
+ * recounting them. Cutting between real actions solves the same problem
+ * with the pack's own material and no magic numbers.
+ */
+export interface CharacterClip {
+  /** Path to the action clip. An alpha MOV from the pack's `mov/` directory. */
+  filePath: string;
+  /** The manifest action id (e.g. `talk_emphatic_loop`) — recorded in the audit package. */
+  actionId: string;
   /**
-   * Where the hold starts, as a 1-based frame number — the way a person
-   * counts frames when they scrub the asset, and the way the operator
-   * specified these. ffmpeg's `loop` filter counts from 1 here too, despite
-   * its documentation reading otherwise (see buildHoldFilter).
+   * Seconds this action is on screen. The clip is looped to fill the span
+   * if it is shorter and cut if it is longer; every clip in the pack is a
+   * seamless loop, so holding one is invisible.
    */
-  atFrame: number;
-  /** How many consecutive frames the hold cycles through. 1 freezes. */
-  frames: number;
-  /** How long the hold lasts on screen, in seconds. */
-  seconds: number;
+  durationS: number;
 }
 
+/**
+ * The host's track for one render.
+ *
+ * **There is no chroma key any more, and that is the point.** The old asset
+ * was a flat `#e5505c` fill behind a face whose red channel matched it
+ * exactly, which left a tolerance window so narrow that 0.14 ate her cheeks
+ * and 0.20 destroyed the face. The robot pack's MOVs carry a real 8-bit
+ * alpha channel, so the key, its similarity, its blend, and the whole class
+ * of "raising this number takes her face with it" bug are simply gone.
+ */
 export interface CharacterOverlay {
-  /** Path to the character loop (a GIF or video file ffmpeg can read). */
-  filePath: string;
-  /** Key colour in ffmpeg's `0xRRGGBB` form. */
-  keyColor: string;
-  /** colorkey similarity. Treat 0.10 as a ceiling for the measured asset. */
-  similarity: number;
-  blend: number;
-  /** Fraction of the output height the character occupies. */
+  /** The ordered action track. Never empty — a render with no actions composites no host at all. */
+  clips: CharacterClip[];
+  /** Fraction of the output height the host occupies. */
   heightRatio: number;
   /**
-   * Beats where she waits, applied to the source loop before it is scaled,
-   * keyed and composited. Omitted or empty means she runs at native speed
-   * and the asset is fed to the encoder untouched.
+   * How far the host floats above the bottom edge, as a fraction of output
+   * height. The previous host was drawn cropped by that edge and sat flush
+   * on it; this pack's character floats clear of all four edges, so a
+   * flush-bottom anchor would plant a floating robot on the floor.
    */
-  holds?: readonly CharacterHold[];
+  bottomMarginRatio: number;
 }
 
 /**

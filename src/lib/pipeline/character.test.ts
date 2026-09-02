@@ -1,144 +1,190 @@
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CHARACTER_ASSET_PATH, CHARACTER_HOLDS, CHARACTER_OVERLAY, resolveCharacterOverlay } from "./character.ts";
-import { buildFilterGraph, buildHoldFilter } from "../drivers/render-ffmpeg.ts";
+import { CHARACTER_BOTTOM_MARGIN_RATIO, CHARACTER_HEIGHT_RATIO, resolveCharacterPack } from "./character.ts";
+import { clipPath, describeActionsForPrompt, isKnownAction, loadCharacterPack, transitionIds } from "./character-pack.ts";
+import { buildCharacterTimeline, defaultTrack } from "./character-timeline.ts";
 
-describe("CHARACTER_OVERLAY", () => {
-  it("keys at the measured ceiling, never above it", () => {
-    // Plan v2 §2: 0.14 begins eating her face, 0.20 destroys it. This
-    // assertion exists so raising the tolerance to chase a fringe fails a
-    // test instead of quietly degrading every video.
-    expect(CHARACTER_OVERLAY.similarity).toBeLessThanOrEqual(0.1);
-    expect(CHARACTER_OVERLAY.keyColor).toBe("0xe5505c");
-    expect(CHARACTER_OVERLAY.blend).toBe(0);
+const REPO_DIR = process.cwd();
+
+/**
+ * The real pack, not a fixture.
+ *
+ * The whole point of this module is that the manifest — a committed asset —
+ * is the source of truth for what the host can do. A test against a
+ * hand-written fixture manifest would pass while the real one was malformed,
+ * which is precisely the failure it should catch.
+ */
+const pack = loadCharacterPack(REPO_DIR);
+
+/** A minimal well-formed pack on disk, for the cases that need a *broken* one. */
+function writePack(manifest: unknown): string {
+  const dir = mkdtempSync(join(tmpdir(), "char-pack-"));
+  mkdirSync(join(dir, "pack"), { recursive: true });
+  writeFileSync(join(dir, "pack", "manifest.json"), JSON.stringify(manifest), "utf8");
+  return dir;
+}
+
+describe("the robot character pack", () => {
+  it("carries the 19 actions the pipeline plans against", () => {
+    expect(pack.clips).toHaveLength(19);
+    expect(pack.pack).toBe("robot_host_character");
+  });
+
+  it("names defaults that actually exist in its own clip list", () => {
+    // A manifest whose default points at a missing clip fails every render
+    // at encode time, one file lookup too late.
+    expect(isKnownAction(pack, pack.defaults.speaking)).toBe(true);
+    expect(isKnownAction(pack, pack.defaults.silent)).toBe(true);
+  });
+
+  it("defaults to a talking action, because this show is continuous narration", () => {
+    expect(pack.byId.get(pack.defaults.speaking)?.mouth_moving).toBe(true);
+    expect(pack.byId.get(pack.defaults.silent)?.mouth_moving).toBe(false);
+  });
+
+  it("resolves every action to an alpha MOV, never the 1-bit GIF", () => {
+    for (const clip of pack.clips) {
+      expect(clipPath(pack, clip.id).endsWith(".mov")).toBe(true);
+    }
+  });
+
+  it("finds its own intro and outro by category rather than by hard-coded id", () => {
+    const { intro, outro } = transitionIds(pack);
+    expect(intro).toBe("wave_hello_intro");
+    expect(outro).toBe("wave_goodbye_outro");
+  });
+
+  it("describes every action for the prompt, so the model's vocabulary matches the pack", () => {
+    const described = describeActionsForPrompt(pack);
+    for (const clip of pack.clips) expect(described).toContain(clip.id);
+  });
+
+  it("throws on an unknown action rather than returning a path nothing can read", () => {
+    expect(() => clipPath(pack, "talk_shrug_loop")).toThrow(/no action/);
   });
 });
 
-describe("resolveCharacterOverlay", () => {
-  it("returns an absolute path when the asset is present", async () => {
-    const repo = await mkdtemp(join(tmpdir(), "character-"));
-    await mkdir(dirname(join(repo, CHARACTER_ASSET_PATH)), { recursive: true });
-    await writeFile(join(repo, CHARACTER_ASSET_PATH), "GIF89a");
-
-    const result = await resolveCharacterOverlay(repo);
-    expect(result.present).toBe(true);
-    if (!result.present) throw new Error("expected present");
-    expect(isAbsolute(result.overlay.filePath)).toBe(true);
-    expect(result.overlay.similarity).toBe(CHARACTER_OVERLAY.similarity);
+describe("resolveCharacterPack", () => {
+  it("resolves the committed pack", async () => {
+    const resolution = await resolveCharacterPack(REPO_DIR);
+    expect(resolution.present).toBe(true);
   });
 
-  it("explains the absence rather than throwing, so the render still ships", async () => {
-    const repo = await mkdtemp(join(tmpdir(), "character-"));
-    const result = await resolveCharacterOverlay(repo);
-    expect(result.present).toBe(false);
-    if (result.present) throw new Error("expected absent");
-    expect(result.reason).toContain(CHARACTER_ASSET_PATH);
-    expect(result.reason).toContain("footage and captions only");
-  });
-});
-
-describe("buildFilterGraph", () => {
-  it("burns captions straight onto the framed footage when there is no character", () => {
-    const graph = buildFilterGraph("/tmp/c.ass", undefined);
-    expect(graph).toBe(
-      "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=30,format=yuv420p[fg];[fg]ass=/tmp/c.ass[v]",
-    );
-    expect(graph).not.toContain("overlay");
+  it("degrades to a hostless render rather than failing when the pack is missing", async () => {
+    const resolution = await resolveCharacterPack(REPO_DIR, join("assets", "character", "not_a_pack"));
+    expect(resolution.present).toBe(false);
+    // Never silent: "why is she not in this one" is not answerable from the
+    // video, so the reason reaches the audit package.
+    if (!resolution.present) expect(resolution.reason).toContain("manifest.json");
   });
 
-  it("does not concat a single-clip footage track", () => {
-    expect(buildFilterGraph("/tmp/c.ass", undefined, 1)).not.toContain("concat");
+  it("degrades rather than throwing when the manifest is malformed", async () => {
+    const dir = writePack({ pack: "broken" });
+    try {
+      const resolution = await resolveCharacterPack(dir, "pack");
+      expect(resolution.present).toBe(false);
+      if (!resolution.present) expect(resolution.reason).toContain("could not be read");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  it("normalizes every clip and concatenates them for a montage", () => {
-    const graph = buildFilterGraph("/tmp/c.ass", undefined, 3);
-    // concat compares size, pixel format, frame rate and sample aspect
-    // across its inputs and errors on any disagreement — which is exactly
-    // what three clips from three photographers will do untouched.
-    expect(graph).toContain("[0:v]scale=1080:1920");
-    expect(graph).toContain("[1:v]scale=1080:1920");
-    expect(graph).toContain("[2:v]scale=1080:1920");
-    expect(graph.match(/fps=30,format=yuv420p/g)).toHaveLength(3);
-    expect(graph).toContain("[c0][c1][c2]concat=n=3:v=1:a=0[fg]");
-  });
-
-  it("reads the character from the input after the clips and the narration, however many clips there are", () => {
-    // 4 clips -> inputs 0-3 are footage, 4 is the narration, 5 is the host.
-    // Getting this wrong composites the narration's cover art, or nothing.
-    expect(buildFilterGraph("/tmp/c.ass", CHARACTER_OVERLAY, 4)).toContain("[5:v]scale=-1:");
-    expect(buildFilterGraph("/tmp/c.ass", CHARACTER_OVERLAY, 1)).toContain("[2:v]scale=-1:");
-  });
-
-  it("still burns the captions last in a montage with a character", () => {
-    const graph = buildFilterGraph("/tmp/c.ass", CHARACTER_OVERLAY, 3);
-    expect(graph.indexOf("concat=")).toBeLessThan(graph.indexOf("overlay="));
-    expect(graph.indexOf("overlay=")).toBeLessThan(graph.indexOf("ass="));
-  });
-
-  it("keys the character and composites her before the captions are burned in", () => {
-    const graph = buildFilterGraph("/tmp/c.ass", CHARACTER_OVERLAY);
-    // Captions last is the only order in which she cannot cover a word —
-    // she is anchored bottom-centre, which is where the captions live.
-    expect(graph.indexOf("overlay=")).toBeLessThan(graph.indexOf("ass="));
-    expect(graph).toContain("colorkey=0xe5505c:0.1:0");
-  });
-
-  it("scales her to the configured share of the frame, preserving aspect ratio", () => {
-    const graph = buildFilterGraph("/tmp/c.ass", { ...CHARACTER_OVERLAY, heightRatio: 0.5 });
-    expect(graph).toContain("scale=-1:960");
-  });
-
-  it("anchors her bottom-centre", () => {
-    expect(buildFilterGraph("/tmp/c.ass", CHARACTER_OVERLAY)).toContain("overlay=(W-w)/2:H-h:shortest=0");
-  });
-
-  it("never lets the character loop truncate the video — the narration decides the length", () => {
-    expect(buildFilterGraph("/tmp/c.ass", CHARACTER_OVERLAY)).toContain("shortest=0");
-  });
-
-  it("escapes a caption path containing a colon, which ffmpeg's filter parser would otherwise split on", () => {
-    expect(buildFilterGraph("/tmp/a:b.ass", CHARACTER_OVERLAY)).toContain("ass=/tmp/a\\:b.ass");
+  it("keeps the host clear of the caption band", () => {
+    // The captions sit at 8% from the bottom; the host floats above them.
+    expect(CHARACTER_BOTTOM_MARGIN_RATIO).toBeGreaterThan(0.08);
+    expect(CHARACTER_HEIGHT_RATIO + CHARACTER_BOTTOM_MARGIN_RATIO).toBeLessThan(1);
   });
 });
 
-describe("CHARACTER_HOLDS", () => {
-  // The asset, measured: 70 frames at 12.5fps.
-  const ASSET_FPS = 12.5;
-  const ASSET_FRAMES = 70;
+describe("buildCharacterTimeline", () => {
+  const scene = (position: number, actionId: string | null, durationS = 4) => ({ position, actionId, durationS });
 
-  it("holds where the operator asked, for as long as they asked", () => {
-    expect(CHARACTER_HOLDS).toEqual([
-      { atFrame: 3, frames: 2, seconds: 5 },
-      { atFrame: 12, frames: 1, seconds: 5 },
-      { atFrame: 28, frames: 1, seconds: 5 },
-    ]);
+  it("gives every composited shot exactly one action, spanning that shot", () => {
+    const { clips } = buildCharacterTimeline({
+      pack,
+      scenes: [scene(0, "talk_neutral_loop", 3), scene(1, "talk_emphatic_loop", 5)],
+    });
+    expect(clips).toHaveLength(2);
+    expect(clips.map((c) => c.durationS)).toEqual([3, 5]);
+    expect(clips.map((c) => c.actionId)).toEqual(["talk_neutral_loop", "talk_emphatic_loop"]);
   });
 
-  it("cycles at frame 3 and freezes at 12 and 28", () => {
-    // The distinction is the whole point of the first hold: a dead stop
-    // three frames into the loop looks like the video stalled.
-    const [first, ...rest] = CHARACTER_HOLDS;
-    expect(first.frames).toBe(2);
-    expect(rest.every((hold) => hold.frames === 1)).toBe(true);
+  it("substitutes the pack default for an action the pack does not have", () => {
+    const { clips, adjustments } = buildCharacterTimeline({ pack, scenes: [scene(0, "talk_backflip_loop")] });
+    expect(clips[0].actionId).toBe(pack.defaults.speaking);
+    // Recorded, not silently corrected: a model that keeps inventing ids
+    // should be visible to a reviewer.
+    expect(adjustments[0]).toContain("talk_backflip_loop");
   });
 
-  it("fits the asset it was counted against", () => {
-    // This is the guard on swapping the loop for a different one: every
-    // hold has to land inside it, and none may overlap.
-    const result = buildHoldFilter(CHARACTER_HOLDS, ASSET_FPS, ASSET_FRAMES);
-    expect(result.ok).toBe(true);
+  it("fills in the default when PLAN chose nothing", () => {
+    const { clips, adjustments } = buildCharacterTimeline({ pack, scenes: [scene(0, null)] });
+    expect(clips[0].actionId).toBe(pack.defaults.speaking);
+    expect(adjustments[0]).toContain("chose no action");
   });
 
-  it("stretches the 5.6s loop to about 20.5s", () => {
-    // 70 frames + 62 + 62 + 60 extra = 254 frames at 12.5fps. She reaches
-    // the end of her cycle roughly a quarter as often, which is the point.
-    const added = CHARACTER_HOLDS.reduce((total, hold) => total + Math.round((hold.seconds * ASSET_FPS) / hold.frames) * hold.frames - hold.frames, 0);
-    expect((ASSET_FRAMES + added) / ASSET_FPS).toBeCloseTo(20.32, 1);
+  it("never chains two reactions", () => {
+    // The pack's own rule, and the one whose violation reads most obviously
+    // as a twitch rather than as a response to anything.
+    const { clips, adjustments } = buildCharacterTimeline({
+      pack,
+      scenes: [scene(0, "surprised_reaction"), scene(1, "shrug_uncertain"), scene(2, "nod_yes_agree")],
+    });
+    expect(clips[0].actionId).toBe("surprised_reaction");
+    expect(clips[1].actionId).toBe(pack.defaults.speaking);
+    // The third is a reaction again, and legal — the one before it is no
+    // longer a reaction, so nothing is being chained.
+    expect(clips[2].actionId).toBe("nod_yes_agree");
+    expect(adjustments.some((a) => a.includes("do not chain"))).toBe(true);
   });
 
-  it("is the spec the overlay actually carries", () => {
-    expect(CHARACTER_OVERLAY.holds).toBe(CHARACTER_HOLDS);
+  it("allows the greeting only on the opening shot", () => {
+    const { clips, adjustments } = buildCharacterTimeline({
+      pack,
+      scenes: [scene(0, "wave_hello_intro"), scene(1, "wave_hello_intro")],
+    });
+    expect(clips[0].actionId).toBe("wave_hello_intro");
+    expect(clips[1].actionId).toBe(pack.defaults.speaking);
+    expect(adjustments.some((a) => a.includes("opening greeting"))).toBe(true);
+  });
+
+  it("refuses a sign-off wave while the narration is still running", () => {
+    // This show narrates to the last frame, so there is no silent tail for
+    // a goodbye to live in — mid-video it reads as the video ending.
+    const { clips, adjustments } = buildCharacterTimeline({
+      pack,
+      scenes: [scene(0, "talk_neutral_loop"), scene(1, "wave_goodbye_outro")],
+      allowOutro: false,
+    });
+    expect(clips[1].actionId).toBe(pack.defaults.speaking);
+    expect(adjustments.some((a) => a.includes("still running"))).toBe(true);
+  });
+
+  it("allows the sign-off on the closing shot when the video ends there", () => {
+    const { clips } = buildCharacterTimeline({
+      pack,
+      scenes: [scene(0, "talk_neutral_loop"), scene(1, "wave_goodbye_outro")],
+      allowOutro: true,
+    });
+    expect(clips[1].actionId).toBe("wave_goodbye_outro");
+  });
+
+  it("makes no adjustments to a plan that already obeys the pack", () => {
+    const { adjustments } = buildCharacterTimeline({
+      pack,
+      scenes: [scene(0, "wave_hello_intro"), scene(1, "talk_both_hands_explain_loop"), scene(2, "surprised_reaction"), scene(3, "talk_emphatic_loop")],
+    });
+    expect(adjustments).toEqual([]);
+  });
+
+  it("returns an empty track for no scenes, rather than inventing one", () => {
+    expect(buildCharacterTimeline({ pack, scenes: [] }).clips).toEqual([]);
+  });
+
+  it("falls back to an all-default track when PLAN produced nothing", () => {
+    const { clips } = defaultTrack(pack, [scene(0, null), scene(1, null)]);
+    expect(clips.every((c) => c.actionId === pack.defaults.speaking)).toBe(true);
   });
 });

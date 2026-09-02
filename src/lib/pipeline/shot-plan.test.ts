@@ -70,7 +70,7 @@ describe("planShots", () => {
       ],
     });
 
-    const result = await planShots(llm, input, "{{script_json}} {{topic}}");
+    const result = await planShots(llm, input, { promptTemplate: "{{script_json}} {{topic}}" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.origin).toBe("model");
@@ -88,7 +88,7 @@ describe("planShots", () => {
       ],
     });
 
-    const result = await planShots(llm, input, "{{script_json}} {{topic}}");
+    const result = await planShots(llm, input, { promptTemplate: "{{script_json}} {{topic}}" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.shots.map((s) => s.query)).toEqual(["empty courtroom gallery", "prison corridor night"]);
@@ -96,7 +96,7 @@ describe("planShots", () => {
   });
 
   it("falls back to the heuristic rather than costing the run its video", async () => {
-    const result = await planShots(failingLlm, input, "{{script_json}} {{topic}}");
+    const result = await planShots(failingLlm, input, { promptTemplate: "{{script_json}} {{topic}}" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.origin).toBe("heuristic");
@@ -105,7 +105,7 @@ describe("planShots", () => {
 
   it("falls back when the model returns too few usable shots to be a montage", async () => {
     const llm = llmReturning({ shots: [{ beat_index: null, intent: "a", query: "maybe", source: "pexels" }] });
-    const result = await planShots(llm, input, "{{script_json}} {{topic}}");
+    const result = await planShots(llm, input, { promptTemplate: "{{script_json}} {{topic}}" });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.origin).toBe("heuristic");
   });
@@ -115,7 +115,7 @@ describe("planShots", () => {
     // montage, so it gets the same filmability rule. It is allowed a single
     // concrete word (a model is not), but never an abstract one — no
     // "maybe", no "perhaps", whatever the frequency count says.
-    const result = await planShots(failingLlm, input, "{{script_json}} {{topic}}");
+    const result = await planShots(failingLlm, input, { promptTemplate: "{{script_json}} {{topic}}" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.shots.length).toBeGreaterThan(0);
@@ -131,7 +131,7 @@ describe("planShots", () => {
       },
     } as unknown as LlmDriver;
 
-    const result = await planShots(watched, { ...input, topic: "viral" }, "{{script_json}} {{topic}}");
+    const result = await planShots(watched, { ...input, topic: "viral" }, { promptTemplate: "{{script_json}} {{topic}}" });
     expect(called).toBe(false);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -224,7 +224,7 @@ describe("the fallback must never be empty, and never be nonsense", () => {
     // the fallback emitted "ever", "there's", "it's", "see" and "gets" —
     // function words simply absent from the denylist, because a denylist
     // cannot enumerate them.
-    const result = await planShots(failingLlm, input, "{{script_json}} {{topic}}");
+    const result = await planShots(failingLlm, input, { promptTemplate: "{{script_json}} {{topic}}" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     for (const shot of result.value.shots) {
@@ -242,7 +242,7 @@ describe("the fallback must never be empty, and never be nonsense", () => {
       ],
       body: "Is it? It is.",
     };
-    const result = await planShots(failingLlm, thin, "{{script_json}} {{topic}}");
+    const result = await planShots(failingLlm, thin, { promptTemplate: "{{script_json}} {{topic}}" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.shots.length).toBeGreaterThanOrEqual(2);
@@ -253,7 +253,7 @@ describe("the fallback must never be empty, and never be nonsense", () => {
   });
 
   it("produces at least one shot for an ordinary script", async () => {
-    const result = await planShots(failingLlm, input, "{{script_json}} {{topic}}");
+    const result = await planShots(failingLlm, input, { promptTemplate: "{{script_json}} {{topic}}" });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.shots.length).toBeGreaterThan(0);
   });
@@ -264,7 +264,7 @@ describe("the fallback must never be empty, and never be nonsense", () => {
     // zero-length. A fallback that did exactly that produced a two-minute
     // video out of a single clip (2026-09-01) — a montage in the plan and
     // not one on screen.
-    const result = await planShots(failingLlm, input, "{{script_json}} {{topic}}");
+    const result = await planShots(failingLlm, input, { promptTemplate: "{{script_json}} {{topic}}" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -274,7 +274,7 @@ describe("the fallback must never be empty, and never be nonsense", () => {
   });
 
   it("renumbers fallback positions contiguously", async () => {
-    const result = await planShots(failingLlm, input, "{{script_json}} {{topic}}");
+    const result = await planShots(failingLlm, input, { promptTemplate: "{{script_json}} {{topic}}" });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.shots.map((s) => s.position)).toEqual(result.value.shots.map((_, i) => i));
   });

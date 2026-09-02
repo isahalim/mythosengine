@@ -30,7 +30,11 @@ export default tseslint.config(
     },
   },
   {
-    files: ["scripts/**/*.mjs"],
+    // Node scripts, and the stub servers/binaries the driver contract tests
+    // spawn as real subprocesses (src/lib/**/__fixtures__). Those are not
+    // application code and never reach a bundle — they exist so a driver is
+    // tested against a process that actually speaks its protocol.
+    files: ["scripts/**/*.mjs", "src/lib/**/__fixtures__/*.mjs"],
     languageOptions: {
       globals: {
         console: "readonly",
