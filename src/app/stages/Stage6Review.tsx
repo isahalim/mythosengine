@@ -179,7 +179,14 @@ export function Stage6Review({ onRestart, onUnauthorized }: Stage6Props) {
           {live.map((item, i) => (
             // No card. The fragments are the shape, and the only thing
             // defining this entry's edge is where its glass stops.
-            <article key={item.id} className="resolve-in flex flex-col gap-3" style={{ animationDelay: `${100 + i * 80}ms` }}>
+            // The open sheet takes the whole row. Its footage table is wider
+            // than a third of the grid, and a table that has to be scrolled
+            // sideways to read a timestamp is not an answer.
+            <article
+              key={item.id}
+              className={`resolve-in flex flex-col gap-3${metadataFor === item.id ? " sm:col-span-2 lg:col-span-3" : ""}`}
+              style={{ animationDelay: `${100 + i * 80}ms` }}
+            >
               {/* Whole glass. The fracture closed — and the fragments are
                   masking this video's own keyword stills. */}
               <div className="float-group float-group--inline mx-auto w-2/3" style={driftStyle(i)}>

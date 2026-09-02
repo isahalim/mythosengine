@@ -93,7 +93,7 @@ export function MetadataPanel({ exportId, onClose, onUnauthorized }: MetadataPan
   const youtubeClips = (data?.clips ?? []).filter((clip) => clip.provider === "youtube");
 
   return (
-    <div className="resolve-in mt-1 rounded-xl border border-hairline bg-ink/40 p-3 backdrop-blur-sm">
+    <div className="resolve-in mt-1 rounded-xl border border-mercury/15 bg-white/40 p-3">
       <div className="flex items-baseline justify-between gap-2">
         <p className="font-mono text-[0.6rem] uppercase tracking-[0.2em] text-bone">metadata</p>
         <Button variant="ghost" className="!px-2.5 !py-1 !text-[0.6rem]" onClick={onClose}>
