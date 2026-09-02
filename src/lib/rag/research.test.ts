@@ -100,6 +100,49 @@ describe("fitToRequestBudget", () => {
 });
 
 describe("researchSignal", () => {
+  it("echoes the provider's own transcript state back on the assistant turn", async () => {
+    // Gemini's Interactions API cannot be replayed from `content` +
+    // `toolCalls`: its responses interleave `thought` steps carrying a
+    // signature, and a follow-up that rebuilds the turn without them is
+    // rejected with a bare `invalid_request`. So whatever a driver hands
+    // back travels forward untouched — see `LlmMessage.providerSteps`.
+    const steps = [{ type: "thought", signature: "sig-abc" }, { type: "function_call", id: "call1", name: "search_discourse" }];
+    const llm = scriptedLlm([{ ...toolCall("search_discourse", { query: "gta" }), providerSteps: steps }, { content: GOOD_BRIEF }]);
+
+    await researchSignal(llm, stubRetriever, stubArticles, SIGNAL, { promptTemplate: PROMPT });
+
+    const assistantTurn = llm.requests[1].messages.find((m) => m.role === "assistant");
+    expect(assistantTurn?.providerSteps).toEqual(steps);
+    // Both replay shapes on the one message: the OpenAI-shaped providers
+    // read `toolCalls` and ignore the box beside it.
+    expect(assistantTurn?.toolCalls).toHaveLength(1);
+  });
+
+  it("leaves providerSteps off entirely for a driver that does not produce one", async () => {
+    // Groq answers every turn without one, and an explicit `undefined` on
+    // the wire is not the same as an absent key.
+    const llm = scriptedLlm([toolCall("search_discourse", { query: "gta" }), { content: GOOD_BRIEF }]);
+
+    await researchSignal(llm, stubRetriever, stubArticles, SIGNAL, { promptTemplate: PROMPT });
+
+    const assistantTurn = llm.requests[1].messages.find((m) => m.role === "assistant");
+    expect(assistantTurn && "providerSteps" in assistantTurn).toBe(false);
+  });
+
+  it("advertises the search ceiling it actually enforces", async () => {
+    // A model told it may ask for 16 and then silently clamped to 8 reasons
+    // about coverage on the number it was told.
+    const seen: number[] = [];
+    const countingRetriever: Retriever = { search: async (_q, limit) => { seen.push(limit); return ok(corpus); }, get: stubRetriever.get };
+    const llm = scriptedLlm([toolCall("search_discourse", { query: "gta", limit: 16 }), { content: GOOD_BRIEF }]);
+
+    await researchSignal(llm, countingRetriever, stubArticles, SIGNAL, { promptTemplate: PROMPT, maxSearchResults: 16 });
+
+    expect(seen).toEqual([16]);
+    const schema = JSON.stringify(llm.requests[0].tools);
+    expect(schema).toContain("1-16");
+  });
+
   it("keeps the request inside the per-request token ceiling Groq enforces", async () => {
     // A request larger than the whole per-minute budget is refused outright
     // with HTTP 413, not queued — "Limit 8000, Requested 8033" cost the

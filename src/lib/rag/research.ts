@@ -36,11 +36,20 @@ import type { Retriever } from "./retriever.ts";
  * (src/lib/rag/rerank.ts): BM25 finds the candidates, the model orders
  * them.
  *
- * This stage spent a few hours on Gemini on 2026-09-01 and was reverted the
- * same day — see `src/config/models.ts`. The reversion took `providerSteps`
- * with it: that field existed only because Gemini's Interactions API
- * cannot replay a tool conversation statelessly, and the loop below is
- * back to the plain OpenAI-shaped replay Groq accepts.
+ * **This function is provider-agnostic and stays that way.** It runs on
+ * whichever `LlmDriver` it is handed, and the three things a provider
+ * changes about RESEARCH — how many turns it may take, how big a request
+ * may be, how many candidates a search may return — are all options. Which
+ * provider is tried first, and what happens when it fails, is decided one
+ * level up in `src/lib/rag/research-provider.ts`; putting it here would
+ * mean this file had to know that Gemini exists.
+ *
+ * The loop replays the conversation two ways at once, and has to. Groq
+ * takes an OpenAI-shaped `messages` array and reconstructs an assistant
+ * turn from `content` + `toolCalls`; Gemini's Interactions API cannot be
+ * replayed that way and needs its own `steps` echoed back verbatim,
+ * signatures included. So each assistant turn carries both, and each driver
+ * reads the half it understands — see `LlmMessage.providerSteps`.
  */
 
 /**
@@ -59,7 +68,16 @@ const PROMPT_PATH = join(process.cwd(), "prompts", "research.v1.md");
  */
 const RESEARCH_MAX_TOKENS = 3072;
 
-/** How many signals one search_discourse call may return. Small on purpose: this text is re-sent on every subsequent iteration, so it is paid for repeatedly. */
+/**
+ * How many signals one `search_discourse` call may return by default.
+ *
+ * Small on purpose *for Groq*: this text is re-sent on every subsequent
+ * iteration, so it is paid for repeatedly against a 7,200-token request
+ * ceiling. It is an option rather than a constant because that reasoning is
+ * a property of the provider, not of the stage — the Gemini attempt has the
+ * intake to look at more candidates at once and fewer turns to do it in
+ * (src/lib/rag/research-provider.ts).
+ */
 const MAX_SEARCH_RESULTS = 8;
 
 /**
@@ -145,16 +163,28 @@ export interface ResearchBrief {
   /** Every tool the agent actually ran, in order — the audit package records this so a reviewer can see what the brief was built from. */
   toolCallsMade: string[];
   /**
-   * How many tool results were dropped to keep the request inside Groq's
-   * per-request token ceiling. Non-zero means the model finished the brief
-   * without all of what it had retrieved — which is a weaker brief, not an
-   * invalid one, and the reviewer is told rather than left to notice.
+   * How many tool results were dropped to keep the request inside this
+   * provider's per-request token ceiling. Non-zero means the model finished
+   * the brief without all of what it had retrieved — which is a weaker
+   * brief, not an invalid one, and the reviewer is told rather than left to
+   * notice.
+   *
+   * Expected to be non-zero on the Groq path with any real conversation, and
+   * expected to stay zero on the Gemini one — not having to drop anything is
+   * the entire reason RESEARCH tries Gemini first.
    */
   toolResultsDropped: number;
   model: string;
 }
 
-const TOOLS: ToolDefinition[] = [
+/**
+ * The tool schemas, built per attempt because `search_discourse`'s advertised
+ * ceiling has to match the one `runTool` actually enforces. A model told it
+ * may ask for 20 and then silently clamped to 8 is being lied to, and it
+ * reasons about coverage on the number it was told.
+ */
+function buildTools(maxSearchResults: number): ToolDefinition[] {
+  return [
   {
     name: "search_discourse",
     description:
@@ -163,7 +193,7 @@ const TOOLS: ToolDefinition[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "Keywords to search for. Plain words work best; this is a keyword index, not a chat box." },
-        limit: { type: "integer", description: `Maximum results, 1-${MAX_SEARCH_RESULTS}.` },
+        limit: { type: "integer", description: `Maximum results, 1-${maxSearchResults}.` },
       },
       required: ["query"],
     },
@@ -178,7 +208,8 @@ const TOOLS: ToolDefinition[] = [
       required: ["signal_id"],
     },
   },
-];
+  ];
+}
 
 const SearchArgsSchema = z.object({ query: z.string().min(1), limit: z.number().int().positive().optional() });
 const ReadArgsSchema = z.object({ signal_id: z.string().min(1) });
@@ -191,8 +222,15 @@ export interface ResearchOptions {
   maxIterations?: number;
   promptTemplate?: string;
   model?: string;
-  /** The per-request token ceiling to fit inside. Overridable so a test can force trimming without building an 8,000-token conversation. */
+  /**
+   * The per-request token ceiling to fit inside. Overridable so a test can
+   * force trimming without building an 8,000-token conversation, and so the
+   * Gemini attempt can be given a ceiling its intake actually justifies
+   * instead of inheriting Groq's 7,200.
+   */
   requestTokenCeiling?: number;
+  /** How many signals one `search_discourse` call may return. Defaults to `MAX_SEARCH_RESULTS`. */
+  maxSearchResults?: number;
 }
 
 /**
@@ -214,6 +252,8 @@ export async function researchSignal(
   const maxIterations = options.maxIterations ?? MAX_TOOL_ITERATIONS;
   const model = options.model ?? RESEARCH_MODEL;
   const template = options.promptTemplate ?? loadPromptTemplate();
+  const maxSearchResults = options.maxSearchResults ?? MAX_SEARCH_RESULTS;
+  const tools = buildTools(maxSearchResults);
 
   const seen = new Map<string, { title: string; url: string; sourceKind: string }>();
   const toolCallsMade: string[] = [];
@@ -256,7 +296,7 @@ export async function researchSignal(
     const completion = await llm.complete({
       model,
       messages,
-      tools: TOOLS,
+      tools,
       toolChoice: "auto",
       maxTokens: RESEARCH_MAX_TOKENS,
       temperature: 0.3,
@@ -279,7 +319,16 @@ export async function researchSignal(
       });
     }
 
-    messages.push({ role: "assistant", content: completion.value.content, toolCalls: [call] });
+    // Both replay shapes on one message: `toolCalls` for the OpenAI-shaped
+    // providers, `providerSteps` for Gemini, which rejects a turn rebuilt
+    // without its signed `thought` steps. Undefined from every driver that
+    // does not need one, and ignored by every driver that does not read it.
+    messages.push({
+      role: "assistant",
+      content: completion.value.content,
+      toolCalls: [call],
+      ...(completion.value.providerSteps === undefined ? {} : { providerSteps: completion.value.providerSteps }),
+    });
 
     let rawArgs: unknown;
     try {
@@ -289,7 +338,7 @@ export async function researchSignal(
     }
 
     toolCallsMade.push(call.name);
-    const toolResult = await runTool(call.name, rawArgs, retriever, articles, seen);
+    const toolResult = await runTool(call.name, rawArgs, retriever, articles, seen, maxSearchResults);
     messages.push({ role: "tool", content: JSON.stringify(toolResult), toolCallId: call.id });
   }
 
@@ -307,12 +356,13 @@ async function runTool(
   retriever: Retriever,
   articles: Pick<ArticleFetchDriver, "fetchArticle">,
   seen: Map<string, { title: string; url: string; sourceKind: string }>,
+  maxSearchResults: number,
 ): Promise<unknown> {
   if (name === "search_discourse") {
     const args = SearchArgsSchema.safeParse(rawArgs);
     if (!args.success) return { error: "invalid_arguments", issues: args.error.issues };
 
-    const hits = await retriever.search(args.data.query, Math.min(args.data.limit ?? 5, MAX_SEARCH_RESULTS));
+    const hits = await retriever.search(args.data.query, Math.min(args.data.limit ?? 5, maxSearchResults));
     if (!hits.ok) return { error: hits.error.kind, message: hits.error.message };
 
     for (const hit of hits.value) seen.set(hit.signalId, { title: hit.title, url: hit.url, sourceKind: hit.sourceKind });

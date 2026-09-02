@@ -62,15 +62,32 @@ export const QUOTAS = {
    * fits.
    */
   gemini: {
-    /*
-     * The text models' limits used to be recorded here, for the few hours
-     * on 2026-09-01 that Gemini drove the reasoning stages. **5 requests
-     * per minute, per model** is the number that ended that: RESEARCH's
-     * tool loop alone can spend six, and the first live run peaked at 6/5
-     * on gemini-3.7-flash and lost the render. They are gone rather than
-     * kept for reference — nothing budgets against them any more, and a
-     * quota constant no code reads is a quota nobody notices going stale.
+    /**
+     * The **text** models' free-tier limits, read off the operator's own AI
+     * Studio rate-limit page on 2026-09-01 — measured, not taken from a
+     * pricing page. Deleted with the reasoning split later that day and
+     * restored on 2026-09-02, when RESEARCH's first attempt went back to
+     * Gemini (src/lib/rag/research-provider.ts). Something budgets against
+     * them again, which is the only reason they are here.
+     *
+     * **5 requests per minute** is the number that ended the 2026-09-01
+     * experiment: RESEARCH's tool loop can spend six, and the first live
+     * run peaked at 6/5 on gemini-3.7-flash and lost the render. It is also
+     * why the Gemini attempt is capped at four turns
+     * (`GEMINI_RESEARCH_MAX_ITERATIONS`) rather than paced up against the
+     * ceiling — four requests never reach the limit, so there is nothing to
+     * wait for and nothing to lose a render to. The limiter built from this
+     * number is a guard against two renders inside one minute, not the
+     * mechanism that keeps a single render legal.
+     *
+     * The limits are per model, which is what a ladder would have exploited.
+     * There is deliberately no ladder: descending one mid-tool-loop would
+     * hand the next model the previous model's signed `thought` steps, and
+     * whether that is accepted is untested (operator decision, 2026-09-02).
+     * Groq is the fallback instead, and it is known to work.
      */
+    textRequestsPerMinute: 5,
+    textTokensPerDay: 250_000,
     ttsRequestsPerMinute: 3,
     ttsTokensPerMinute: 10_000,
     ttsRequestsPerDay: 10,

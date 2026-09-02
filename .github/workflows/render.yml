@@ -275,10 +275,18 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          # Optional. Absent, TTS runs on Edge — the default path, which
+          # Optional, and it buys two separate things.
+          #
+          # Narration: absent, TTS runs on Edge — the default path, which
           # emits word timings natively and needs no ALIGN call. Present, the
           # narration is upgraded to Gemini within its 10-requests-per-day
           # budget (src/lib/pipeline/tts-select.ts).
+          #
+          # RESEARCH: present, the stage's first attempt runs on
+          # gemini-3.7-flash, capped at four turns, and falls back to Groq on
+          # any failure (src/lib/rag/research-provider.ts). Absent, RESEARCH
+          # is simply the Groq path it has always been — an upgrade must not
+          # become a dependency.
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # Required only by the stock-montage footage mode
           # (src/lib/footage/stock.ts). A gameplay run never reads it, and a

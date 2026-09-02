@@ -21,10 +21,10 @@ import { readGeminiTtsBudget, recordGeminiTtsAttempt, settleGeminiTtsAttempt } f
 import { CHARACTER_BOTTOM_MARGIN_RATIO, CHARACTER_HEIGHT_RATIO, HOST_GEMINI_VOICE, resolveCharacterPack } from "../../src/lib/pipeline/character.ts";
 import { buildCharacterTimeline } from "../../src/lib/pipeline/character-timeline.ts";
 import { extractKeywords } from "../../src/lib/pipeline/keywords.ts";
-import { researchSignal, type ResearchBrief } from "../../src/lib/rag/research.ts";
+import { type ResearchBrief } from "../../src/lib/rag/research.ts";
+import { researchWithFallback, selectResearchProviders } from "../../src/lib/rag/research-provider.ts";
 import { saveResearchBrief } from "../../src/lib/rag/research-store.ts";
 import { SignalsBm25Retriever } from "../../src/lib/rag/retriever.ts";
-import { ArticleFetchDriver } from "../../src/lib/drivers/article-fetch.ts";
 import { critiqueScript } from "../../src/lib/pipeline/critic.ts";
 import { buildCaptionCues } from "../../src/lib/pipeline/captions.ts";
 import { pickTtsRate } from "../../src/lib/pipeline/tts-rate.ts";
@@ -43,7 +43,7 @@ import { PexelsDriver } from "../../src/lib/drivers/pexels.ts";
 import { GroqWhisperDriver } from "../../src/lib/drivers/groq-whisper.ts";
 import { FfmpegRenderDriver } from "../../src/lib/drivers/render-ffmpeg.ts";
 import { createGroqDriverFromEnv, createGroqLimiter } from "../../src/lib/drivers/resolve-groq-driver.ts";
-import { GROQ_REASONING_MODEL } from "../../src/config/models.ts";
+import { GEMINI_RESEARCH_MODEL, GROQ_REASONING_MODEL } from "../../src/config/models.ts";
 import { RerankingRetriever } from "../../src/lib/rag/rerank.ts";
 import { editClips, type EditableClip } from "../../src/lib/pipeline/edit.ts";
 import { generateUploadMetadata } from "../../src/lib/pipeline/upload-metadata.ts";
@@ -200,10 +200,10 @@ async function main(): Promise<void> {
   const chosenSignal = pickedSignal ?? weightedPick;
   if (pickedSignal !== undefined) console.warn(`RUN PICK: rendering the operator's queued ${claimedPick?.topic} pick — ${pickedSignal.title}`);
 
-  // One driver, one model, every reasoning stage and every tool loop:
-  // RESEARCH, reranking, SCRIPT, CRITIC, PLAN and EDIT all run on it. See
-  // src/config/models.ts for which model and why the Gemini split that
-  // briefly sat between them on 2026-09-01 was reverted the same day.
+  // One driver, one model, for reranking, SCRIPT, CRITIC, PLAN and EDIT —
+  // and for RESEARCH whenever its Gemini attempt does not land. See
+  // src/config/models.ts for which model, and why the 2026-09-01 Gemini
+  // split was reverted for every stage but the one below.
   //
   // The single limiter matters as much as the single model. It is the
   // account's pacing, shared by every stage below, so RESEARCH's tool loop
@@ -211,7 +211,7 @@ async function main(): Promise<void> {
   // other into a 429.
   const llm = createGroqDriverFromEnv(env.groqApiKey, createGroqLimiter());
 
-  // ---- RESEARCH (RAG: BM25 retrieval + live source reads, driven by Groq tool-calling) ----
+  // ---- RESEARCH (RAG: BM25 retrieval + live source reads, driven by tool-calling) ----
   // Deliberately not fatal. A retrieval outage, a rate limit, or a model
   // that cannot produce a citable brief costs this render its grounding and
   // nothing else — SCRIPT falls back to writing from the signal title, and
@@ -221,17 +221,29 @@ async function main(): Promise<void> {
   const researchRunId = await startRun(env.db, "research", traceId);
   // BM25 finds the candidates; the model orders them (src/lib/rag/rerank.ts).
   // Reranking is wrapped around the retriever rather than built into it, so
-  // a reranker outage leaves plain BM25 retrieval in place.
+  // a reranker outage leaves plain BM25 retrieval in place. Reranking stays
+  // on Groq even when RESEARCH itself is on Gemini: it is a short,
+  // fixed-size call with nothing to gain from a larger intake, and every
+  // Gemini request it made would come out of the four RESEARCH has.
   const retriever = new RerankingRetriever(new SignalsBm25Retriever(env.db), llm);
-  const articles = new ArticleFetchDriver();
 
-  const researchResult = await researchSignal(llm, retriever, articles, chosenSignal, { model: GROQ_REASONING_MODEL });
+  // Gemini 3.7 Flash first, Groq on any failure (operator direction,
+  // 2026-09-02). Both attempts and their bounds are configured in
+  // src/lib/rag/research-provider.ts; RENDER only decides that RESEARCH is
+  // the stage that gets one.
+  const researchProviders = selectResearchProviders(llm, env.geminiApiKey);
+  if (researchProviders.unavailableReason !== null) console.warn(`RESEARCH: ${researchProviders.unavailableReason}`);
+  const researchOutcome = await researchWithFallback(researchProviders, retriever, chosenSignal);
+  const researchResult = researchOutcome.result;
   let research: ResearchBrief | null = null;
   if (researchResult.ok) {
     research = researchResult.value;
     await saveResearchBrief(env.db, chosenSignal.id, research);
     await finishRun(env.db, researchRunId, "succeeded");
-    console.warn(`RESEARCH: ${research.citations.length} citation(s) from ${research.toolCallsMade.length} tool call(s).`);
+    console.warn(
+      `RESEARCH: ${research.citations.length} citation(s) from ${research.toolCallsMade.length} tool call(s) on ${researchOutcome.provider} (${research.model})` +
+        `${research.toolResultsDropped > 0 ? `, ${research.toolResultsDropped} tool result(s) dropped to fit the request ceiling` : ""}.`,
+    );
   } else {
     await finishRun(env.db, researchRunId, "failed", `${researchResult.error.kind}: ${researchResult.error.message}`);
     console.warn(`RESEARCH failed (${researchResult.error.kind}: ${researchResult.error.message}) — continuing ungrounded.`);
@@ -632,14 +644,21 @@ async function main(): Promise<void> {
           }
         : null,
       edit: { model: edits.model, degradedReason: edits.degradedReason, clips: edits.clips.map(({ position, edited, toolsRun, skippedReason }) => ({ position, edited, toolsRun, skippedReason })) },
-      // Which provider and model actually answered each reasoning stage.
-      // RESEARCH reports the model its brief recorded rather than the one it
-      // was handed, because that is the one whose citations a reviewer is
-      // checking.
+      // Which provider and model actually answered each reasoning stage, and
+      // why it was not the preferred one. Only RESEARCH can report a
+      // fallback: it is the only stage with two providers.
       stages: [
-        { stage: "RESEARCH", provider: "groq" as const, model: research?.model ?? GROQ_REASONING_MODEL },
-        { stage: "SCRIPT", provider: "groq" as const, model: GROQ_REASONING_MODEL },
-        { stage: "PLAN", provider: "groq" as const, model: GROQ_REASONING_MODEL },
+        // The model its brief recorded, not the one it was handed — that is
+        // the one whose citations a reviewer is checking. A failed stage has
+        // no brief to ask, so the provider asked last is the honest answer.
+        {
+          stage: "RESEARCH",
+          provider: researchOutcome.provider,
+          model: research?.model ?? (researchOutcome.provider === "gemini" ? GEMINI_RESEARCH_MODEL : GROQ_REASONING_MODEL),
+          fallbackReason: researchOutcome.fallbackReason,
+        },
+        { stage: "SCRIPT", provider: "groq" as const, model: GROQ_REASONING_MODEL, fallbackReason: null },
+        { stage: "PLAN", provider: "groq" as const, model: GROQ_REASONING_MODEL, fallbackReason: null },
       ],
       originalityScore: critic.originalityScore,
       minOriginalityScore: directive.minOriginalityScore,

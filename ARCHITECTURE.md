@@ -10,8 +10,8 @@
 
 | Service | Permanent free? | Card-free? | Role |
 |---|---|---|---|
-| **Google Gemini**, text models | Yes — **5 requests/minute and 250K tokens/day _per model_** (read off the operator's own AI Studio rate-limit page, 2026-09-01) | **No — removed 2026-09-01** | **Nothing.** Gemini drove RESEARCH, reranking, SCRIPT, PLAN and EDIT for a few hours on 2026-09-01 and the operator reverted it the same day. 5 req/min is below what one render needs — RESEARCH's tool loop alone can spend six — and the first live run peaked at 6/5 on `gemini-3.7-flash`, drew 429s and two 500s, and lost the render at SCRIPT. `GeminiLadderDriver`, `withGroqFallback` and `LlmMessage.providerSteps` were deleted with it. Gemini remains in this system for **TTS only** (row below) |
-| **Groq Cloud** (`openai/gpt-oss-120b`) | Yes — rate-limited, no credit system. ~30 req/min, ~8k tokens/min, ~14.4k req/day, enforced per organization. **Limits are per-model, and the one that binds is tokens-per-day:** 200K for gpt-oss | **Yes** | **Every reasoning stage and every tool loop**, on one model, named once in `src/config/models.ts`: RESEARCH (§5.2.5), retrieval reranking (§5.2.4), SCRIPT, CRITIC, PLAN (§5.4.5), EDIT's Kinocut loop (§5.5), and title/description/hashtag generation. **`openai/gpt-oss-20b` is not used** — RESEARCH and PLAN sat on it until 2026-09-01 to keep their tokens off the 120b model's separate daily budget, and operator direction ended that split, so the whole reasoning path shares one 200K/day. **Not footage acquisition** — that ran a browser agent on `qwen/qwen3.8-27b` (2M TPD) until 2026-08-29 and now makes no model calls at all (§5.0). Groq deprecated `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` on 2026-06-17; the OpenAI open-weight models replaced them everywhere in `src/**` |
+| **Google Gemini**, text models | Yes — **5 requests/minute and 250K tokens/day _per model_** (read off the operator's own AI Studio rate-limit page, 2026-09-01) | **Yes — RESEARCH's first attempt only, since 2026-09-02** | **One stage, four requests.** Gemini drove RESEARCH, reranking, SCRIPT, PLAN and EDIT for a few hours on 2026-09-01 and the operator reverted it the same day: 5 req/min is below what a whole render needs, and the first live run peaked at 6/5 on `gemini-3.7-flash`, drew 429s and two 500s, and lost the render at SCRIPT. It returned on 2026-09-02 for **RESEARCH alone**, capped at four turns so the per-minute ceiling is never approached, with Groq as the fallback on any failure (§5.2.5). `GeminiLadderDriver` and `withGroqFallback` stay deleted — there is no ladder, and the fallback is Groq. Everything else on the reasoning path is Groq |
+| **Groq Cloud** (`openai/gpt-oss-120b`) | Yes — rate-limited, no credit system. ~30 req/min, ~8k tokens/min, ~14.4k req/day, enforced per organization. **Limits are per-model, and the one that binds is tokens-per-day:** 200K for gpt-oss | **Yes** | **Every reasoning stage and every tool loop**, on one model, named once in `src/config/models.ts`: retrieval reranking (§5.2.4), SCRIPT, CRITIC, PLAN (§5.4.5), EDIT's Kinocut loop (§5.5), title/description/hashtag generation, and RESEARCH (§5.2.5) whenever its Gemini attempt does not land — which is the one and only place a second reasoning provider is tried first. **`openai/gpt-oss-20b` is not used** — RESEARCH and PLAN sat on it until 2026-09-01 to keep their tokens off the 120b model's separate daily budget, and operator direction ended that split, so the whole reasoning path shares one 200K/day. **Not footage acquisition** — that ran a browser agent on `qwen/qwen3.8-27b` (2M TPD) until 2026-08-29 and now makes no model calls at all (§5.0). Groq deprecated `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` on 2026-06-17; the OpenAI open-weight models replaced them everywhere in `src/**` |
 | **Microsoft Edge "Read Aloud" TTS**, via the `edge_tts` Python library (LGPL-3.0, `rany2/edge-tts`), invoked as a subprocess | Yes, but **not an official product** — no SLA, can break without notice | **Yes** | Narration voice synthesis + word-level timestamps for captions |
 | **Google Gemini** (`gemini-3.1-flash-tts-preview`, TTS only) | Yes — and **the binding limit is 10 TTS req/day**, per day rather than per run. Also 3 TTS req/min and 10K TTS tokens/min; Pro TTS is not on the free tier at all. Measured from the operator's own AI Studio rate-limit export, 2026-08-31 | **Yes** | The expressive narration *upgrade* over Edge TTS, and **nothing else** — the text models were removed from the reasoning path on 2026-09-01 (row above). One TTS call per video, forced by that daily ceiling. **Edge TTS remains the default path** — Gemini returns no word timings, so it also costs an ALIGN call that Edge does not (plan v2 §4). Added 2026-08-31 on explicit operator instruction |
 | **Cloudflare Workers static assets** | Yes | **Yes** | Hosts the operator console and its API |
@@ -602,22 +602,65 @@ change, unaffected by which acquisition mechanism runs inside that job.
 ### 2. SCORE
 - Engagement-velocity scoring (upvote/comment growth rate, freshness decay), simhash dedupe against the trailing 7-day window.
 
-### 2.5. RESEARCH (Groq `gpt-oss-120b`, tool-calling — RAG)
+### 2.5. RESEARCH (Gemini `gemini-3.7-flash` first, Groq `gpt-oss-120b` on any failure — tool-calling RAG)
 
 Added 2026-08-30 by operator directive. Between SCORE and SCRIPT, the picked
 signal becomes a **grounded brief**: what is actually being said about the
 topic, and which retrieved source supports each claim.
 
-**It moved to Gemini and back on 2026-09-01** (operator direction, both
-ways). The move needed `LlmMessage.providerSteps` — an opaque transcript the
-loop echoed back untouched — because Gemini's Interactions API cannot replay
+**Two providers, one stage** (operator direction, 2026-09-02). RESEARCH is
+the only reasoning stage that is *intake*-bound rather than reasoning-bound:
+on Groq the whole growing tool conversation must fit inside a 7,200-token
+per-request ceiling, and `fitToRequestBudget` gets there by discarding tool
+results the model already fetched. Gemini's intake does not require that, so
+it gets the first attempt. Everything else — reranking, SCRIPT, CRITIC, PLAN,
+EDIT — stays on Groq permanently.
+
+| | Gemini attempt | Groq fallback |
+|---|---|---|
+| Model | `gemini-3.7-flash` | `openai/gpt-oss-120b` |
+| Tool-loop turns | **4** | 6 |
+| Per-request ceiling | 60,000 tok (self-imposed) | 7,200 tok (a real 413) |
+| `read_source` returns | 24,000 chars | 6,000 chars |
+| `search_discourse` returns | 16 candidates | 8 |
+| HTTP retries | **none** (`maxAttempts: 1`) | `fetchWithRetry` default |
+
+**Why this is not the 2026-09-01 arrangement returning.** That one put five
+stages on Gemini and lost a render at SCRIPT. Three things differ:
+
+1. **Four turns, not six.** The free tier meters 5 requests/minute per model.
+   RESEARCH's full loop is six, so the old arrangement crossed the ceiling
+   inside a single stage — it peaked at 6/5. Four cannot reach it, so the
+   attempt never waits on a limiter and never meets a 429. The limiter in
+   `createGeminiResearchDriverFromEnv` guards only the case the cap cannot
+   see: two renders dispatched inside one minute.
+2. **Fall back on _any_ failure.** The deleted `withGroqFallback` fell back
+   only on quota exhaustion, so the two `500 InternalServerError`s that run
+   drew went straight through it. A 500, a 429, a timeout, malformed JSON, a
+   brief that fails schema validation, and a loop that never stops calling
+   tools are now the same event: stop asking Gemini, ask Groq.
+3. **No ladder.** Descending to 3.6 Flash for the remaining turns would buy a
+   separate per-model bucket. Considered and declined 2026-09-02: Gemini tool
+   transcripts carry signed `thought` steps and whether a second model
+   accepts the first's signatures is untested, so the failure would be a bare
+   `invalid_request` appearing only in production.
+
+The Gemini path needs `LlmMessage.providerSteps` — an opaque transcript the
+loop echoes back untouched — because Gemini's Interactions API cannot replay
 a tool conversation statelessly: its responses interleave `thought` steps
 carrying a signed `signature`, and a turn rebuilt from `content` +
-`toolCalls` is rejected with a bare `invalid_request` naming nothing. That
-field went with the revert; this loop is back to the plain OpenAI-shaped
-replay Groq accepts. **It also moved off `gpt-oss-20b`** and onto the same
-120b model as every other stage, so the token budgeting below now shares one
-200K/day rather than borrowing a second model's.
+`toolCalls` is rejected with a bare `invalid_request` naming nothing. The
+loop carries both replay shapes on each assistant turn, and each driver
+reads the half it understands.
+
+Without `GEMINI_API_KEY` this is exactly the Groq path, unchanged and
+unslowed — the same rule that governs the TTS upgrade. **It also moved off
+`gpt-oss-20b`** on 2026-09-01 and onto the same 120b model as every other
+stage, so the token budgeting below shares one 200K/day rather than borrowing
+a second model's.
+
+Which provider actually answered, and why the other did not, is recorded in
+the audit package as `stages[].provider` / `stages[].fallbackReason` (§9).
 
 **Retrieval is reranked before the agent sees it** (`src/lib/rag/rerank.ts`,
 added the same day — "for RAG calling and for ranking too"). BM25
@@ -865,7 +908,7 @@ Checks:
 - Similarity to the last 100 scripts < 0.85 (self-repetition / templating check — flagged, not blocked).
 - A reminder that the synthetic-media disclosure (`status.containsSyntheticMedia`, confirmed against Google's current Data API v3 docs) should be set when the operator uploads manually.
 - Caption/audio duration match within tolerance (flagged if a render's captions run past the narration audio).
-- **Which provider and model actually answered each reasoning stage** — RESEARCH, SCRIPT and PLAN each record the pair. One provider answers all of them today (`src/config/models.ts`), so the export currently repeats itself; it is recorded anyway because a reviewer opening an export months later cannot know which build produced it, and this repo changed that answer twice in one week. "Which model wrote this" is the first thing a reviewer asks about a script that reads oddly.
+- **Which provider and model actually answered each reasoning stage**, and why it was not the preferred one — RESEARCH, SCRIPT and PLAN each record `provider`, `model` and `fallbackReason`. Since 2026-09-02 this genuinely varies between exports rather than repeating itself: RESEARCH tries Gemini first and falls back to Groq on any failure (§5.2.5), so two videos rendered an hour apart can carry briefs from different providers built from different amounts of source text. `fallbackReason` is what makes that legible rather than merely visible — a reviewer reading `groq` with no reason cannot tell a deliberate configuration from a quota failure. "Which model wrote this" is the first thing a reviewer asks about a script that reads oddly.
 - **What EDIT (§5.5.5) did to each clip** — which Kinocut tools ran, whether the clip changed, and why it was left alone if it was not. A clip trimmed to a different moment than the one SOURCE chose is a clip whose footage-provenance window is no longer the whole story, so the two are read together.
 - **Which of the host's actions played over each shot**, and every correction the character timeline had to make to PLAN's choices. Watching the video tells a reviewer the host shrugged over beat four; only this tells them whether PLAN chose that or whether an invented action id was substituted.
 - **The RESEARCH brief (§5.2.5) the script was written from** — its summary, the model that produced it, the tools it actually ran, and every citation with the source's title and URL. A render whose research failed carries `ungrounded: true` and a flag saying the script was written from the signal title alone. This is informational, like everything else here, but it is the piece that changes how much weight a reviewer should give the script's specifics: a grounded script's claims can be checked against the cited sources, and an ungrounded one's cannot.

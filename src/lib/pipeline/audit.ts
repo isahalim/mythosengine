@@ -160,16 +160,31 @@ interface EditProvenance {
 /**
  * Which provider and model actually answered a reasoning stage.
  *
- * One provider answers all of them today (src/config/models.ts), so this
- * currently records the same pair four times over. It is recorded anyway
- * because the audit package's job is to let a reviewer answer "what wrote
- * this?" from the export alone, months later, without knowing which build
- * produced it — and this repo has changed that answer twice in a week.
+ * The audit package's job is to let a reviewer answer "what wrote this?"
+ * from the export alone, months later, without knowing which build produced
+ * it — and this repo has changed that answer three times in a week.
+ *
+ * As of 2026-09-02 the answer genuinely varies between exports rather than
+ * being the same pair repeated: RESEARCH tries Gemini first and falls back
+ * to Groq on any failure (src/lib/rag/research-provider.ts), so two videos
+ * rendered an hour apart can have briefs from different providers, built
+ * from different amounts of source text. `fallbackReason` is what makes
+ * that legible instead of merely visible.
  */
 interface StageProvenance {
   stage: string;
-  provider: "groq";
+  provider: "groq" | "gemini";
   model: string;
+  /**
+   * Why this stage is not on the provider it would have preferred, or null
+   * when nothing was downgraded.
+   *
+   * Only RESEARCH can be non-null today; every other stage has one provider
+   * and no fallback to explain. A reviewer reading "groq" here without a
+   * reason would have no way to tell a deliberate configuration from a
+   * quota failure.
+   */
+  fallbackReason: string | null;
 }
 
 export interface AuditSummaryInput {

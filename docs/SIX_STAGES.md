@@ -330,11 +330,11 @@ Prerequisites and their failure modes:
 
 | Needs | If missing |
 |---|---|
-| `GROQ_API_KEY` | Nothing that reasons can run — RESEARCH, reranking, SCRIPT, CRITIC, PLAN and EDIT are all on it — so the pipeline stops and names the variable |
+| `GROQ_API_KEY` | Nothing that reasons can run — reranking, SCRIPT, CRITIC, PLAN and EDIT are all on it, and RESEARCH falls back to it — so the pipeline stops and names the variable |
 | **ffmpeg built with libass** | RENDER fails with `No such filter: 'ass'`. Homebrew's plain `ffmpeg` 9.0.1 bottle has no libass; `ffmpeg-full` does |
 | `edge_tts` (Python) | TTS fails. `pip install edge-tts` |
 | `assets-library` branch | No footage to draw from in `gameplay` mode; `local-seed` refuses rather than inventing a clip |
-| `GEMINI_API_KEY` | Optional, and narration only since the 2026-09-01 revert. Absent, narration runs on Edge TTS and the audit package records that it did. No reasoning stage reads it — an upgrade must never become a dependency, and this one briefly was |
+| `GEMINI_API_KEY` | Optional, and it buys exactly two things. **Narration:** absent, narration runs on Edge TTS and the audit package records that it did. **RESEARCH's first attempt** (since 2026-09-02): four turns on `gemini-3.7-flash`, falling back to Groq on any failure, because RESEARCH is the one stage bounded by how much source text it can hold. No other reasoning stage reads it — an upgrade must never become a dependency, and this one briefly was |
 | `uv` / `uvx` + Kinocut | Optional. EDIT is skipped and every clip is used as sourced, flagged in the audit package. `brew install uv` enables it |
 | `PEXELS_API_KEY` | Optional in `gameplay` mode — stage 5 then shows no preview stills and says so. **Required** in `stock_montage` mode, where FOOTAGE fails naming this variable |
 
@@ -606,7 +606,11 @@ run that has already spent RESEARCH, SCRIPT and CRITIC can find PLAN rate
 limited, which happened on the first day it existed. (It spent a few hours
 on the Gemini ladder on 2026-09-01, with RENDER pausing 61s between stages
 to stay under 5 requests/minute; the operator reverted that the same day
-after the ceiling cost a render.) The fallback therefore matters as much as
+after the ceiling cost a render.) Since 2026-09-02 a RESEARCH that lands on
+Gemini leaves that bucket — and the 200K/day behind it — untouched by the
+hungriest stage of the run, which makes PLAN's degraded path rarer without
+making it any less necessary: RESEARCH falls back to Groq often enough that
+the contention it was written for is still real. The fallback therefore matters as much as
 the stage, and it took three attempts to get right:
 
 1. **Keyword extraction, unfiltered.** Produced `maybe`, `yet`, `perhaps`.

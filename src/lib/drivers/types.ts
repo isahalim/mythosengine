@@ -52,6 +52,33 @@ export interface LlmMessage {
   toolCalls?: ToolCall[];
   /** Set on a "tool" message — which call (by id) this content answers. */
   toolCallId?: string;
+  /**
+   * Opaque provider transcript state, echoed back verbatim and never read
+   * by the caller. Copy it from the `LlmResponse` that produced this turn.
+   *
+   * This exists because Gemini's Interactions API is **not** statelessly
+   * replayable the way an OpenAI-shaped `messages` array is. Its responses
+   * interleave `thought` steps carrying a signed `signature`, and a
+   * follow-up request that reconstructs the turn from `content` +
+   * `toolCalls` alone — which is all this interface carries otherwise — is
+   * rejected outright with `invalid_request`. Measured against the live API
+   * on 2026-09-01: echoing the response's `steps` verbatim succeeds,
+   * dropping the `thought` step fails.
+   *
+   * Deleted with the Gemini reasoning split on 2026-09-01 and restored on
+   * 2026-09-02, when RESEARCH's first attempt went back to Gemini by
+   * operator direction (src/lib/rag/research-provider.ts). Nothing else
+   * needs it: RESEARCH is the only tool loop that runs on Gemini.
+   *
+   * The honest shape is an opaque box. A tool loop pushes whatever it
+   * received back onto the next request without interpreting it, `groq.ts`
+   * ignores the field entirely, and neither driver has to know the other
+   * exists. The alternative — teaching every tool loop to speak Gemini's
+   * step vocabulary — would put a provider's wire format in
+   * src/lib/rag/research.ts, which is exactly the leak the driver layer is
+   * here to prevent.
+   */
+  providerSteps?: unknown;
 }
 
 /** JSON-Schema-described function a tool-calling model may choose to invoke (src/server/agent/tools.ts). */
@@ -75,6 +102,13 @@ export interface LlmResponse extends Quota {
   content: string;
   finishReason: string;
   toolCalls?: ToolCall[];
+  /**
+   * This turn's opaque provider state. Push it onto the assistant message
+   * that continues the conversation; see `LlmMessage.providerSteps`.
+   * Undefined from any driver that does not need one, which is every
+   * driver but Gemini.
+   */
+  providerSteps?: unknown;
   /**
    * Which model actually answered, when that can differ from `req.model`.
    * Every driver here answers on the model it was asked for, so this is
