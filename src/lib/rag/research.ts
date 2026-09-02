@@ -5,6 +5,7 @@ import type { DriverError, LlmDriver, LlmMessage, ToolDefinition } from "../driv
 import type { ArticleFetchDriver } from "../drivers/article-fetch.ts";
 import { err, ok, type Result } from "../result.ts";
 import { GROQ_REASONING_MODEL } from "../../config/models.ts";
+import { QUOTAS } from "../../config/quotas.ts";
 import type { Retriever } from "./retriever.ts";
 
 /**
@@ -50,8 +51,73 @@ const RESEARCH_MODEL = GROQ_REASONING_MODEL;
 const MAX_TOOL_ITERATIONS = 6;
 const PROMPT_PATH = join(process.cwd(), "prompts", "research.v1.md");
 
+/**
+ * The completion budget for one research turn. Covers the model's reasoning
+ * as well as the brief, and a brief carrying six key points and eight
+ * citations is not small — but it is also subtracted from the per-request
+ * ceiling below, so it is what the conversation has to fit *around*.
+ */
+const RESEARCH_MAX_TOKENS = 3072;
+
 /** How many signals one search_discourse call may return. Small on purpose: this text is re-sent on every subsequent iteration, so it is paid for repeatedly. */
 const MAX_SEARCH_RESULTS = 8;
+
+/**
+ * The largest request this stage may send, in estimated tokens.
+ *
+ * Groq's free tier applies its 8,000 tokens-per-minute ceiling **to a single
+ * request as well as to a minute of them**, and a request bigger than the
+ * whole minute is not slow — it is rejected outright, before any of it runs:
+ *
+ *   HTTP 413 ... "Request too large for model `openai/gpt-oss-120b` ... on
+ *   tokens per minute (TPM): Limit 8000, Requested 8033"
+ *
+ * The rate limiter cannot prevent that. It clamps a demand larger than its
+ * bucket to the bucket and lets the call through, which is correct pacing
+ * behaviour and no defence at all against a payload that is simply too big.
+ * So the conversation is bounded here, where it is built. RESEARCH is the
+ * stage that grows: every tool result is appended and re-sent on every
+ * later turn, and `read_source` returns up to 6,000 characters at a time —
+ * two of those and the render's grounding is gone (2026-09-02).
+ *
+ * The 0.9 matches `QUOTA_SAFETY_FACTOR` in resolve-groq-driver.ts, and for
+ * the same stated reason: `estimatePromptTokens` is a chars/4 floor that
+ * under-reads JSON-heavy tool traffic.
+ */
+const REQUEST_TOKEN_CEILING = Math.floor(QUOTAS.groq.tokensPerMinute * 0.9);
+
+/** Four characters to a token — the same floor `estimatePromptTokens` (groq.ts) uses, so the two cannot disagree about what fits. */
+const CHARS_PER_TOKEN = 4;
+
+/** What a dropped tool result is replaced with, so the transcript stays coherent and the model is told rather than left to wonder. */
+const DROPPED_TOOL_RESULT = JSON.stringify({ note: "this result was dropped to stay inside the request size limit; search again if you still need it" });
+
+/**
+ * Drops the oldest tool results until the conversation fits.
+ *
+ * Oldest first, and tool results only. The system prompt is the
+ * instructions and the first user message is the topic — losing either
+ * produces a confident answer to the wrong question — and the newest
+ * results are the ones the model is currently reasoning about. An assistant
+ * turn that asked for a dropped result keeps its tool call, so the
+ * call/result pairing the wire format requires stays intact.
+ *
+ * Mutates in place and reports how many it dropped, because a brief written
+ * from a trimmed conversation is a brief the audit package should be able
+ * to say that about.
+ */
+export function fitToRequestBudget(messages: LlmMessage[], maxTokens: number, ceiling = REQUEST_TOKEN_CEILING): number {
+  const budgetChars = Math.max(0, ceiling - maxTokens) * CHARS_PER_TOKEN;
+  const total = (): number => messages.reduce((sum, m) => sum + m.content.length, 0);
+  let dropped = 0;
+  for (const message of messages) {
+    if (total() <= budgetChars) break;
+    if (message.role !== "tool" || message.content === DROPPED_TOOL_RESULT) continue;
+    message.content = DROPPED_TOOL_RESULT;
+    dropped++;
+  }
+  return dropped;
+}
 
 const CitationSchema = z.object({
   signal_id: z.string().min(1),
@@ -78,6 +144,13 @@ export interface ResearchBrief {
   citations: ResearchCitation[];
   /** Every tool the agent actually ran, in order — the audit package records this so a reviewer can see what the brief was built from. */
   toolCallsMade: string[];
+  /**
+   * How many tool results were dropped to keep the request inside Groq's
+   * per-request token ceiling. Non-zero means the model finished the brief
+   * without all of what it had retrieved — which is a weaker brief, not an
+   * invalid one, and the reviewer is told rather than left to notice.
+   */
+  toolResultsDropped: number;
   model: string;
 }
 
@@ -118,6 +191,8 @@ export interface ResearchOptions {
   maxIterations?: number;
   promptTemplate?: string;
   model?: string;
+  /** The per-request token ceiling to fit inside. Overridable so a test can force trimming without building an 8,000-token conversation. */
+  requestTokenCeiling?: number;
 }
 
 /**
@@ -142,6 +217,7 @@ export async function researchSignal(
 
   const seen = new Map<string, { title: string; url: string; sourceKind: string }>();
   const toolCallsMade: string[] = [];
+  let toolResultsDropped = 0;
 
   const messages: LlmMessage[] = [
     { role: "system", content: template.replace("{{signal_title}}", signal.title) },
@@ -166,15 +242,23 @@ export async function researchSignal(
       });
     }
 
+    // Bounded here rather than left to the limiter: a request over the
+    // per-request TPM ceiling is refused with a 413, not queued, and the
+    // render loses its grounding for a payload nobody measured.
+    const dropped = fitToRequestBudget(messages, RESEARCH_MAX_TOKENS, options.requestTokenCeiling);
+    if (dropped > 0) {
+      toolResultsDropped += dropped;
+      // Never silent: the brief the model is about to write is missing
+      // something it went and fetched.
+      console.warn(`RESEARCH: dropped ${dropped} tool result(s) to stay inside the ${options.requestTokenCeiling ?? REQUEST_TOKEN_CEILING}-token request ceiling.`);
+    }
+
     const completion = await llm.complete({
       model,
       messages,
       tools: TOOLS,
       toolChoice: "auto",
-      // Same reasoning-token pressure as src/lib/pipeline/request-json.ts:
-      // the budget covers the model's reasoning as well as the brief, and a
-      // brief carrying six key points and eight citations is not small.
-      maxTokens: 3072,
+      maxTokens: RESEARCH_MAX_TOKENS,
       temperature: 0.3,
     });
     if (!completion.ok) return completion;
@@ -182,7 +266,7 @@ export async function researchSignal(
     const call = completion.value.toolCalls?.[0];
     if (!call) {
       // The model that actually answered, not the one that was asked for.
-      return finalizeBrief(completion.value.content, seen, toolCallsMade, completion.value.modelUsed ?? model);
+      return finalizeBrief(completion.value.content, seen, toolCallsMade, toolResultsDropped, completion.value.modelUsed ?? model);
     }
     if (isLastIteration) {
       // Asked for a brief, reached for a tool anyway. A typed error here is
@@ -273,6 +357,7 @@ function finalizeBrief(
   content: string,
   seen: Map<string, { title: string; url: string; sourceKind: string }>,
   toolCallsMade: string[],
+  toolResultsDropped: number,
   model: string,
 ): Result<ResearchBrief, DriverError> {
   let parsed: unknown;
@@ -306,7 +391,7 @@ function finalizeBrief(
     });
   }
 
-  return ok({ summary: validated.data.summary, keyPoints: validated.data.key_points, citations, toolCallsMade, model });
+  return ok({ summary: validated.data.summary, keyPoints: validated.data.key_points, citations, toolCallsMade, toolResultsDropped, model });
 }
 
 /** Models wrap JSON in a fence often enough that refusing one is pedantry, not rigor. */

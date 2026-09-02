@@ -73,6 +73,11 @@ export async function getLatestResearchBrief(db: AppDb, signalId: string): Promi
     keyPoints,
     citations,
     toolCallsMade,
+    // Not a stored column: this describes how one *run* built a brief, and
+    // a brief read back later is being read for its content. Zero is the
+    // honest reading of "the row does not say", and nothing downstream
+    // treats it as a claim that nothing was dropped.
+    toolResultsDropped: 0,
     model: row.model,
     createdAt: row.createdAt,
   };

@@ -41,7 +41,7 @@ describe("rerankPassages", () => {
     const llm: LlmDriver = {
       complete: (req) => {
         asked.push(req.model);
-        return Promise.resolve(ok({ content: JSON.stringify({ ranked_signal_ids: ["a", "b", "c", "d"] }), finishReason: "completed", quotaRemaining: null, tokensUsed: 1 }));
+        return Promise.resolve(ok({ content: JSON.stringify({ ranked_positions: [1, 2, 3, 4] }), finishReason: "completed", quotaRemaining: null, tokensUsed: 1 }));
       },
     };
     await rerankPassages(llm, "prisons", candidates, 4);
@@ -49,13 +49,13 @@ describe("rerankPassages", () => {
   });
 
   it("reorders the candidates into the model's order", async () => {
-    const llm = answering(JSON.stringify({ ranked_signal_ids: ["c", "a", "d", "b"] }));
+    const llm = answering(JSON.stringify({ ranked_positions: [3, 1, 4, 2] }));
     const ranked = await rerankPassages(llm, "prisons", candidates, 4);
     expect(ranked.map((p) => p.signalId)).toEqual(["c", "a", "d", "b"]);
   });
 
   it("returns the same passage objects, so provenance is untouched", async () => {
-    const llm = answering(JSON.stringify({ ranked_signal_ids: ["b", "a", "c", "d"] }));
+    const llm = answering(JSON.stringify({ ranked_positions: [2, 1, 3, 4] }));
     const ranked = await rerankPassages(llm, "prisons", candidates, 4);
     // Reordered, never re-scored or rewritten — a reranker that edited a
     // passage could change what a citation points at.
@@ -65,21 +65,22 @@ describe("rerankPassages", () => {
 
   it("cannot conjure a passage retrieval did not return", async () => {
     // The whole safety property: the model may only reorder, so it can never
-    // introduce a citation `researchSignal` would be unable to verify.
-    const llm = answering(JSON.stringify({ ranked_signal_ids: ["ghost", "a"] }));
+    // introduce a citation `researchSignal` would be unable to verify. With
+    // positions that is a bounds check — 99 names nothing.
+    const llm = answering(JSON.stringify({ ranked_positions: [99, 1] }));
     const ranked = await rerankPassages(llm, "prisons", candidates, 4);
-    expect(ranked.map((p) => p.signalId)).not.toContain("ghost");
+    expect(ranked.map((p) => p.signalId)).toEqual(["a", "b", "c", "d"]);
     expect(ranked).toHaveLength(4);
   });
 
-  it("ignores a repeated id rather than duplicating a passage", async () => {
-    const llm = answering(JSON.stringify({ ranked_signal_ids: ["a", "a", "b"] }));
+  it("ignores a repeated position rather than duplicating a passage", async () => {
+    const llm = answering(JSON.stringify({ ranked_positions: [1, 1, 2] }));
     const ranked = await rerankPassages(llm, "prisons", candidates, 4);
     expect(ranked.map((p) => p.signalId)).toEqual(["a", "b", "c", "d"]);
   });
 
   it("keeps anything the model dropped, at the back in BM25 order", async () => {
-    const llm = answering(JSON.stringify({ ranked_signal_ids: ["d"] }));
+    const llm = answering(JSON.stringify({ ranked_positions: [4] }));
     const ranked = await rerankPassages(llm, "prisons", candidates, 4);
     expect(ranked.map((p) => p.signalId)).toEqual(["d", "a", "b", "c"]);
   });
@@ -113,7 +114,7 @@ describe("rerankPassages", () => {
   });
 
   it("truncates to topK after reordering, not before", async () => {
-    const llm = answering(JSON.stringify({ ranked_signal_ids: ["d", "c", "b", "a"] }));
+    const llm = answering(JSON.stringify({ ranked_positions: [4, 3, 2, 1] }));
     const ranked = await rerankPassages(llm, "prisons", candidates, 2);
     expect(ranked.map((p) => p.signalId)).toEqual(["d", "c"]);
   });
@@ -122,7 +123,7 @@ describe("rerankPassages", () => {
 describe("RerankingRetriever", () => {
   it("asks retrieval for more candidates than the caller wants, then narrows", async () => {
     const inner = fixedRetriever(candidates);
-    const retriever = new RerankingRetriever(inner, answering(JSON.stringify({ ranked_signal_ids: ["c", "b", "a", "d"] })), () => {});
+    const retriever = new RerankingRetriever(inner, answering(JSON.stringify({ ranked_positions: [3, 2, 1, 4] })), () => {});
     const result = await retriever.search("prisons", 2);
     expect(inner.lastTopK).toBe(6);
     expect(result.ok).toBe(true);

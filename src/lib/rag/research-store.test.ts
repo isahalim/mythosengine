@@ -9,7 +9,7 @@ const BRIEF: ResearchBrief = {
   summary: "Rockstar delayed GTA VI and the market reacted.",
   keyPoints: ["Second delay", "Analysts cut targets"],
   citations: [{ signalId: "sig1", claim: "Rockstar confirmed 2027", title: "GTA VI delayed", url: "https://news.example.com/1", sourceKind: "rss" }],
-  toolCallsMade: ["search_discourse", "read_source"],
+  toolResultsDropped: 0, toolCallsMade: ["search_discourse", "read_source"],
   model: "openai/gpt-oss-20b",
 };
 
@@ -39,7 +39,7 @@ describe("research brief persistence", () => {
       summary: BRIEF.summary,
       keyPoints: BRIEF.keyPoints,
       model: "openai/gpt-oss-20b",
-      toolCallsMade: ["search_discourse", "read_source"],
+      toolResultsDropped: 0, toolCallsMade: ["search_discourse", "read_source"],
       createdAt: "2026-08-30T12:00:00.000Z",
     });
     expect(loaded?.citations[0].url).toBe("https://news.example.com/1");

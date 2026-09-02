@@ -46,6 +46,7 @@ import { createGroqDriverFromEnv, createGroqLimiter } from "../../src/lib/driver
 import { GROQ_REASONING_MODEL } from "../../src/config/models.ts";
 import { RerankingRetriever } from "../../src/lib/rag/rerank.ts";
 import { editClips, type EditableClip } from "../../src/lib/pipeline/edit.ts";
+import { generateUploadMetadata } from "../../src/lib/pipeline/upload-metadata.ts";
 import { buildPipelineEnv } from "./env.ts";
 
 const REPO_DIR = process.cwd();
@@ -680,6 +681,22 @@ async function main(): Promise<void> {
     ]);
 
     // ---- EXPORT ----
+    //
+    // The listing the operator pastes into YouTube Studio. One model call,
+    // never fatal: a failure degrades to a listing derived from the script
+    // itself and says so, which is strictly better than what shipped before
+    // this stage existed — a title that was the first 100 characters of the
+    // narration, a description that was its first 500 cut off mid-word, and
+    // no hashtags at all.
+    const uploadMetadata = await generateUploadMetadata(llm, {
+      hook: script.hook,
+      body: script.body,
+      debateQuestion: script.debateQuestion,
+      topic: claimedPick?.topic ?? null,
+    });
+    if (uploadMetadata.degradedReason !== null) console.warn(`METADATA: ${uploadMetadata.degradedReason}`);
+    console.warn(`METADATA: "${uploadMetadata.title}" · ${uploadMetadata.hashtags.length} hashtag(s)`);
+
     const exportRunId = await startRun(env.db, "export", traceId);
     const fileBytes = await readFile(outputPath);
     const exportDriver = env.exportDriver;
@@ -699,9 +716,9 @@ async function main(): Promise<void> {
             ? { voice: HOST_GEMINI_VOICE, rate: null, pitch: null, volume: null }
             : { voice, rate, pitch: "+0Hz", volume: "+0%" },
         auditResult,
-        suggestedTitle: script.hook.slice(0, 100),
-        suggestedDescription: script.body.slice(0, 500),
-        suggestedTags: [],
+        suggestedTitle: uploadMetadata.title,
+        suggestedDescription: uploadMetadata.description,
+        suggestedTags: uploadMetadata.hashtags,
       },
       { export: exportDriver },
     );

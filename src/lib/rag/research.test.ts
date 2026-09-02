@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { DriverError, LlmDriver, LlmRequest, LlmResponse } from "../drivers/types.ts";
+import type { DriverError, LlmDriver, LlmMessage, LlmRequest, LlmResponse } from "../drivers/types.ts";
 import { err, ok, type Result } from "../result.ts";
 import type { Retriever, RetrievedPassage } from "./retriever.ts";
-import { researchSignal } from "./research.ts";
+import { fitToRequestBudget, researchSignal } from "./research.ts";
 import { GROQ_REASONING_MODEL } from "../../config/models.ts";
 
 const PROMPT = "<role>test researcher</role><topic>{{signal_title}}</topic>";
@@ -55,7 +55,79 @@ const GOOD_BRIEF = JSON.stringify({
   ],
 });
 
+describe("fitToRequestBudget", () => {
+  it("drops the oldest tool results first, and never the instructions or the topic", () => {
+    const messages: LlmMessage[] = [
+      { role: "system", content: "instructions" },
+      { role: "user", content: "topic" },
+      { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "read_source", argumentsJson: "{}" }] },
+      { role: "tool", content: "x".repeat(4000), toolCallId: "c1" },
+      { role: "assistant", content: "", toolCalls: [{ id: "c2", name: "read_source", argumentsJson: "{}" }] },
+      { role: "tool", content: "y".repeat(4000), toolCallId: "c2" },
+    ];
+
+    // 2000 tokens of ceiling, 500 reserved for the completion => 6000 chars,
+    // which one of the two 4,000-character results has to go to fit under.
+    const dropped = fitToRequestBudget(messages, 500, 2000);
+
+    expect(dropped).toBe(1);
+    expect(messages[0].content).toBe("instructions");
+    expect(messages[1].content).toBe("topic");
+    // Oldest tool result went; the newest — the one the model is reasoning
+    // about — survived.
+    expect(messages[3].content).not.toContain("xxxx");
+    expect(messages[5].content).toBe("y".repeat(4000));
+    // The assistant turn that asked for the dropped result keeps its tool
+    // call, so the call/result pairing the wire format requires is intact.
+    expect(messages[2].toolCalls).toHaveLength(1);
+  });
+
+  it("does nothing when the conversation already fits", () => {
+    const messages: LlmMessage[] = [{ role: "system", content: "short" }, { role: "tool", content: "also short", toolCallId: "c1" }];
+    expect(fitToRequestBudget(messages, 100, 2000)).toBe(0);
+    expect(messages[1].content).toBe("also short");
+  });
+
+  it("stops once it is under budget rather than emptying the transcript", () => {
+    const messages: LlmMessage[] = [
+      { role: "system", content: "s" },
+      { role: "tool", content: "a".repeat(3000), toolCallId: "c1" },
+      { role: "tool", content: "b".repeat(1000), toolCallId: "c2" },
+    ];
+    fitToRequestBudget(messages, 0, 500); // 2000 chars of budget
+    expect(messages[2].content).toBe("b".repeat(1000));
+  });
+});
+
 describe("researchSignal", () => {
+  it("keeps the request inside the per-request token ceiling Groq enforces", async () => {
+    // A request larger than the whole per-minute budget is refused outright
+    // with HTTP 413, not queued — "Limit 8000, Requested 8033" cost the
+    // 2026-09-02 render its grounding. The limiter cannot prevent that; only
+    // bounding the payload can.
+    const CEILING = 7200; // QUOTAS.groq.tokensPerMinute * 0.9, the real one
+    const fatArticles = { fetchArticle: async (url: string) => ok({ url, text: "z".repeat(12_000), truncated: true }) };
+    const llm = scriptedLlm([
+      toolCall("search_discourse", { query: "GTA VI" }, "c0"),
+      toolCall("read_source", { signal_id: "sig1" }, "c1"),
+      toolCall("read_source", { signal_id: "sig2" }, "c2"),
+      { content: GOOD_BRIEF },
+    ]);
+
+    const result = await researchSignal(llm, stubRetriever, fatArticles, SIGNAL, { promptTemplate: PROMPT, requestTokenCeiling: CEILING });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The brief still landed, and it says it was written from less than
+    // everything the model retrieved.
+    expect(result.value.toolResultsDropped).toBeGreaterThan(0);
+    // Every request the driver was handed fits — that is the property.
+    for (const request of llm.requests) {
+      const chars = request.messages.reduce((sum, m) => sum + m.content.length, 0);
+      expect(chars / 4 + (request.maxTokens ?? 0)).toBeLessThanOrEqual(CEILING);
+    }
+  });
+
   it("defaults to the reasoning model the pipeline actually runs on", async () => {
     const llm = scriptedLlm([toolCall("search_discourse", { query: "GTA VI" }), { content: GOOD_BRIEF }]);
     await researchSignal(llm, stubRetriever, stubArticles, SIGNAL, { promptTemplate: PROMPT });

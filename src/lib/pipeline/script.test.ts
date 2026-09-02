@@ -97,7 +97,7 @@ describe("generateScript", () => {
         summary: "The patch halved a weapon's damage.",
         keyPoints: ["Pro players called it overdue", "Casual players called it a nerf too far"],
         citations: [{ signalId: "sig9", claim: "Pros called it overdue", title: "Pros react", url: "https://x/1", sourceKind: "reddit" }],
-        toolCallsMade: ["search_discourse"],
+        toolResultsDropped: 0, toolCallsMade: ["search_discourse"],
         model: "openai/gpt-oss-20b",
       },
       () => Date.parse("2026-08-28T01:00:00Z"),
@@ -206,7 +206,7 @@ describe("formatResearchBrief", () => {
         { signalId: "a", claim: "Claim one", title: "Title one", url: "https://x/1", sourceKind: "rss" },
         { signalId: "b", claim: "Claim two", title: "Title two", url: "https://x/2", sourceKind: "reddit" },
       ],
-      toolCallsMade: ["search_discourse"],
+      toolResultsDropped: 0, toolCallsMade: ["search_discourse"],
       model: "openai/gpt-oss-20b",
     });
 

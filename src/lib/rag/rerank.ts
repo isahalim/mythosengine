@@ -32,13 +32,34 @@ import type { RetrievedPassage, Retriever } from "./retriever.ts";
 const CANDIDATE_MULTIPLIER = 3;
 const MAX_CANDIDATES = 24;
 
-/** Small: this is one short JSON array of ids, and a bigger budget would only buy longer reasoning on a ranking task. */
-const RERANK_MAX_TOKENS = 1024;
+/**
+ * Room for the model's reasoning plus one short array of small integers.
+ *
+ * It used to be 1024 and the answer used to be a list of **signal ids**,
+ * which are 64-character sha256 hex. Twenty-four of those is ~1,700
+ * characters of output before a single reasoning token, and on 2026-09-02
+ * every one of a render's four RERANK calls came back
+ * `json_validate_failed: max completion tokens reached before generating a
+ * valid document` — the stage silently degraded to BM25 order four times in
+ * one video. Ranking by position (below) removes almost all of that output,
+ * and the budget covers the reasoning that remains.
+ */
+const RERANK_MAX_TOKENS = 1536;
 
-const RerankResponseSchema = z.object({ ranked_signal_ids: z.array(z.string().min(1)) });
+/**
+ * Positions, not ids.
+ *
+ * The model is being asked to *order* a list it was just given, and the
+ * shortest honest way to say "third, then first, then seventh" is `[3, 1,
+ * 7]`. Ids in the answer cost tokens in both directions — in the prompt to
+ * establish them and in the completion to repeat them — and buy nothing: a
+ * position outside the list is rejected by a bounds check exactly as a
+ * hallucinated id was rejected by a map lookup.
+ */
+const RerankResponseSchema = z.object({ ranked_positions: z.array(z.number().int()) });
 
 function buildPrompt(query: string, candidates: readonly RetrievedPassage[]): string {
-  const list = candidates.map((c, i) => `${i + 1}. id=${c.signalId} | ${c.sourceKind} | ${c.title}`).join("\n");
+  const list = candidates.map((c, i) => `${i + 1}. ${c.sourceKind} | ${c.title}`).join("\n");
   return `You are ranking retrieved headlines by how useful each one is for researching a specific topic.
 
 <topic>${query}</topic>
@@ -51,9 +72,9 @@ Order the candidates from most to least useful for writing a grounded, factual b
 
 Judge topical relevance, not word overlap. A headline that shares words with the topic but discusses something else is NOT relevant — that is exactly the mistake the keyword ranking already made, and the reason you are being asked. A headline that reports the actual event, its consequences, or the argument about it is relevant even if it shares no wording with the topic.
 
-Return every id you were given, exactly once, most useful first. Invent nothing: only ids from the list above.
+Return every candidate's NUMBER, exactly once, most useful first. Use only the numbers 1 to ${candidates.length}; invent nothing.
 
-Output JSON only, as: {"ranked_signal_ids": ["...", "..."]}`;
+Output JSON only, as: {"ranked_positions": [3, 1, 7]}`;
 }
 
 /**
@@ -103,25 +124,25 @@ export async function rerankPassages(
     return candidates.slice(0, topK);
   }
 
-  // Only ids that were actually offered, each at most once. A model that
-  // hallucinates an id must not be able to conjure a passage, and one that
-  // repeats an id must not be able to duplicate a citation.
-  const byId = new Map(candidates.map((c) => [c.signalId, c]));
-  const seen = new Set<string>();
+  // Only positions that were actually offered, each at most once. A model
+  // that names a position off the end of the list must not be able to
+  // conjure a passage, and one that repeats a position must not be able to
+  // duplicate a citation. The prompt is 1-based; the array is not.
+  const seen = new Set<number>();
   const ranked: RetrievedPassage[] = [];
-  for (const id of validated.data.ranked_signal_ids) {
-    const passage = byId.get(id);
-    if (passage === undefined || seen.has(id)) continue;
-    seen.add(id);
-    ranked.push(passage);
+  for (const position of validated.data.ranked_positions) {
+    const index = position - 1;
+    if (index < 0 || index >= candidates.length || seen.has(index)) continue;
+    seen.add(index);
+    ranked.push(candidates[index]);
   }
 
   // Anything the model dropped keeps its BM25 position at the back, so a
   // partial answer degrades to "partially reranked" rather than to a
   // silently shorter candidate set.
-  for (const candidate of candidates) {
-    if (!seen.has(candidate.signalId)) ranked.push(candidate);
-  }
+  candidates.forEach((candidate, index) => {
+    if (!seen.has(index)) ranked.push(candidate);
+  });
 
   return ranked.slice(0, topK);
 }
