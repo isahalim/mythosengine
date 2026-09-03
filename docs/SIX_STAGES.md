@@ -344,6 +344,19 @@ and the queue would stop telling the truth about what has left the building.
 The stream route leaves the row alone and serves byte ranges, which is what
 a scrubber needs and what a single sequential download never did.
 
+**The grid carries a clearance buffer, because a card paints well above its
+own layout box** (operator direction, 2026-09-03). `StageFrame`'s 24px gap
+was never enough for it: the glass overlapped the stage's heading at rest and
+cut through it once opened. Measured at 1440x900, as the distance the topmost
+painted glass rises above the grid's top edge — 18px sealed and drifting
+(`float-drift`), 28px hovered (the slab's `scale(1.035)` and `translateZ`),
+46px cracked (`SPREAD.cracked` pushes the top fragments 13% of the pane
+upward) and 60px open — which left the header **-36px** of clearance with a
+card open. `pt-14` covers the worst of those with ~20px to spare, which is
+also where the `.shard--hot` halo lives (a 34px blur that
+`getBoundingClientRect` does not report). It scrolls away with the content:
+it buys the resting view, not a permanent no-go zone.
+
 **One video plays at a time.** Stage 6 is a grid of these, and three
 narrations over each other is not a review surface. Enforced across the page
 (`video[data-shard-player]`) rather than lifted into each caller's state,

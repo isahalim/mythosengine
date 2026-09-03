@@ -171,8 +171,28 @@ export function Stage6Review({ onRestart, onUnauthorized }: Stage6Props) {
     >
       {/* pointer-events-auto: StageFrame's content box is transparent so the
           border fragments stay reachable, and a scroll container has to take
-          the wheel back. Scoped to the column the entries occupy. */}
-      <div className="pointer-events-auto h-full overflow-y-auto">
+          the wheel back. Scoped to the column the entries occupy.
+
+          **pt-14 is a clearance buffer, not a margin** (operator direction,
+          2026-09-03). A card paints well above its own layout box, and
+          `StageFrame`'s 24px gap was never enough for it: the glass was
+          overlapping the stage's heading at rest and cutting through it once
+          opened. Measured at 1440x900, as the distance the topmost painted
+          glass rises above the grid's top edge:
+
+            sealed, drifting   18px   (float-drift, up to --float-y)
+            sealed, hovered    28px   (+ the slab's scale 1.035 / tz 40px)
+            cracked            46px   (+ SPREAD.cracked pushes the top
+                                       fragments 13% of the pane upward)
+            open               60px   (+ SPREAD.open, 16% and tz 44px)
+
+          — which left the header with +6px of clearance at rest and **-36px**
+          with a card open. 56px covers the worst of those with ~20px to
+          spare, which is also where the `.shard--hot` halo lives (a 34px
+          blur that `getBoundingClientRect` does not report). It scrolls away
+          with the content, as it should: this buys the resting view, not a
+          permanent no-go zone. */}
+      <div className="pointer-events-auto h-full overflow-y-auto pt-14">
         {error !== null && (
           <p className="resolve-in mb-3 rounded-xl border border-rose/25 bg-rose/5 px-4 py-2 font-mono text-xs text-rose">{error}</p>
         )}
