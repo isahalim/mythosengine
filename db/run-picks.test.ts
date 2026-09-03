@@ -52,3 +52,50 @@ describe("picks stranded by a killed render", () => {
     expect(await listQueuedPicks(ctx.db)).toHaveLength(0);
   });
 });
+
+describe("claim order", () => {
+  let ctx: ReturnType<typeof createTestDb>;
+
+  beforeEach(async () => {
+    ctx = createTestDb();
+    applyMigrations(ctx.client);
+    await ctx.db.insert(sources).values({ id: "src1", kind: "reddit", url: "http://x" }).run();
+    for (const id of ["stale", "fresh-a", "fresh-b"]) {
+      await ctx.db
+        .insert(signals)
+        .values({ id, sourceId: "src1", canonicalUrl: `http://x/${id}`, title: id, observedAt: "2026-01-01", engagementScore: 1, simhash: id, state: "scored" })
+        .run();
+    }
+  });
+
+  it("renders the story the operator just picked, not a leftover requeued from this morning", async () => {
+    // 2026-09-03 verbatim: a pick from 07:02 whose render failed at SCRIPT
+    // was swept back onto the queue by the invocation's own startup, after
+    // the dispatch had already sized the run to the one story the operator
+    // chose at 20:14 — so FIFO made the leftover and the fresh pick was
+    // never made at all.
+    await queueRunPlan(ctx.client, [{ topic: "politics", signalId: "stale" }], () => Date.parse("2026-09-03T07:02:30.489Z"));
+    await queueRunPlan(ctx.client, [{ topic: "tech", signalId: "fresh-a" }], () => Date.parse("2026-09-03T20:14:44.438Z"));
+
+    const claimed = await claimNextRunPick(ctx.db, "trace-1", "2026-09-03T20:15:00.000Z");
+
+    expect(claimed?.signalId).toBe("fresh-a");
+    // The leftover is not dropped — it is next in line for whichever
+    // invocation finds nothing newer.
+    expect((await listQueuedPicks(ctx.db)).map((pick) => pick.signalId)).toEqual(["stale"]);
+  });
+
+  it("keeps one plan's own picks in the order the operator built them", async () => {
+    await queueRunPlan(
+      ctx.client,
+      [
+        { topic: "tech", signalId: "fresh-a" },
+        { topic: "tech", signalId: "fresh-b" },
+      ],
+      () => Date.parse("2026-09-03T20:14:44.438Z"),
+    );
+
+    expect((await claimNextRunPick(ctx.db, "trace-1", "2026-09-03T20:15:00.000Z"))?.signalId).toBe("fresh-a");
+    expect((await claimNextRunPick(ctx.db, "trace-2", "2026-09-03T20:16:00.000Z"))?.signalId).toBe("fresh-b");
+  });
+});

@@ -301,7 +301,7 @@ CREATE TABLE runs (                          -- observability, same shape as bef
 -- opened its row (observed 2026-09-03). A killed job leaves the row `running`, which
 -- `reapStaleRuns` already sweeps.
 
-CREATE TABLE run_picks (                     -- the operator's guided-run picks (§6); RENDER claims them in order
+CREATE TABLE run_picks (                     -- the operator's guided-run picks (§6); RENDER claims the newest plan first
   id            TEXT PRIMARY KEY,
   plan_id       TEXT NOT NULL,               -- one submission of the run form
   position      INTEGER NOT NULL,            -- the operator's ordering within that plan
@@ -309,8 +309,14 @@ CREATE TABLE run_picks (                     -- the operator's guided-run picks 
   signal_id     TEXT NOT NULL REFERENCES signals(id) ON DELETE CASCADE,
   status        TEXT NOT NULL CHECK (status IN ('queued','claimed','cancelled')),
   claimed_trace_id TEXT, claimed_at TEXT,    -- which run took it
-  created_at    TEXT NOT NULL
+  created_at    TEXT NOT NULL              -- stamped once per plan; claim order is created_at DESC, position ASC
 );
+-- Newest plan first since 2026-09-03. Claiming FIFO made the wrong video: the dispatch
+-- sizes a run from the queue as it stands, and a pick the invocation's own
+-- `releaseStrandedPicks` sweep put back seconds later — a leftover from a render that
+-- died that morning — then outranked the story the operator had chosen 3 seconds
+-- earlier, in a run sized for exactly one video. A leftover is not dropped; it waits
+-- for an invocation that finds nothing newer.
 
 CREATE TABLE audit_log (                     -- append-only; never UPDATE, never DELETE
   id            INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -33,7 +33,8 @@ export interface NewPick {
  * failed (CLAUDE.md: never a multi-step mutation outside a transaction).
  *
  * Returns the plan id. Position is the array order, which is the order the
- * operator chose them in and the order RENDER will claim them.
+ * operator chose them in and the order RENDER will claim them *within this
+ * plan* — across plans it is the newest plan first (`claimNextRunPick`).
  */
 export async function queueRunPlan(rawClient: RawSqlClient, picks: NewPick[], now: () => number = Date.now): Promise<string> {
   const planId = crypto.randomUUID();
@@ -61,6 +62,27 @@ export async function queueRunPlan(rawClient: RawSqlClient, picks: NewPick[], no
  * signal has already been scripted by an earlier run must not be claimable,
  * and checking that separately would reopen the window it closes.
  *
+ * **Newest plan first, then the operator's own order inside it.** This was
+ * `created_at ASC` — plain FIFO — and it made the wrong video. 2026-09-03,
+ * in order: the operator picked a story at 20:14:44.438Z; the dispatch read
+ * a queue holding only that pick 0.3s later and sized the run to one video;
+ * the invocation started at 20:14:47Z, and its own `releaseStrandedPicks`
+ * sweep requeued a pick from 07:02:30Z that morning, whose render had died
+ * at SCRIPT. FIFO then handed the run the older one. The operator watched a
+ * thirteen-hour-old story render in a run they had sized for the story they
+ * had just chosen, which was never going to be made at all.
+ *
+ * That is not what a queue this shape is for. Every entry in it was chosen
+ * by hand, seconds ago, from a list the operator was looking at — so the
+ * newest ask is the one they are waiting for, and a leftover swept back onto
+ * the queue *after the run was sized* is exactly the thing that must give
+ * way to it. The leftover is not dropped: it stays queued, and the next
+ * invocation that finds nothing newer claims it.
+ *
+ * `created_at` is stamped once per plan (`queueRunPlan` above), so a plan's
+ * own picks tie on it and `position ASC` keeps them in the order the
+ * operator built them.
+ *
  * Returns null when the queue is empty, which is the ordinary case: a
  * scheduled RENDER with no operator plan behind it falls back to its own
  * diversity-weighted choice.
@@ -74,7 +96,7 @@ export async function claimNextRunPick(db: AppDb, traceId: string, nowIso: strin
         SELECT p.id FROM run_picks p
         JOIN signals s ON s.id = p.signal_id
         WHERE p.status = 'queued' AND s.state = 'scored'
-        ORDER BY p.created_at ASC, p.position ASC
+        ORDER BY p.created_at DESC, p.position ASC
         LIMIT 1
       )`,
     )
@@ -131,11 +153,18 @@ export async function releaseStrandedPicks(db: AppDb, liveTraceIds: readonly str
   return requeueable.length;
 }
 
-/** Everything still waiting to be rendered, in claim order — what the run view shows as "queued". */
+/**
+ * Everything still waiting to be rendered, in claim order — what the run
+ * view shows as "queued", and what the dispatch counts to size the run.
+ *
+ * The sort is `claimNextRunPick`'s, deliberately: this list is read as "what
+ * gets made next", and a listing ordered differently from the claim would be
+ * a lie about the very next video.
+ */
 export async function listQueuedPicks(db: AppDb): Promise<QueuedPick[]> {
   const rows = await db.select().from(runPicks).where(eq(runPicks.status, "queued")).all();
   return rows
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.position - b.position)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.position - b.position)
     .map((row) => ({
       id: row.id,
       planId: row.planId,
