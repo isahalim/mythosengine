@@ -38,6 +38,19 @@ on:
         description: "How many videos to render in this run (one signal each)."
         required: false
         default: "1"
+      # The run plan this invocation is allowed to draw from
+      # (`run_picks.plan_id`), set by POST /console/dispatch to the plan the
+      # operator submitted seconds earlier. RENDER claims picks from that
+      # plan and nothing else, and makes no video at all once it is empty —
+      # operator direction 2026-09-03: a run must never spend a token on a
+      # story chosen in some earlier session.
+      #
+      # Empty on a hand-triggered or scheduled run, which is the unscoped
+      # path: the queue first, then RENDER's own diversity weighting.
+      plan_id:
+        description: "Run plan whose picks this run may claim. Leave empty for the unscoped queue."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -274,6 +287,8 @@ jobs:
           RENDER_COUNT: ${{ inputs.count }}
           # Empty on a hand-triggered run, and render.ts mints its own then.
           PIPELINE_TRACE_ID: ${{ inputs.trace_id }}
+          # Empty on a hand-triggered run, and the claim is then unscoped.
+          PIPELINE_PLAN_ID: ${{ inputs.plan_id }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}

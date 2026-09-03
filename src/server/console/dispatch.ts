@@ -90,21 +90,35 @@ export async function dispatchRun(db: AppDb, killswitchKv: KvLike, options: Disp
   if (actions === null) return { kind: "queued", runId, note: DISPATCH_NOT_TRIGGERED_NOTE };
 
   /**
-   * How many videos this run should make: exactly the picks the operator
-   * queued and nothing has claimed yet. The workflow renders one signal per
-   * invocation, so it needs to be told how many times to invoke.
+   * **The run is bound to one plan — the newest one on the queue** (operator
+   * direction 2026-09-03), and that plan decides both inputs.
    *
-   * Read here rather than in the workflow because the workflow cannot see
-   * the queue before it starts, and a run that discovered mid-job that it
-   * had five videos to make would have already sized its own timeout for
-   * one. A zero count still dispatches: RENDER falls back to the diversity
-   * weighting when the queue is empty, which is the ordinary scheduled
-   * behaviour and not an error to refuse.
+   * `plan_id` travels down to RENDER, which claims picks from that plan and
+   * nothing else and makes no video once it is empty. Anything queued by an
+   * earlier session stays where it is: it cannot be claimed by this run, so
+   * a story the operator chose hours ago can no longer take the slot — or
+   * the tokens — of the one they just chose. That is exactly what happened
+   * on 2026-09-03 (db/run-picks.ts).
+   *
+   * `count` is that plan's own pick count, because the workflow renders one
+   * signal per invocation and has to be told how many times to invoke. Read
+   * here rather than in the workflow: the workflow cannot see the queue
+   * before it starts, and a run that discovered mid-job that it had five
+   * videos to make would already have sized its timeout for one.
+   *
+   * An empty queue still dispatches, unscoped and once: that is the
+   * scheduled path, where RENDER's diversity weighting is the whole point.
+   * `listQueuedPicks` is newest-plan-first, so its head names the plan.
    */
-  const queued = (await listQueuedPicks(db)).length;
-  const count = Math.max(queued, 1);
+  const queued = await listQueuedPicks(db);
+  const planId = queued[0]?.planId ?? null;
+  const count = planId === null ? 1 : queued.filter((pick) => pick.planId === planId).length;
 
-  const triggered = await actions.dispatchWorkflow({ workflow, ref, inputs: { trace_id: runId, count: String(count) } });
+  const triggered = await actions.dispatchWorkflow({
+    workflow,
+    ref,
+    inputs: { trace_id: runId, count: String(count), plan_id: planId ?? "" },
+  });
   const finishedAt = new Date(now()).toISOString();
 
   if (!triggered.ok) {

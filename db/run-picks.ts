@@ -62,11 +62,19 @@ export async function queueRunPlan(rawClient: RawSqlClient, picks: NewPick[], no
  * signal has already been scripted by an earlier run must not be claimable,
  * and checking that separately would reopen the window it closes.
  *
- * **Newest plan first, then the operator's own order inside it.** This was
+ * **`planId` scopes the claim to one plan, and that is how the console
+ * dispatches** (operator direction 2026-09-03): a run makes the plan the
+ * operator submitted seconds before it started, or it makes nothing. No
+ * key is ever spent on a story chosen in an earlier session — the caller
+ * treats "no claimable pick" as an invocation with nothing to do, rather
+ * than falling back to a weighted pick nobody asked for.
+ *
+ * Unscoped — a hand-triggered or scheduled run — it is **newest plan first,
+ * then the operator's own order inside it.** This was
  * `created_at ASC` — plain FIFO — and it made the wrong video. 2026-09-03,
  * in order: the operator picked a story at 20:14:44.438Z; the dispatch read
  * a queue holding only that pick 0.3s later and sized the run to one video;
- * the invocation started at 20:14:47Z, and its own `releaseStrandedPicks`
+ * the invocation started at 20:14:47Z, and its own stranded-pick
  * sweep requeued a pick from 07:02:30Z that morning, whose render had died
  * at SCRIPT. FIFO then handed the run the older one. The operator watched a
  * thirteen-hour-old story render in a run they had sized for the story they
@@ -87,19 +95,33 @@ export async function queueRunPlan(rawClient: RawSqlClient, picks: NewPick[], no
  * scheduled RENDER with no operator plan behind it falls back to its own
  * diversity-weighted choice.
  */
-export async function claimNextRunPick(db: AppDb, traceId: string, nowIso: string): Promise<QueuedPick | null> {
-  const rows = await db
-    .update(runPicks)
-    .set({ status: "claimed", claimedTraceId: traceId, claimedAt: nowIso })
-    .where(
-      sql`${runPicks.id} = (
+export async function claimNextRunPick(db: AppDb, traceId: string, nowIso: string, planId: string | null = null): Promise<QueuedPick | null> {
+  // Two statements rather than one with an `OR ? IS NULL` clause: the plan
+  // filter changes which rows are even candidates, and a scoped claim that
+  // silently matched an unscoped row because a bind slipped would be the
+  // exact failure this whole change exists to prevent. Both keep the pick
+  // inside a single UPDATE, which is the part that must be atomic.
+  const candidate =
+    planId === null
+      ? sql`(
         SELECT p.id FROM run_picks p
         JOIN signals s ON s.id = p.signal_id
         WHERE p.status = 'queued' AND s.state = 'scored'
         ORDER BY p.created_at DESC, p.position ASC
         LIMIT 1
-      )`,
-    )
+      )`
+      : sql`(
+        SELECT p.id FROM run_picks p
+        JOIN signals s ON s.id = p.signal_id
+        WHERE p.status = 'queued' AND s.state = 'scored' AND p.plan_id = ${planId}
+        ORDER BY p.position ASC
+        LIMIT 1
+      )`;
+
+  const rows = await db
+    .update(runPicks)
+    .set({ status: "claimed", claimedTraceId: traceId, claimedAt: nowIso })
+    .where(sql`${runPicks.id} = ${candidate}`)
     .returning()
     .all();
 
@@ -119,21 +141,29 @@ export async function claimNextRunPick(db: AppDb, traceId: string, nowIso: strin
 }
 
 /**
- * Returns picks claimed by a run that is no longer alive.
+ * Retires picks claimed by a run that is no longer alive: a render that
+ * failed, or one killed outright by an Actions timeout, a Ctrl-C, a laptop
+ * closing. They are **cancelled, not requeued** (operator direction
+ * 2026-09-03).
  *
- * A render killed mid-flight — an Actions job timeout, a Ctrl-C, a laptop
- * closing — leaves its pick `claimed` forever, and the operator's queued
- * story silently never gets made. `reapStaleRuns` already does exactly this
- * for `runs` rows; picks had no equivalent, and the gap showed up the first
- * time a viral render was killed mid-download: the next run found an empty
- * queue, fell back to the diversity-weighted pick, and made a video about
- * something the operator had not chosen (2026-09-01).
+ * This is a deliberate reversal. Requeueing was added 2026-09-01 so a killed
+ * render's story would not be silently lost — and it was the mechanism
+ * behind the wrong video of 2026-09-03: a pick from that morning, whose
+ * render had died at SCRIPT, came back onto the queue in the middle of a run
+ * the operator had just started for a different story, and took its only
+ * slot. The keys were spent on a story chosen in an earlier session.
  *
- * Scoped to picks whose signal is still `scored` — a pick whose story has
- * since been written is genuinely spent, and requeueing it would make a
- * second video about the same thing.
+ * Cancelling is what the operator asked for instead: a failed run is
+ * reported as failed on stage 4, its pick leaves the queue, and re-choosing
+ * that story is one click on a list this system was already ranking for
+ * them. Nothing is silently retried, and no token is ever spent on a pick
+ * whose run the operator has already watched fail.
+ *
+ * Still scoped to picks whose signal is still `scored`: a pick whose story
+ * has since been written was genuinely made, whatever happened afterwards,
+ * and recording that as `cancelled` would be false.
  */
-export async function releaseStrandedPicks(db: AppDb, liveTraceIds: readonly string[]): Promise<number> {
+export async function retireStrandedPicks(db: AppDb, liveTraceIds: readonly string[]): Promise<number> {
   const claimed = await db.select().from(runPicks).where(eq(runPicks.status, "claimed")).all();
   const live = new Set(liveTraceIds);
   const stranded = claimed.filter((row) => row.claimedTraceId === null || !live.has(row.claimedTraceId));
@@ -142,15 +172,11 @@ export async function releaseStrandedPicks(db: AppDb, liveTraceIds: readonly str
   const signalRows = await db.select().from(signals).where(inArray(signals.id, stranded.map((row) => row.signalId))).all();
   const stillScored = new Set(signalRows.filter((row) => row.state === "scored").map((row) => row.id));
 
-  const requeueable = stranded.filter((row) => stillScored.has(row.signalId)).map((row) => row.id);
-  if (requeueable.length === 0) return 0;
+  const retireable = stranded.filter((row) => stillScored.has(row.signalId)).map((row) => row.id);
+  if (retireable.length === 0) return 0;
 
-  await db
-    .update(runPicks)
-    .set({ status: "queued", claimedTraceId: null, claimedAt: null })
-    .where(inArray(runPicks.id, requeueable))
-    .run();
-  return requeueable.length;
+  await db.update(runPicks).set({ status: "cancelled" }).where(inArray(runPicks.id, retireable)).run();
+  return retireable.length;
 }
 
 /**

@@ -7,7 +7,7 @@ import { execAtomic } from "../../db/client.ts";
 import { renders, runs, scripts, signals } from "../../db/schema.ts";
 import { finishRun, PIPELINE_STAGE, reapStaleRuns, startRun } from "../../db/runs.ts";
 import { reapExpiredExports } from "../../db/exports-reap.ts";
-import { claimNextRunPick, releaseStrandedPicks } from "../../db/run-picks.ts";
+import { claimNextRunPick, retireStrandedPicks } from "../../db/run-picks.ts";
 import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
 import { getSettings } from "../../src/server/console/settings.ts";
 import { DEFAULT_DIRECTIVE, DEFAULT_TARGET_DURATION_S } from "../../src/server/console/directive-schema.ts";
@@ -89,17 +89,16 @@ async function main(): Promise<void> {
   const reaped = await reapStaleRuns(env.db);
   if (reaped > 0) console.warn(`Reaped ${reaped} abandoned run row(s) left behind by a killed job.`);
 
-  // A render killed mid-flight leaves its run pick `claimed` forever, and
-  // the operator's queued story then silently never gets made — the next run
-  // finds an empty queue and falls back to its own diversity-weighted
-  // choice, producing a video about something nobody asked for. Observed the
-  // first time a viral render was killed mid-download (2026-09-01).
+  // A render that failed or was killed leaves its run pick `claimed`
+  // forever. Those picks are cancelled, never put back on the queue
+  // (operator direction 2026-09-03 — db/run-picks.ts says why the earlier
+  // requeue was worse than the loss it was fixing).
   //
   // Runs alive right now, AFTER the reaper above has failed the abandoned
   // ones, are the only traces whose picks are genuinely being worked on.
   const liveTraces = [...new Set((await env.db.select().from(runs).where(eq(runs.status, "running")).all()).map((row) => row.traceId))];
-  const released = await releaseStrandedPicks(env.db, liveTraces);
-  if (released > 0) console.warn(`Requeued ${released} run pick(s) stranded by a killed render.`);
+  const retiredPicks = await retireStrandedPicks(env.db, liveTraces);
+  if (retiredPicks > 0) console.warn(`Cancelled ${retiredPicks} run pick(s) left behind by a render that failed or was killed.`);
 
   // Same class of leftover, third door: a killed render leaves its shot rows
   // mid-flight and stage 5 shows them as `downloading` forever.
@@ -228,16 +227,40 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
   // take the same pick, and claimed *before* anything else in this run
   // spends a token. A queued pick outranks the diversity weighting for this
   // one invocation only: the operator chose this story deliberately, from a
-  // list this system ranked for them. With an empty queue — the ordinary
-  // scheduled case — nothing changes.
-  const claimedPick = await claimNextRunPick(env.db, traceId, new Date().toISOString());
+  // list this system ranked for them.
+  //
+  // `PIPELINE_PLAN_ID` binds the invocation to one plan — the console sets
+  // it to the plan the operator submitted seconds before the dispatch — and
+  // an unset one is the scheduled or hand-triggered case, which reads the
+  // queue and then falls back to the weighting, as it always has.
+  const planId = process.env.PIPELINE_PLAN_ID?.trim() || null;
+  const claimedPick = await claimNextRunPick(env.db, traceId, new Date().toISOString(), planId);
+
+  // A scoped run whose plan has nothing left to claim makes NOTHING
+  // (operator direction 2026-09-03). The fallback below would otherwise
+  // render the diversity-weighted signal — a story chosen by no one, paid
+  // for out of a daily token budget that holds about two renders. This is
+  // the ordinary end of a two-video run's third invocation and of a plan
+  // the operator cancelled, so it is `skipped`, not a failure. Nothing has
+  // been spent at this point: the claim is the first thing in the stage.
+  if (planId !== null && claimedPick === null) {
+    console.warn(`RUN PLAN ${planId} has no queued pick left to claim — this invocation makes nothing.`);
+    return { kind: "skipped", reason: "plan_exhausted" };
+  }
+
   const pickedSignal = claimedPick === null ? undefined : scoredSignals.find((s) => s.id === claimedPick.signalId);
   if (claimedPick !== null && pickedSignal === undefined) {
     // The claim succeeded (the signal was `scored` inside that statement)
     // but it is not in this run's candidate list — the two reads are
-    // seconds apart and WATCH runs on its own schedule. Say so rather than
-    // silently falling back: a pick that vanished is something the operator
-    // will otherwise wait for and never see.
+    // seconds apart and WATCH runs on its own schedule.
+    //
+    // Scoped, that is the end of the invocation: the operator asked for
+    // this story and the weighted fallback is not a smaller version of it,
+    // it is a different video. Unscoped, the fallback is the whole point.
+    if (planId !== null) {
+      console.warn(`RUN PICK ${claimedPick.id} named signal ${claimedPick.signalId}, which is no longer among the scored candidates — this invocation makes nothing.`);
+      return { kind: "skipped", reason: "pick_signal_gone" };
+    }
     console.warn(`RUN PICK ${claimedPick.id} named signal ${claimedPick.signalId}, which is no longer among the scored candidates — falling back to the weighted pick.`);
   }
   const chosenSignal = pickedSignal ?? weightedPick;

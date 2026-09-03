@@ -109,12 +109,45 @@ describe("dispatchRun", () => {
     expect((calls[0].body as { inputs: { count: string } }).inputs.count).toBe("3");
   });
 
-  it("dispatches one render even with an empty queue — RENDER falls back to the diversity weighting", async () => {
+  it("binds the run to the plan just submitted, and sizes it to that plan alone", async () => {
+    // Operator direction 2026-09-03: a run makes the plan the operator just
+    // submitted and nothing else, so an older queued pick can never take its
+    // slot or its tokens.
+    await ctx.db.insert(sources).values({ id: "src1", kind: "reddit", url: "http://x" }).run();
+    await ctx.db
+      .insert(signals)
+      .values(
+        ["stale", "fresh"].map((id) => ({
+          id,
+          sourceId: "src1",
+          canonicalUrl: `http://x/${id}`,
+          title: `Headline ${id}`,
+          observedAt: "2026-08-31T00:00:00.000Z",
+          engagementScore: 1,
+          simhash: id,
+          state: "scored" as const,
+        })),
+      )
+      .run();
+    await queueRunPlan(ctx.client, [{ topic: "politics", signalId: "stale" }], () => Date.parse("2026-09-03T07:02:30.489Z"));
+    const freshPlan = await queueRunPlan(ctx.client, [{ topic: "tech", signalId: "fresh" }], () => Date.parse("2026-09-03T20:14:44.438Z"));
+
+    const { driver, calls } = fakeActions();
+    await dispatchRun(ctx.db, kv, { actions: driver });
+
+    const inputs = (calls[0].body as { inputs: { count: string; plan_id: string } }).inputs;
+    expect(inputs.plan_id).toBe(freshPlan);
+    expect(inputs.count).toBe("1");
+  });
+
+  it("dispatches one unscoped render with an empty queue — RENDER falls back to the diversity weighting", async () => {
     const { driver, calls } = fakeActions();
 
     await dispatchRun(ctx.db, kv, { actions: driver });
 
-    expect((calls[0].body as { inputs: { count: string } }).inputs.count).toBe("1");
+    const inputs = (calls[0].body as { inputs: { count: string; plan_id: string } }).inputs;
+    expect(inputs.count).toBe("1");
+    expect(inputs.plan_id).toBe("");
   });
 
   it("closes the dispatch row as succeeded once GitHub accepts it, so the reaper never marks it abandoned", async () => {

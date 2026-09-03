@@ -922,15 +922,24 @@ The third makes no claim to illustrate the argument, and the plan is marked
 That is a much smaller lie than a chessboard standing in for "perhaps", and
 it is the difference between a degraded video and a misleading one.
 
-### One known lag
+### A run makes the plan you just submitted, or nothing
 
-A render killed mid-flight leaves its run pick `claimed`. `releaseStrandedPicks`
-(`db/run-picks.ts`) requeues it, but only once the run rows behind it have
-been reaped — **up to 45 minutes** (`STALE_RUN_THRESHOLD_MS`). That threshold
-is not shortened on purpose: releasing a pick a live render is still working
-on would produce two videos about the same story, which is worse than
-waiting. A pick whose signal has since been scripted is never requeued at
-all, for the same reason.
+The dispatch hands the workflow a `plan_id` alongside the trace, and RENDER
+claims picks from that plan only (`claimNextRunPick`). Once the plan is
+empty the invocation makes no video at all rather than falling back to the
+diversity-weighted signal — operator direction 2026-09-03, after a run spent
+its only slot on a story chosen thirteen hours earlier. Nothing queued in an
+earlier session can be claimed by a later run, so no key is ever spent on a
+story you are not currently watching for.
+
+A render that fails or is killed leaves its pick `claimed`, and the next
+invocation **cancels** it (`retireStrandedPicks`) rather than putting it back
+on the queue: stage 4 already reports the failure, and re-choosing that story
+is one click. The cancellation waits on the run rows behind it being reaped —
+**up to 45 minutes** (`STALE_RUN_THRESHOLD_MS`) — and that threshold is not
+shortened on purpose: retiring a pick a live render is still working on would
+lose a video that is about to appear. A pick whose signal has since been
+scripted is left alone, because that story was made.
 
 ### `viral` is gameplay or nothing
 

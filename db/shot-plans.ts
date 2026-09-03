@@ -94,7 +94,7 @@ const IN_FLIGHT: ShotStatus[] = ["planned", "searching", "downloading", "clipped
  * A killed render — Actions timeout, Ctrl-C, a laptop closing — leaves its
  * shot rows exactly where they were, and stage 5 then shows a shot as
  * `downloading` forever, for a run that stopped hours ago. That is the
- * fabricated-status failure `db/runs.ts`'s reaper and `releaseStrandedPicks`
+ * fabricated-status failure `db/runs.ts`'s reaper and `retireStrandedPicks`
  * both exist to prevent, arriving through the third door. Found in the shot
  * rows of a render killed mid-download on 2026-09-01.
  *

@@ -311,12 +311,15 @@ CREATE TABLE run_picks (                     -- the operator's guided-run picks 
   claimed_trace_id TEXT, claimed_at TEXT,    -- which run took it
   created_at    TEXT NOT NULL              -- stamped once per plan; claim order is created_at DESC, position ASC
 );
--- Newest plan first since 2026-09-03. Claiming FIFO made the wrong video: the dispatch
--- sizes a run from the queue as it stands, and a pick the invocation's own
--- `releaseStrandedPicks` sweep put back seconds later — a leftover from a render that
--- died that morning — then outranked the story the operator had chosen 3 seconds
--- earlier, in a run sized for exactly one video. A leftover is not dropped; it waits
--- for an invocation that finds nothing newer.
+-- Scoped to one plan since 2026-09-03. POST /console/dispatch names the newest queued
+-- plan as the workflow's `plan_id` and sizes the run to that plan's picks; RENDER claims
+-- from it and nothing else, and an invocation that finds it empty makes no video rather
+-- than falling back to the diversity weighting. Claiming across plans FIFO made the
+-- wrong video: a pick the invocation's own stranded-pick sweep put back seconds after
+-- the run was sized — a leftover from a render that had died that morning — took the
+-- only slot of a run started for a story chosen 3 seconds earlier. A stranded pick is
+-- now cancelled rather than requeued, for the same reason: a failed run is reported as
+-- failed, and its story is re-chosen by hand or not at all.
 
 CREATE TABLE audit_log (                     -- append-only; never UPDATE, never DELETE
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -865,7 +868,7 @@ Runs between SOURCE and RENDER — strictly, after the montage timeline exists, 
 | `GET /console/*` | dashboard queries: runs, signals, scripts, renders, exports, directives | passkey session cookie, `__Host-` prefixed, HttpOnly, SameSite=Strict |
 | `POST /console/directive` | new steering directive | session + CSRF + schema validation |
 | `POST /console/keys/:name` | validate-then-swap a provider key | session + reauth (< 5 min old) |
-| `POST /console/dispatch` | trigger a pipeline run ad hoc: records a `runs` row, then starts `render.yml` via `workflow_dispatch` with that row's id as `trace_id` and the queued pick count as `count` (`src/lib/drivers/github-actions.ts`). With no `GITHUB_DISPATCH_TOKEN` it records and reports `not_triggered` rather than pretending | session + rate limited to 10/hour |
+| `POST /console/dispatch` | trigger a pipeline run ad hoc: records a `runs` row, then starts `render.yml` via `workflow_dispatch` with that row's id as `trace_id`, the newest queued plan as `plan_id`, and that plan's pick count as `count` (`src/lib/drivers/github-actions.ts`). The run claims picks from that plan alone and makes no video once it is empty — no token is spent on a story chosen in an earlier session (operator direction 2026-09-03). With no `GITHUB_DISPATCH_TOKEN` it records and reports `not_triggered` rather than pretending | session + rate limited to 10/hour |
 | `POST /console/scripts/:id/approve` | approve a `pending_approval` script | session |
 | `GET /console/exports` | list export packages, filterable by status | session |
 | `GET /console/exports/previews` | Pexels **preview** stills for every live export's script keywords — stage 6's sneak peeks. Shares `/runs/:traceId/montage`'s per-keyword day-long KV cache. Never footage for the render | session |

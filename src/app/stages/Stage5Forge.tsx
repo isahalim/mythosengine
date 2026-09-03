@@ -196,10 +196,22 @@ export function Stage5Forge({ traceId, videos, dispatchNote, onDone, onUnauthori
 
           {/* Before SCRIPT has written anything there is nothing to show,
               and saying so beats floating empty cards that imply videos
-              exist. */}
+              exist. Which sentence depends on whether anything is still
+              coming: a run that has finished with no videos is not waiting
+              for one, and "waiting for the first script" under a run that
+              stopped ten minutes ago is the same fabricated status the
+              stage rows were fixed for. A scoped run whose plan had nothing
+              left to claim ends exactly here (`plan_exhausted`), and so does
+              a run that failed before SCRIPT. */}
           {(progress?.videos.length ?? 0) === 0 && (
             <p className="absolute inset-x-0 top-10 text-center font-mono text-xs text-bone">
-              {status === "not_triggered" ? "No workflow ran, so no scripts were written." : "Waiting for the first script to be written…"}
+              {status === "not_triggered"
+                ? "No workflow ran, so no scripts were written."
+                : status === "failed"
+                  ? "The run stopped before a script was written — the stage above says where."
+                  : status === "succeeded"
+                    ? "This run made nothing: there was no queued story left for it to claim."
+                    : "Waiting for the first script to be written…"}
             </p>
           )}
         </div>
