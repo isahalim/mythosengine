@@ -1,6 +1,7 @@
 import { desc, eq, inArray } from "drizzle-orm";
 import type { AppDb } from "../../../db/client.ts";
 import { exports as exportsTable, renders, runs, scripts } from "../../../db/schema.ts";
+import { PIPELINE_STAGE } from "../../../db/runs.ts";
 import { extractKeywords } from "../../lib/pipeline/keywords.ts";
 import { shotsForScripts } from "../../../db/shot-plans.ts";
 import { DISPATCH_NOT_TRIGGERED_NOTE, DISPATCH_STAGE } from "./dispatch.ts";
@@ -95,7 +96,7 @@ export interface RunSummary {
   videoCount: number;
 }
 
-/** How many `runs` rows one listing reads. A RENDER invocation writes at most seven (one per stage in scripts/pipeline/render.ts), so this covers a comfortable few dozen runs. */
+/** How many `runs` rows one listing reads. A RENDER invocation writes at most nine (one per stage in scripts/pipeline/render.ts, plus the invocation's own `pipeline` row), so this covers a comfortable few dozen runs. */
 const RUN_ROW_SCAN_LIMIT = 300;
 
 /**
@@ -117,10 +118,36 @@ const RUN_ROW_SCAN_LIMIT = 300;
  * none of them yet.
  */
 function statusOf(stageRows: RunStage[]): RunStatus {
-  const pipeline = stageRows.filter((row) => row.stage !== DISPATCH_STAGE);
+  const lifecycle = stageRows.filter((row) => row.stage === PIPELINE_STAGE);
+  const pipeline = stageRows.filter((row) => row.stage !== DISPATCH_STAGE && row.stage !== PIPELINE_STAGE);
   const dispatch = stageRows.find((row) => row.stage === DISPATCH_STAGE) ?? null;
 
+  /**
+   * The invocation's own row is asked first, and it is the only row that can
+   * answer this: a stage row says what is true while a stage is open, and
+   * *between* two stages every row a live run has written is closed. That
+   * gap read as "succeeded" here, so stage 4 stopped polling on
+   * `EDIT · SUCCEEDED`, `0 / 1 exported` and never moved again, while the
+   * render went on to export two minutes later (2026-09-03). A run with an
+   * open lifecycle row is running, whatever its stages currently say.
+   *
+   * Absent on a trace written by a runner from before this row existed, and
+   * the stage-only reading below is then still the best available answer —
+   * which is what the fallbacks after this are.
+   */
+  if (lifecycle.some((row) => row.status === "running")) return "running";
+  // A throw between two stages closes none of them: `PLAN produced no
+  // shots` closes PLAN as succeeded and then fails the render, and every
+  // stage row agrees it was a clean run. The lifecycle row is the one that
+  // caught the throw, so it outranks them.
+  if (lifecycle.some((row) => row.status === "failed")) return "failed";
+
   if (pipeline.length === 0) {
+    // The invocation ran and made nothing — killswitch off, or WATCH has
+    // scored nothing yet (`skipped`, from renderOneVideo). It is over, and
+    // reporting it as queued would leave the screen waiting on a run that
+    // has already finished.
+    if (lifecycle.length > 0) return "succeeded";
     // Nothing has reported from the runner. What that means depends
     // entirely on whether a workflow was actually started — reporting a
     // never-triggered run as "queued" would leave the waiting screen

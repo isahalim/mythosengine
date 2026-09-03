@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { desc, eq, gte, inArray } from "drizzle-orm";
 import { execAtomic } from "../../db/client.ts";
 import { renders, runs, scripts, signals } from "../../db/schema.ts";
-import { finishRun, reapStaleRuns, startRun } from "../../db/runs.ts";
+import { finishRun, PIPELINE_STAGE, reapStaleRuns, startRun } from "../../db/runs.ts";
 import { reapExpiredExports } from "../../db/exports-reap.ts";
 import { claimNextRunPick, releaseStrandedPicks } from "../../db/run-picks.ts";
 import { isPipelineEnabled } from "../../src/server/console/killswitch.ts";
@@ -48,7 +48,7 @@ import { GEMINI_RESEARCH_MODEL, GROQ_LIGHT_MODEL, GROQ_REASONING_MODEL } from ".
 import { RerankingRetriever } from "../../src/lib/rag/rerank.ts";
 import { editClips, type EditableClip } from "../../src/lib/pipeline/edit.ts";
 import { generateUploadMetadata } from "../../src/lib/pipeline/upload-metadata.ts";
-import { buildPipelineEnv } from "./env.ts";
+import { buildPipelineEnv, type PipelineEnv } from "./env.ts";
 
 const REPO_DIR = process.cwd();
 
@@ -76,7 +76,9 @@ function todayStartIso(): string {
  * and a cron cannot assume it is awake. Every stage is recorded as its own
  * `runs` row so `checkAndAlert` (called at the end) has real
  * consecutive-failure data to evaluate — the first caller either has ever
- * had.
+ * had. The invocation gets one too (`PIPELINE_STAGE`), open for as long as
+ * it runs: stage rows alone cannot tell "between two stages" from
+ * "finished", and the console believed the second one.
  */
 async function main(): Promise<void> {
   const env = buildPipelineEnv();
@@ -142,15 +144,55 @@ async function main(): Promise<void> {
    */
   const traceId = process.env.PIPELINE_TRACE_ID?.trim() || crypto.randomUUID();
 
+  /**
+   * The invocation's own row, open for exactly as long as this invocation
+   * is (db/runs.ts's PIPELINE_STAGE says why it has to exist).
+   *
+   * Opened before the first stage and closed after the last one, including
+   * on the paths that produce nothing and on the throw — so there is no
+   * moment in a live run where every row this trace has written is closed
+   * and the console can mistake a gap between two stages for the end.
+   */
+  const lifecycleRunId = await startRun(env.db, PIPELINE_STAGE, traceId);
+  let outcome: InvocationOutcome;
+  try {
+    outcome = await renderOneVideo(env, traceId);
+  } catch (error) {
+    // Closed before the rethrow, never in a `finally` that would also run on
+    // the success path: the row has to carry *why*, and the message is what
+    // names the cause when the failure happened between two stages and no
+    // stage row is holding it (`PLAN produced no shots`, and every throw
+    // like it). Truncated because `error_class` is read on screen.
+    await finishRun(env.db, lifecycleRunId, "failed", (error instanceof Error ? error.message : String(error)).slice(0, 200));
+    throw error;
+  }
+  await finishRun(env.db, lifecycleRunId, outcome.kind === "skipped" ? "skipped" : "succeeded", outcome.kind === "skipped" ? outcome.reason : undefined);
+
+  if (env.discordWebhookUrl) {
+    await checkAndAlert(env.db, env.discordWebhookUrl);
+  }
+}
+
+/**
+ * What one invocation did, as its lifecycle row records it.
+ *
+ * `skipped` is a real outcome and not a failure — the killswitch is off, or
+ * WATCH has not scored anything yet — and saying so in the row is what stops
+ * the console from waiting on a run that was never going to make anything.
+ */
+type InvocationOutcome = { kind: "rendered" } | { kind: "skipped"; reason: string };
+
+/** One signal, end to end: RESEARCH through EXPORT. Its caller owns the lifecycle row and the sweeps. */
+async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<InvocationOutcome> {
   if (!(await isPipelineEnabled(env.hotKv))) {
     console.warn("Pipeline killswitch is off — skipping this RENDER run.");
-    return;
+    return { kind: "skipped", reason: "killswitch_off" };
   }
 
   const scoredSignals = await env.db.select().from(signals).where(eq(signals.state, "scored")).all();
   if (scoredSignals.length === 0) {
     console.warn("RENDER: no scored signals available — nothing to do this cycle.");
-    return;
+    return { kind: "skipped", reason: "no_scored_signals" };
   }
 
   const activeSettings = await getSettings(env.db);
@@ -829,9 +871,7 @@ async function main(): Promise<void> {
     await rm(workDir, { recursive: true, force: true });
   }
 
-  if (env.discordWebhookUrl) {
-    await checkAndAlert(env.db, env.discordWebhookUrl);
-  }
+  return { kind: "rendered" };
 }
 
 main().catch((error: unknown) => {

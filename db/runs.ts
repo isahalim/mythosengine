@@ -10,6 +10,31 @@ import { runs } from "./schema.ts";
  * "not invoked by anything yet") to see real data. `startRun`/`finishRun`
  * are the two ends of one row's lifecycle, called around every stage.
  */
+/**
+ * The stage name of the invocation's own row — one per RENDER invocation,
+ * opened before RESEARCH and closed after EXPORT.
+ *
+ * It exists because every other row is a *stage*, and a stage row can only
+ * say what is true while a stage is open. Between two of them — EDIT closed,
+ * RENDER not yet opened — every row a run has written is finished, and
+ * `statusOf` (src/server/console/runs.ts) read that as "the run succeeded".
+ * Stage 4 then froze on `EDIT · SUCCEEDED`, `0 / 1 exported`, and stopped
+ * polling, while the render carried on and exported two minutes later
+ * (observed 2026-09-03: edit closed 20:43:09.924Z, render opened
+ * 20:43:11.972Z — a two-second window a five-second poll walked straight
+ * into). It is also what catches a throw between stages: `PLAN produced no
+ * shots` closes PLAN as succeeded and then throws, which every stage row
+ * agrees was a clean run.
+ *
+ * So the invocation gets a row of its own that is open for exactly as long
+ * as the invocation is, and `statusOf` asks it first. A killed job leaves it
+ * `running`, which is precisely what `reapStaleRuns` below already sweeps —
+ * so the console spins for at most one reaper pass rather than forever,
+ * which a "the run is finished when it has reached EXPORT" rule could not
+ * promise.
+ */
+export const PIPELINE_STAGE = "pipeline";
+
 export async function startRun(db: AppDb, stage: string, traceId: string, now: () => number = Date.now): Promise<string> {
   const id = crypto.randomUUID();
   await db

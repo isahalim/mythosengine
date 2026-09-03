@@ -124,6 +124,65 @@ describe("getRunProgress", () => {
     expect(progress?.stages[1].errorClass).toBe("provider_error");
   });
 
+  it("keeps a run running in the gap between two stages, where every row it has written is closed", async () => {
+    // The 2026-09-03 freeze: EDIT closed at 20:43:09.924Z and RENDER opened
+    // at 20:43:11.972Z, and in those two seconds every stage row this trace
+    // had was finished. Stage 4 read that as a finished run, stopped
+    // polling, and sat on `EDIT · SUCCEEDED` / `0 / 1 exported` while the
+    // render went on to export.
+    await ctx.db
+      .insert(runs)
+      .values([
+        { id: "r0", startedAt: "2026-09-03T20:14:47.000Z", stage: "pipeline", status: "running", traceId: TRACE },
+        { id: "r1", startedAt: "2026-09-03T20:30:35.744Z", finishedAt: "2026-09-03T20:43:09.924Z", stage: "edit", status: "succeeded", traceId: TRACE },
+      ])
+      .run();
+
+    expect((await getRunProgress(ctx.db, TRACE))?.status).toBe("running");
+  });
+
+  it("reports the run as succeeded once the invocation's own row is closed", async () => {
+    await ctx.db
+      .insert(runs)
+      .values([
+        { id: "r0", startedAt: "2026-09-03T20:14:47.000Z", finishedAt: "2026-09-03T20:43:49.000Z", stage: "pipeline", status: "succeeded", traceId: TRACE },
+        { id: "r1", startedAt: "2026-09-03T20:43:46.393Z", finishedAt: "2026-09-03T20:43:48.949Z", stage: "export", status: "succeeded", traceId: TRACE },
+      ])
+      .run();
+
+    expect((await getRunProgress(ctx.db, TRACE))?.status).toBe("succeeded");
+  });
+
+  it("fails a run that threw between two stages, where no stage row is holding the failure", async () => {
+    // `PLAN produced no shots` closes PLAN as succeeded and then throws.
+    await ctx.db
+      .insert(runs)
+      .values([
+        { id: "r0", startedAt: "2026-09-03T20:14:47.000Z", finishedAt: "2026-09-03T20:24:57.000Z", stage: "pipeline", status: "failed", errorClass: "PLAN produced no shots, so there is nothing to source.", traceId: TRACE },
+        { id: "r1", startedAt: "2026-09-03T20:24:18.439Z", finishedAt: "2026-09-03T20:24:56.444Z", stage: "plan", status: "succeeded", traceId: TRACE },
+      ])
+      .run();
+
+    const progress = await getRunProgress(ctx.db, TRACE);
+
+    expect(progress?.status).toBe("failed");
+    expect(progress?.stages[0].errorClass).toContain("PLAN produced no shots");
+  });
+
+  it("reports an invocation that ran and made nothing as over, not as still queued", async () => {
+    // The killswitch was off, or WATCH had scored nothing: there are no
+    // stage rows, and the run is finished all the same.
+    await ctx.db
+      .insert(runs)
+      .values([
+        { id: "d1", startedAt: "2026-09-03T20:14:44.740Z", finishedAt: "2026-09-03T20:14:46.356Z", stage: "dispatch", status: "succeeded", traceId: TRACE },
+        { id: "r0", startedAt: "2026-09-03T20:14:47.000Z", finishedAt: "2026-09-03T20:14:48.000Z", stage: "pipeline", status: "skipped", errorClass: "no_scored_signals", traceId: TRACE },
+      ])
+      .run();
+
+    expect((await getRunProgress(ctx.db, TRACE))?.status).toBe("succeeded");
+  });
+
   it("attaches the trace's script, its render and its export as one video", async () => {
     await seedSignal(ctx);
     await seedFootage(ctx);

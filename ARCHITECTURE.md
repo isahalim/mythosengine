@@ -293,6 +293,13 @@ CREATE TABLE runs (                          -- observability, same shape as bef
 -- that degraded exactly as designed, produced a video and exported it as "The run
 -- failed" on stage 4. Both statuses still carry `error_class`; only the aggregate
 -- verdict differs. Free text, deliberately: a new stage writer must not break the read.
+-- One row per invocation is not a stage at all: `pipeline` (db/runs.ts, 2026-09-03) is
+-- opened before RESEARCH and closed after EXPORT, and `statusOf` asks it first. Stage
+-- rows can only speak while a stage is open, so *between* two of them every row a live
+-- run had written was closed and stage 4 read the run as finished — it froze on
+-- `EDIT · SUCCEEDED`, `0 / 1 exported`, and stopped polling two seconds before RENDER
+-- opened its row (observed 2026-09-03). A killed job leaves the row `running`, which
+-- `reapStaleRuns` already sweeps.
 
 CREATE TABLE run_picks (                     -- the operator's guided-run picks (§6); RENDER claims them in order
   id            TEXT PRIMARY KEY,
