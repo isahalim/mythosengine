@@ -1,4 +1,5 @@
 import type { DiscourseBeat, DiscourseScriptResponse } from "./script-schema.ts";
+import { stripTags } from "./delivery-tags.ts";
 
 /**
  * Words per minute the read-time estimate assumes.
@@ -45,30 +46,37 @@ export function wordCountRange(targetDurationS: number): { target: number; min: 
   };
 }
 
-export interface BeatStructureViolation {
-  kind: "no_pushback" | "pushback_out_of_position" | "no_land" | "too_short" | "too_long";
-  /**
-   * Whether this violation may cost the day's video.
-   *
-   * `fatal` is the format itself — a script that never pushes back is the
-   * lecture this format exists to replace, and shipping one would defeat
-   * the point of having a gate. `advisory` is the length estimate, and it
-   * is a different kind of claim entirely: `estimatedReadSeconds` is one
-   * constant standing in for delivery speed, pauses and the operator's own
-   * `ttsRateRange`, and this file's own comments say nothing downstream
-   * trusts it. On 2026-09-03 that untrusted ruler killed a finished render
-   * over `118s is over the 113s ceiling` — a 4% miss on an estimate,
-   * against a real duration nobody had measured yet. A length miss earns a
-   * rewrite; it does not get to throw away a script, a RESEARCH brief and
-   * the day's video. AUDIT SUMMARY flags the same miss on the operator's
-   * review surface, computed from the same ruler, where it belongs.
-   */
-  severity: "fatal" | "advisory";
+/**
+ * Something worth telling the operator about a script — never a reason to
+ * refuse one.
+ *
+ * **There is no longer a structural gate.** Until 2026-09-03 this type also
+ * carried `no_pushback`, `no_land` and `pushback_out_of_position`, and a
+ * script that tripped them was rejected outright: the format demanded that
+ * the host be wrong before she was right, and a draft that went from
+ * `attempt` to `land` was refused as "a lecture". Operator direction removed
+ * it, and the reasoning is worth keeping. The rule could only ever describe
+ * *one* shape. A story does not push back; a hot take concedes once and
+ * carries on; an escalation has nothing to be wrong about. Enforcing the
+ * discourse arc did not make scripts better, it made every script a
+ * discourse — and it did so by throwing away finished renders, which is how
+ * it came to be looked at (see performance.ts's `SCRIPT_FORMATS`, which is
+ * what replaced it).
+ *
+ * What is left is length, and it is a guide rather than a gate — doubly so
+ * now that scripts carry non-verbal sounds, which take real time in the
+ * audio and none in the word count. A `[sighs]` is a beat of silence the
+ * ruler below cannot see, so the estimate reads a shade long on every video
+ * that uses them, and refusing a script on that basis would be refusing it
+ * for a number we know to be wrong.
+ */
+export interface ScriptAdvisory {
+  kind: "too_short" | "too_long";
   message: string;
 }
 
 function countWords(text: string): number {
-  return text.trim().split(/\s+/).filter(Boolean).length;
+  return stripTags(text).trim().split(/\s+/).filter(Boolean).length;
 }
 
 /** Every word the narration will actually speak, in order: hook, then beats, then the closing question. */
@@ -86,7 +94,7 @@ export function discourseWordCount(script: DiscourseScriptResponse): number {
  * needs to learn what a beat is.
  */
 export function flattenBeats(script: DiscourseScriptResponse): string {
-  return [script.hook, ...script.beats.map((b) => b.text), script.open_question].map((s) => s.trim()).filter(Boolean).join(" ");
+  return stripTags([script.hook, ...script.beats.map((b) => b.text), script.open_question].map((s) => s.trim()).filter(Boolean).join(" "));
 }
 
 export function estimatedReadSeconds(script: DiscourseScriptResponse): number {
@@ -94,89 +102,46 @@ export function estimatedReadSeconds(script: DiscourseScriptResponse): number {
 }
 
 /**
- * The format gate (plan v2 §4): **at minimum one `pushback` must sit between
- * an `attempt` and a `land`.**
+ * What is worth saying about a finished draft. Advisory in full: this
+ * function cannot fail a render, and nothing downstream treats its output as
+ * a reason to.
  *
- * That ordering *is* the format. A script that goes straight from trying an
- * answer to declaring the payoff is a lecture — the exact thing the single
- * host was supposed to stop being when the second host was cut. With two
- * voices the disagreement was structural and free; with one, this check is
- * the only thing standing between "an argument" and "a monologue that sounds
- * like one".
- *
- * Note what is deliberately *not* checked. Moves may repeat, may skip, and
- * may appear before the `attempt` — a script that opens on two `question`
- * beats or reframes twice is fine. Over-specifying the shape here would make
- * the gate a template, and the model would spend its effort satisfying the
- * template rather than making the argument.
- *
- * Returns every violation rather than the first, so a repair retry can be
- * told everything wrong with the draft in one message instead of discovering
- * the faults one call at a time.
+ * Both messages quote the word count to aim at, not only the seconds missed
+ * by. A draft told just "118s is over the 113s ceiling" has to
+ * reverse-engineer the ruler to know how much to cut, and the live
+ * 2026-09-03 run shows what that costs: attempt one came back under the
+ * floor, attempt two overshot the ceiling, and the stage died having never
+ * been told the number it was aiming at.
  */
-export function validateBeatStructure(script: DiscourseScriptResponse, targetDurationS: number): BeatStructureViolation[] {
-  const violations: BeatStructureViolation[] = [];
-  const moves = script.beats.map((b) => b.move);
-
-  const firstAttempt = moves.indexOf("attempt");
-  const lastLand = moves.lastIndexOf("land");
-
-  if (lastLand === -1) {
-    violations.push({ kind: "no_land", severity: "fatal", message: "the script never lands — no beat has move 'land', so the argument has no payoff" });
-  }
-
-  const hasPushback = moves.includes("pushback");
-  if (!hasPushback) {
-    violations.push({
-      kind: "no_pushback",
-      severity: "fatal",
-      message: "no beat has move 'pushback' — the host never catches the hole in her own answer, which makes this a lecture rather than a discourse",
-    });
-  } else if (firstAttempt !== -1 && lastLand !== -1) {
-    // The rule is positional, not merely a presence check: a pushback after
-    // the last land, or before the first attempt, has nothing to push back
-    // against.
-    const hasPushbackBetween = moves.some((move, i) => move === "pushback" && i > firstAttempt && i < lastLand);
-    if (!hasPushbackBetween) {
-      violations.push({
-        kind: "pushback_out_of_position",
-        severity: "fatal",
-        message: `there is a 'pushback' beat but none of them sits between the first 'attempt' (beat ${firstAttempt + 1}) and the last 'land' (beat ${lastLand + 1}) — the host has to be wrong before she is right`,
-      });
-    }
-  }
-
-  // Both length messages quote the word counts, not only the seconds. A
-  // draft told just "118s is over the 113s ceiling" has to reverse-engineer
-  // the ruler to know how much to cut, and the live 2026-09-03 run shows
-  // what that costs: attempt one came back under the floor, attempt two
-  // overshot the ceiling, and the stage died having never been told the
-  // number it was aiming at.
+export function reviewScript(script: DiscourseScriptResponse, targetDurationS: number): ScriptAdvisory[] {
   const estimate = estimatedReadSeconds(script);
   const words = discourseWordCount(script);
   const range = wordCountRange(targetDurationS);
   const floor = targetDurationS * (1 - DURATION_TOLERANCE);
   const ceiling = targetDurationS * (1 + DURATION_TOLERANCE);
-  if (estimate < floor) {
-    violations.push({
-      kind: "too_short",
-      severity: "advisory",
-      message: `estimated read time ${estimate.toFixed(0)}s is under the ${floor.toFixed(0)}s floor for a ${targetDurationS}s video: you wrote ${words} words, aim for about ${range.target} (${range.min}-${range.max}). Get there with more beats, not longer ones`,
-    });
-  } else if (estimate > ceiling) {
-    violations.push({
-      kind: "too_long",
-      severity: "advisory",
-      message: `estimated read time ${estimate.toFixed(0)}s is over the ${ceiling.toFixed(0)}s ceiling for a ${targetDurationS}s video: you wrote ${words} words, aim for about ${range.target} (${range.min}-${range.max}). Cut beats, do not compress them`,
-    });
-  }
 
-  return violations;
+  if (estimate < floor) {
+    return [
+      {
+        kind: "too_short",
+        message: `estimated read time ${estimate.toFixed(0)}s is under the ${floor.toFixed(0)}s floor for a ${targetDurationS}s video: you wrote ${words} spoken words, aim for about ${range.target} (${range.min}-${range.max}). Get there with more beats, not longer ones`,
+      },
+    ];
+  }
+  if (estimate > ceiling) {
+    return [
+      {
+        kind: "too_long",
+        message: `estimated read time ${estimate.toFixed(0)}s is over the ${ceiling.toFixed(0)}s ceiling for a ${targetDurationS}s video: you wrote ${words} spoken words, aim for about ${range.target} (${range.min}-${range.max}). Cut beats, do not compress them`,
+      },
+    ];
+  }
+  return [];
 }
 
-/** The violation list as one line a model can act on, for the repair retry in `generateDiscourseScript`. */
-export function describeViolations(violations: readonly BeatStructureViolation[]): string {
-  return violations.map((v) => `- ${v.message}`).join("\n");
+/** The advisory list as one line a model can act on, for the rewrite in `generateDiscourseScript`. */
+export function describeAdvisories(advisories: readonly ScriptAdvisory[]): string {
+  return advisories.map((a) => `- ${a.message}`).join("\n");
 }
 
 /**

@@ -88,6 +88,28 @@ export interface ResearchProvenance {
  * was out of budget today" from "the style direction did nothing" — and
  * neither is recoverable from the video itself.
  */
+/**
+ * The performance a video was rolled to, as the audit package records it.
+ *
+ * `deliveryApplied` is the load-bearing field. The inline tags only mean
+ * anything on the Gemini path — Edge TTS has no notion of them and is handed
+ * the stripped text — so once the Gemini free tier's ten daily requests are
+ * spent, the script asks for laughter and the audio has none. That is still a
+ * complete, publishable video, but it is not the one the script describes,
+ * and a reviewer reading `[giggles]` in the script needs to know whether they
+ * should be able to hear it.
+ */
+interface PerformanceProvenance {
+  seed: string;
+  format: string;
+  arc: string;
+  nonVerbal: string[];
+  cueTarget: number;
+  stylistic: string | null;
+  /** Whether the inline tags reached a voice that performs them. */
+  deliveryApplied: boolean;
+}
+
 interface NarrationProvenance {
   driver: "edge-tts" | "gemini-tts";
   voice: string;
@@ -206,6 +228,8 @@ export interface AuditSummaryInput {
   targetDurationS: number | null;
   /** How the narration was actually produced. Null only for callers that predate the discourse format. */
   narration: NarrationProvenance | null;
+  /** How this video was rolled to sound. Null only for callers that predate the performance roll. */
+  performance: PerformanceProvenance | null;
   /**
    * Why the host is not on screen, or null when it is.
    *
@@ -240,6 +264,7 @@ export interface AuditResult {
   schemaValid: boolean;
   wordCountInBounds: boolean;
   narration: NarrationProvenance | null;
+  performance: PerformanceProvenance | null;
   /** True when the narration ran on a driver other than the best one available. */
   narrationDowngraded: boolean;
   characterAbsentReason: string | null;
@@ -313,6 +338,13 @@ export function computeAuditSummary(input: AuditSummaryInput): AuditResult {
   const narrationDowngraded = input.narration?.fallbackReason != null;
   if (input.narration?.fallbackReason) flags.push(`narration on ${input.narration.driver}: ${input.narration.fallbackReason}`);
   if (input.characterAbsentReason) flags.push(`no host on screen: ${input.characterAbsentReason}`);
+  // A rolled performance that never reached a voice that performs it. Not a
+  // fault — Edge TTS is the ordinary path once the Gemini free tier's ten
+  // requests are gone — but a reviewer reading `[giggles]` in the script has
+  // to know whether they should be able to hear it.
+  if (input.performance !== null && !input.performance.deliveryApplied) {
+    flags.push(`delivery tags not performed — narration ran on a driver with no inline tag support, so the ${input.performance.nonVerbal.length} non-verbal cue(s) this script was written around are silent`);
+  }
   if (input.narration?.captionTiming === "estimated") {
     flags.push("caption timings estimated — ALIGN failed, so words are spread evenly across the narration and will drift within a sentence");
   }
@@ -380,6 +412,7 @@ export function computeAuditSummary(input: AuditSummaryInput): AuditResult {
     schemaValid: wordCountInBounds && hasDebateQuestion,
     wordCountInBounds,
     narration: input.narration,
+    performance: input.performance,
     narrationDowngraded,
     characterAbsentReason: input.characterAbsentReason,
     character: input.character,

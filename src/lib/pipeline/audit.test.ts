@@ -38,6 +38,7 @@ function baseInput(overrides: Partial<AuditSummaryInput> = {}): AuditSummaryInpu
     },
     targetDurationS: null,
     narration: null,
+    performance: null,
     characterAbsentReason: null,
   character: null,
   edit: null,

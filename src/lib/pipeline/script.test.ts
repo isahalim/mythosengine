@@ -67,11 +67,6 @@ describe("generateDiscourseScript", () => {
     });
   }
 
-  /** Words per beat that lands a `beatCount`-beat script on `seconds` at the estimator's 165 wpm. */
-  function wordsForSeconds(seconds: number, beatCount: number): number {
-    return Math.round(((seconds / 60) * 165 - 5 - 6) / beatCount);
-  }
-
   const VALID_DISCOURSE = discourseJson(["question", "attempt", "pushback", "land"]);
   const LECTURE = discourseJson(["question", "attempt", "land", "land"]);
 
@@ -129,29 +124,30 @@ describe("generateDiscourseScript", () => {
     expect(ctx.db.select().from(signals).get()?.state).toBe("scripted");
   });
 
-  it("sends a lecture back once with the specific violation, then accepts the rewrite", async () => {
-    const llm = new ScriptedLlm([llmResponse(LECTURE), llmResponse(VALID_DISCOURSE)]);
+  it("ships a lecture, because the format is no longer something a script can fail", async () => {
+    // Until 2026-09-03 this exact draft — attempt straight to land, never
+    // wrong once — cost the render. The gate could only describe a
+    // discourse, so it made every script one; operator direction removed it.
+    const llm = new ScriptedLlm([llmResponse(LECTURE)]);
     const result = await generate(llm);
-    expect(result.ok).toBe(true);
-    expect(llm.calls).toHaveLength(2);
 
-    const retryPrompt = llm.calls[1].messages[0].content;
-    expect(retryPrompt).toContain("previous_attempt_rejected");
-    expect(retryPrompt).toContain("makes this a lecture rather than a discourse");
+    expect(result.ok).toBe(true);
+    expect(llm.calls).toHaveLength(1);
+    if (!result.ok) throw new Error("expected an ok result");
+    expect(result.value.structureNotes).toEqual([]);
+    expect(ctx.db.select().from(signals).get()?.state).toBe("scripted");
   });
 
-  it("fails the stage when the model writes a lecture twice — never silently ships one", async () => {
-    const llm = new ScriptedLlm([llmResponse(LECTURE), llmResponse(LECTURE)]);
-    const result = await generate(llm);
-    expect(result.ok).toBe(false);
-    if (result.ok) throw new Error("expected a failure");
-    expect(result.error.kind).toBe("invalid_response");
-    expect(result.error.message).toContain("structure gate");
-    expect(result.error.retryable).toBe(false);
-
-    // Nothing half-written: no script row, and the signal never left `scored`.
-    expect(ctx.db.select().from(scripts).all()).toHaveLength(0);
-    expect(ctx.db.select().from(signals).get()?.state).toBe("scored");
+  it("accepts every format the old gate would have refused", async () => {
+    for (const moves of [
+      ["setup", "escalation", "turn", "land"],
+      ["verdict", "evidence", "escalation", "punchline"],
+      ["confession", "setup", "reframe", "open"],
+    ] as const) {
+      const result = await generate(new ScriptedLlm([llmResponse(discourseJson([...moves]))]));
+      expect(result.ok).toBe(true);
+    }
+    expect(ctx.db.select().from(scripts).all()).toHaveLength(3);
   });
 
   it("ships a script whose only fault is its length, instead of losing the render to an estimate", async () => {
@@ -180,16 +176,23 @@ describe("generateDiscourseScript", () => {
   });
 
   it("still spends a rewrite on a length miss before accepting it", async () => {
-    // Advisory does not mean ignored: the model gets its one chance to hit
-    // the target, and the retry quotes the miss.
+    // A guide, not a gate — but a guide the model gets one chance to follow,
+    // and the rewrite quotes the miss and the number to aim at.
     const llm = new ScriptedLlm([llmResponse(discourseJson(["question", "attempt", "pushback", "land"], 60)), llmResponse(VALID_DISCOURSE)]);
     const result = await generate(llm, 60);
 
     expect(result.ok).toBe(true);
     expect(llm.calls).toHaveLength(2);
-    expect(llm.calls[1].messages[0].content).toContain("previous_attempt_rejected");
+    expect(llm.calls[1].messages[0].content).toContain("previous_draft_was_the_wrong_length");
+    expect(llm.calls[1].messages[0].content).toContain("aim for about");
     if (!result.ok) throw new Error("expected an ok result");
     expect(result.value.structureNotes).toEqual([]);
+  });
+
+  it("spends no rewrite at all when the first draft is the right length", async () => {
+    const llm = new ScriptedLlm([llmResponse(VALID_DISCOURSE)]);
+    await generate(llm, 60);
+    expect(llm.calls).toHaveLength(1);
   });
 
   it("keeps the draft closest to the target when a rewrite overshoots the other way", async () => {
@@ -205,17 +208,52 @@ describe("generateDiscourseScript", () => {
     expect(result.value.wordCount).toBeLessThan(100);
   });
 
-  it("prefers a structurally sound draft over a better-timed lecture", async () => {
-    // Fatal beats advisory: a lecture is not improved by being the right
-    // length, so the well-formed draft wins even though it is the one that
-    // misses the duration.
-    const wellTimedLecture = discourseJson(["question", "attempt", "land"], wordsForSeconds(60, 3));
-    const mistimedButSound = discourseJson(["question", "attempt", "pushback", "land"], 60);
-    const result = await generate(new ScriptedLlm([llmResponse(wellTimedLecture), llmResponse(mistimedButSound)]), 60);
-
-    expect(result.ok).toBe(true);
+  it("stores and returns stripped text everywhere but the Gemini narration input", async () => {
+    // The hook becomes the YouTube title (upload-metadata.ts) and the
+    // console's headline. A delivery tag reaching either is the same class
+    // of leak as one reaching the captions.
+    const tagged = JSON.stringify({
+      hook: "[excitedly] Nobody reads the patch notes.",
+      beats: [
+        { move: "attempt", text: "[giggles] Not one person." },
+        { move: "land", text: "[sighs] And that is the story." },
+      ],
+      open_question: "[wistful] So who was it for?",
+    });
+    const result = await generate(new ScriptedLlm([llmResponse(tagged), llmResponse(tagged)]), 60);
     if (!result.ok) throw new Error("expected an ok result");
-    expect(JSON.parse(ctx.db.select().from(scripts).get()?.beats ?? "[]").map((b: { move: string }) => b.move)).toContain("pushback");
+
+    expect(result.value.hook).toBe("Nobody reads the patch notes.");
+    expect(result.value.debateQuestion).toBe("So who was it for?");
+    expect(result.value.beats.map((b) => b.text)).toEqual(["Not one person.", "And that is the story."]);
+    expect(result.value.body).not.toMatch(/[[\]]/);
+
+    // ...and the one field that keeps them, because Gemini performs them.
+    expect(result.value.narration.hook).toContain("[excitedly]");
+    expect(result.value.narration.beats[0].text).toContain("[giggles]");
+    expect(result.value.narration.openQuestion).toContain("[wistful]");
+
+    const row = ctx.db.select().from(scripts).where(eq(scripts.id, result.value.id)).get();
+    expect(row?.hook).toBe("Nobody reads the patch notes.");
+    expect(row?.debateQuestion).toBe("So who was it for?");
+    expect(row?.body).not.toMatch(/[[\]]/);
+    // The beats column keeps the tags: it is the record of the performance
+    // that was asked for, and the audit package reads it.
+    expect(row?.beats).toContain("[giggles]");
+  });
+
+  it("reports a bracketed note that was not usable direction, rather than dropping it silently", async () => {
+    const tagged = JSON.stringify({
+      hook: "Hook.",
+      beats: [
+        { move: "attempt", text: "[she gestures at the whole idea of it, wearily and at length] Fine." },
+        { move: "land", text: "[giggles] Truly fine." },
+      ],
+      open_question: "And?",
+    });
+    const result = await generate(new ScriptedLlm([llmResponse(tagged), llmResponse(tagged)]), 60);
+    if (!result.ok) throw new Error("expected an ok result");
+    expect(result.value.structureNotes.some((n) => n.includes("not usable direction"))).toBe(true);
   });
 
   it("puts the requested duration in the prompt, because the model writes to it", async () => {

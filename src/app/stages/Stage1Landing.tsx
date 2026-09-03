@@ -18,6 +18,7 @@ import {
   type PublicKeyCredentialRequestOptionsJSON,
 } from "@simplewebauthn/browser";
 import { ShardPane } from "../glass/ShardPane.tsx";
+import { LandingDemo } from "./LandingDemo.tsx";
 import type { SetKey } from "../glass/geometry.ts";
 import { Button } from "../ui/Button.tsx";
 
@@ -97,6 +98,7 @@ export function Stage1Landing({ setKey, onSignedIn }: Stage1Props) {
   }, [token]);
 
   return (
+    <>
     <div className="relative z-10 flex h-dvh flex-col">
       <header className="resolve-in flex shrink-0 items-center justify-between px-6 pt-6 sm:px-10">
         <span className="font-display text-sm font-semibold tracking-tight text-mercury">Mythos Engine</span>
@@ -162,7 +164,23 @@ export function Stage1Landing({ setKey, onSignedIn }: Stage1Props) {
         >
           {status?.message ?? ""}
         </p>
+
+        {/* The demo below is the only thing a signed-out reader can be
+            shown, so it has to be discoverable. An affordance, not an
+            auto-scroll: hijacking the first wheel event to "help" is the
+            single most resented pattern on a scroll page. */}
+        <a
+          href="#how-it-works"
+          className="mt-1 flex flex-col items-center gap-1 font-mono text-[0.62rem] uppercase tracking-[0.22em] text-bone transition-colors hover:text-mercury"
+        >
+          See it build one
+          <span aria-hidden="true" className="landing-scroll-cue">↓</span>
+        </a>
       </div>
     </div>
+    <div id="how-it-works">
+      <LandingDemo setKey={setKey} />
+    </div>
+    </>
   );
 }

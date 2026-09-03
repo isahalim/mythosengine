@@ -1,5 +1,5 @@
 import type { AsrWord, TtsWordTiming } from "../drivers/types.ts";
-import type { DiscourseMove } from "./script-schema.ts";
+import type { BeatMove } from "./script-schema.ts";
 import type { BeatWordRange } from "./discourse.ts";
 import { err, ok, type Result } from "../result.ts";
 
@@ -20,7 +20,7 @@ const MIN_MATCH_RATIO = 0.6;
 
 interface BeatBoundary {
   beatIndex: number;
-  move: DiscourseMove;
+  move: BeatMove;
   startMs: number;
   endMs: number;
 }

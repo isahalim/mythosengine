@@ -218,3 +218,16 @@ body {
     transition: none;
   }
 }
+
+/* The landing's scroll affordance — a slow fall, and nothing at all for a
+   reader who has asked for less motion. */
+.landing-scroll-cue {
+  animation: landing-cue 2.4s var(--ease-out) infinite;
+}
+@keyframes landing-cue {
+  0%, 100% { transform: translateY(0); opacity: 0.55; }
+  50% { transform: translateY(4px); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .landing-scroll-cue { animation: none; }
+}

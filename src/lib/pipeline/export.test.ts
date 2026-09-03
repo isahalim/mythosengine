@@ -27,6 +27,7 @@ const auditResult: AuditResult = {
   schemaValid: true,
   wordCountInBounds: true,
   narration: null,
+  performance: null,
   narrationDowngraded: false,
   characterAbsentReason: null,
   character: null,

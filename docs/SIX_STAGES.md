@@ -53,12 +53,39 @@ across the top, the spheres still drifting.
 
 | # | Rail | What the operator does | Reads | Writes |
 |---|---|---|---|---|
-| 1 | — | Signs in, or enrols a passkey | — | `/auth/passkey/*` |
+| 1 | — | Signs in or enrols a passkey — and, scrolling, watches the pipeline build one video | — | `/auth/passkey/*` |
 | 2 | How many | Lights one shard per video wanted (`# of glows = # of videos`) | — | local only |
 | 3 | Topics | Each lit shard fuses with a new one; a caustic dial gives it a topic colour | — | local only |
 | 4 | Ideas | A larger shard joins each video, carrying its story | `GET /console/ideas` | local only |
 | 5 | Agents deployed | Watches each video's pane heal as the pipeline works | `GET /console/runs/:id`, `…/montage` | `POST /console/run-plan`, `POST /console/dispatch` (on entry) |
 | 6 | Review / past work | Downloads, reads the upload sheet, marks reviewed, discards, runs it again | `GET /console/exports`, `…/:id/metadata` | mark-reviewed, discard |
+
+### Stage 1 — the landing, and the scroll demo below it
+
+The hero is unchanged: the shattered pane carrying "shatter into reality.",
+and one button.
+
+Below it, `src/app/stages/LandingDemo.tsx` is the only thing a signed-out
+reader can be shown. It scrubs the **real** seven stages of
+`scripts/pipeline/render.ts` — WATCH, RESEARCH, SCRIPT, PLAN, SOURCE, EDIT,
+RENDER, under those names, because the person reading this is the person who
+will later read those names in a log. Each stage lands one more fragment out
+of depth, so by RENDER the glass has assembled into a 9:16 pane with a real
+finished Short inside it, playable. **The video is pipeline output**
+(`public/demo/`), not a mock: a landing page that fakes the product is the
+one thing this surface cannot do, given §9 is an argument about audit trails.
+
+Motion is hand-written (`src/app/glass/useScrollAssembly.ts`) rather than
+GSAP/Lenis/three.js — CLAUDE.md forbids adding a framework without operator
+instruction, the effect is two lerps in a rAF loop, and the glass is already
+a DOM surface, so a WebGL renderer beside it would mean two glass
+implementations that have to look identical. The technique is the standard
+one and worth naming: a `sticky` stage over a tall track, progress **read**
+from `getBoundingClientRect()` every frame rather than accumulated from
+deltas (which drifts, and breaks on a restored scroll position), per-shard
+staggered windows, and all reads and writes batched into one rAF. Native
+scrolling is never hijacked, and `prefers-reduced-motion` lands every
+fragment at once.
 
 ### Stage 2 — the shard is the input
 

@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
-import type { DiscourseMove, DiscourseScriptResponse } from "./script-schema.ts";
-import { beatWordRanges, describeViolations, discourseWordCount, estimatedReadSeconds, flattenBeats, validateBeatStructure, wordCountRange } from "./discourse.ts";
+import type { BeatMove, DiscourseScriptResponse } from "./script-schema.ts";
+import { beatWordRanges, describeAdvisories, discourseWordCount, estimatedReadSeconds, flattenBeats, reviewScript, wordCountRange } from "./discourse.ts";
 
 /**
  * Beat text of a known length, so a test can ask for "a 60-second script"
  * without hand-counting words. 165 words per minute is the estimator's
  * constant, so 165 words is exactly one minute.
  */
-function beatsOfWords(moves: readonly DiscourseMove[], wordsEach: number): { move: DiscourseMove; text: string }[] {
+function beatsOfWords(moves: readonly BeatMove[], wordsEach: number): { move: BeatMove; text: string }[] {
   return moves.map((move, i) => ({ move, text: `${move}${i} ${Array.from({ length: wordsEach - 1 }, (_, w) => `w${w}`).join(" ")}` }));
 }
 
-function script(moves: readonly DiscourseMove[], wordsEach = 10): DiscourseScriptResponse {
+function script(moves: readonly BeatMove[], wordsEach = 10): DiscourseScriptResponse {
   return { hook: "Hook line here.", beats: beatsOfWords(moves, wordsEach), open_question: "So which is it?" };
 }
 
@@ -41,95 +41,59 @@ describe("flattenBeats", () => {
   });
 });
 
-describe("validateBeatStructure", () => {
+describe("reviewScript", () => {
   const target = 60;
   const words = wordsPerBeatFor(target, 4);
 
-  it("passes the canonical shape: question, attempt, pushback, land", () => {
-    const s = script(["question", "attempt", "pushback", "land"], words);
-    expect(validateBeatStructure(s, target)).toEqual([]);
-  });
-
-  it("rejects a lecture — attempt straight to land, never wrong once", () => {
-    const s = script(["question", "attempt", "land", "land"], words);
-    const violations = validateBeatStructure(s, target);
-    expect(violations.map((v) => v.kind)).toContain("no_pushback");
-  });
-
-  it("rejects a pushback that sits after the last land, where it pushes back against nothing", () => {
-    const s = script(["attempt", "land", "pushback", "reframe"], words);
-    const violations = validateBeatStructure(s, target);
-    expect(violations.map((v) => v.kind)).toEqual(["pushback_out_of_position"]);
-    expect(violations[0].message).toContain("wrong before she is right");
-  });
-
-  it("rejects a pushback that comes before the first attempt", () => {
-    const s = script(["pushback", "attempt", "land", "reframe"], words);
-    expect(validateBeatStructure(s, target).map((v) => v.kind)).toEqual(["pushback_out_of_position"]);
-  });
-
-  it("rejects a script that never lands", () => {
-    const s = script(["question", "attempt", "pushback", "reframe"], words);
-    expect(validateBeatStructure(s, target).map((v) => v.kind)).toContain("no_land");
-  });
-
-  it("allows moves to repeat and to skip — the gate is not a template", () => {
-    const s = script(["question", "question", "attempt", "pushback", "reframe", "pushback", "land"], wordsPerBeatFor(target, 7));
-    expect(validateBeatStructure(s, target)).toEqual([]);
+  it("says nothing about a script that is roughly the right length, whatever shape it is", () => {
+    // Every one of these was a hard failure until 2026-09-03. A story has no
+    // pushback; an escalation has nothing to be wrong about; a hot take
+    // states its verdict first. The gate could only ever describe a
+    // discourse, so it made every script one.
+    for (const moves of [
+      ["question", "attempt", "pushback", "land"],
+      ["setup", "escalation", "turn", "land"],
+      ["verdict", "evidence", "escalation", "punchline"],
+      ["confession", "setup", "reframe", "open"],
+      ["attempt", "land", "pushback", "reframe"],
+    ] as const) {
+      expect(reviewScript(script([...moves], words), target)).toEqual([]);
+    }
   });
 
   it("flags a script written far under the requested duration", () => {
     const s = script(["question", "attempt", "pushback", "land"], 5);
-    const violations = validateBeatStructure(s, 180);
-    expect(violations.map((v) => v.kind)).toContain("too_short");
+    expect(reviewScript(s, 180).map((a) => a.kind)).toEqual(["too_short"]);
   });
 
   it("flags a script written far over the requested duration", () => {
     const s = script(["question", "attempt", "pushback", "land"], 200);
-    expect(validateBeatStructure(s, 60).map((v) => v.kind)).toContain("too_long");
+    expect(reviewScript(s, 60).map((a) => a.kind)).toEqual(["too_long"]);
   });
 
   it("tolerates being within 25% of the target, because the estimator is one constant standing in for delivery speed", () => {
     const s = script(["question", "attempt", "pushback", "land"], wordsPerBeatFor(target * 1.2, 4));
-    expect(validateBeatStructure(s, target)).toEqual([]);
-  });
-
-  it("calls the structural faults fatal and the length faults advisory", () => {
-    // The split is the whole point: a lecture is the format failing, a
-    // length miss is a 165-wpm constant being approximately right. Only the
-    // first may cost the day's video (see generateDiscourseScript).
-    const lecture = script(["question", "attempt", "land"], wordsPerBeatFor(target, 3));
-    expect(validateBeatStructure(lecture, target).map((v) => [v.kind, v.severity])).toEqual([["no_pushback", "fatal"]]);
-
-    const noLand = script(["question", "attempt", "pushback"], wordsPerBeatFor(target, 3));
-    expect(validateBeatStructure(noLand, target).map((v) => v.severity)).toEqual(["fatal"]);
-
-    const misplaced = script(["attempt", "land", "pushback"], wordsPerBeatFor(target, 3));
-    expect(validateBeatStructure(misplaced, target).map((v) => [v.kind, v.severity])).toEqual([["pushback_out_of_position", "fatal"]]);
-
-    const long = script(["question", "attempt", "pushback", "land"], 200);
-    expect(validateBeatStructure(long, target).map((v) => [v.kind, v.severity])).toEqual([["too_long", "advisory"]]);
-
-    const short = script(["question", "attempt", "pushback", "land"], 5);
-    expect(validateBeatStructure(short, 180).map((v) => [v.kind, v.severity])).toEqual([["too_short", "advisory"]]);
+    expect(reviewScript(s, target)).toEqual([]);
   });
 
   it("tells a mislengthed draft the word count to aim at, not only the seconds it missed by", () => {
     // The live 2026-09-03 run went under the floor, then over the ceiling,
-    // because neither rejection named the number. `wordCountRange` is that
-    // number, and both length messages now quote it.
+    // because neither rejection named the number.
     const range = wordCountRange(90);
-    const long = script(["question", "attempt", "pushback", "land"], 100);
-    const message = validateBeatStructure(long, 90)[0].message;
+    const message = reviewScript(script(["question", "attempt", "pushback", "land"], 100), 90)[0].message;
     expect(message).toContain(`aim for about ${range.target}`);
     expect(message).toContain(`(${range.min}-${range.max})`);
+    expect(describeAdvisories(reviewScript(script(["question", "attempt"], 100), 90)).split("\n")).toHaveLength(1);
   });
 
-  it("reports every violation at once, so one repair message can carry them all", () => {
-    const s = script(["attempt", "reframe"], 4);
-    const violations = validateBeatStructure(s, 180);
-    expect(violations.map((v) => v.kind).sort()).toEqual(["no_land", "no_pushback", "too_short"]);
-    expect(describeViolations(violations).split("\n")).toHaveLength(3);
+  it("measures spoken words, not delivery tags", () => {
+    // A tagged script and its stripped twin are the same length. If they
+    // were not, every video using non-verbal cues would read as too long and
+    // burn its one rewrite on a phantom.
+    const plain: DiscourseScriptResponse = { hook: "Hook line here.", beats: [{ move: "land", text: "one two three four five" }], open_question: "So which is it?" };
+    const tagged: DiscourseScriptResponse = { hook: "[excitedly] Hook line here.", beats: [{ move: "land", text: "[giggles] one two three four five [sighs]" }], open_question: "[wistful] So which is it?" };
+    expect(discourseWordCount(tagged)).toBe(discourseWordCount(plain));
+    expect(reviewScript(tagged, 60)).toEqual(reviewScript(plain, 60));
   });
 });
 

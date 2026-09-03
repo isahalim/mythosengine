@@ -1,3 +1,14 @@
+> **Superseded in part, 2026-09-03.** This plan's §4 required every script to
+> be a discourse — one `pushback` between an `attempt` and a `land`, enforced
+> as a gate that failed the render. Operator direction removed that gate: the
+> rule could only describe one shape, and it threw away finished renders for
+> scripts that were merely a different one. Formats are now **rolled** per
+> video (`SCRIPT_FORMATS` in `src/lib/pipeline/performance.ts`) and discourse
+> is one of six. Scripts also carry Gemini's inline delivery tags, and length
+> is a guide rather than a gate. See ARCHITECTURE.md §5.3.1 and §5.3.2 for
+> what actually runs; the rest of this document is still the record of why the
+> single-host format exists at all.
+
 # Plan v2 — the single-host discourse format
 
 **Status:** proposed, 2026-08-31; revised twice the same day. Nothing here is
@@ -409,7 +420,7 @@ Gemini was authorized by explicit operator instruction the same day, which
 repository secret and a Worker secret.
 
 **SCRIPT.** `generateDiscourseScript` emits `{hook, beats: [{move, text}],
-open_question}` against `prompts/script.v3.md`, written to a requested
+open_question}` against `prompts/script.v4.md`, written to a requested
 duration rather than a word count. The gate (`src/lib/pipeline/discourse.ts`)
 enforces the one rule that makes this a format — a `pushback` between an
 `attempt` and a `land` — and it is *positional*, not a presence check: a

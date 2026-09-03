@@ -15,7 +15,7 @@ import { checkAndAlert } from "../../src/server/alerts/rules.ts";
 import { pickVoicesForToday, weightSourcesForToday } from "../../src/lib/pipeline/diversity.ts";
 import { generateDiscourseScript } from "../../src/lib/pipeline/script.ts";
 import { beatWordRanges } from "../../src/lib/pipeline/discourse.ts";
-import { buildDirectedNarration, FLAT_DIRECTION } from "../../src/lib/pipeline/tts-direction.ts";
+import { buildDirectedNarration } from "../../src/lib/pipeline/tts-direction.ts";
 import { selectTtsDrivers, synthesizeWithFallback } from "../../src/lib/pipeline/tts-select.ts";
 import { readGeminiTtsBudget, recordGeminiTtsAttempt, settleGeminiTtsAttempt } from "../../src/lib/pipeline/tts-budget.ts";
 import { CHARACTER_BOTTOM_MARGIN_RATIO, CHARACTER_HEIGHT_RATIO, HOST_GEMINI_VOICE, resolveCharacterPack } from "../../src/lib/pipeline/character.ts";
@@ -266,7 +266,13 @@ async function main(): Promise<void> {
   // estimate (src/lib/pipeline/discourse.ts), so the miss has to be visible
   // somewhere the operator will see it — the render log here, and AUDIT
   // SUMMARY's word-count flag on the review surface.
-  for (const note of script.structureNotes) console.warn(`SCRIPT: accepted with an advisory gate note — ${note}`);
+  for (const note of script.structureNotes) console.warn(`SCRIPT: accepted with an advisory note — ${note}`);
+  console.warn(
+    `SCRIPT: performance roll — format "${script.performance.format.id}", ` +
+      `${script.performance.opening.tone}/${script.performance.opening.pace} -> ${script.performance.middle.tone} -> ${script.performance.closing.tone}/${script.performance.closing.pace}, ` +
+      `cues [${script.performance.nonVerbal.join(", ")}] x~${script.performance.cueTarget}` +
+      `${script.performance.stylistic === null ? "" : `, character "${script.performance.stylistic}"`}.`,
+  );
 
   // ---- CRITIC ----
   //
@@ -417,12 +423,14 @@ async function main(): Promise<void> {
     if (selection.unavailableReason !== null) console.warn(`TTS: ${selection.unavailableReason}`);
     else console.warn(`TTS: Gemini narration available — ${geminiBudget.spent}/${geminiBudget.budget} requests spent on ${geminiBudget.day} (Pacific).`);
 
-    // The beats reach TTS two ways: Gemini gets the bracketed direction,
-    // Edge gets the plain narration. Both speak the same words — only the
-    // Gemini input carries the delivery notes, and those are never spoken.
-    const directed = script.beats
-      ? buildDirectedNarration(script.hook, script.beats, script.debateQuestion, directive.perBeatDelivery ?? false)
-      : { styleDirection: FLAT_DIRECTION, text: script.body };
+    // The beats reach TTS two ways, and the asymmetry is the whole design.
+    // Gemini gets the writer's inline delivery tags — the laughs, the sighs,
+    // the tone changes this video was rolled for — because it is the only
+    // driver that performs them. Edge gets `script.body`, which is the same
+    // words with every tag stripped by `flattenBeats`. That is also the
+    // string the captions are built from, so a tag cannot reach the screen
+    // even if the writer puts one somewhere strange (delivery-tags.ts).
+    const directed = buildDirectedNarration(script.narration.hook, script.narration.beats, script.narration.openQuestion, directive.perBeatDelivery ?? false, script.performance);
 
     const ttsRunId = await startRun(env.db, "tts", traceId);
     const ttsResult = await synthesizeWithFallback(
@@ -658,11 +666,28 @@ async function main(): Promise<void> {
     const hostOnScreen = finishedPath === outputPath;
 
     // ---- AUDIT SUMMARY (deterministic, no model call, never blocks) ----
-    const recentScripts = await env.db.select().from(scripts).orderBy(desc(scripts.createdAt)).limit(100).all();
+    // Excluding this render's own script, which SCRIPT inserted several
+    // stages ago. Without that filter the near-duplicate check compared the
+    // script against itself and reported `script similarity 1.00 >= 0.85` on
+    // every export ever made — a self-repetition detector that always fires
+    // is worse than none, because it teaches the operator to skip the line.
+    const recentScripts = (await env.db.select().from(scripts).orderBy(desc(scripts.createdAt)).limit(101).all()).filter((row) => row.id !== script.id);
     const captionEndMs = captionCues.length > 0 ? captionCues[captionCues.length - 1].endMs : 0;
     const auditResult = computeAuditSummary({
       script: { hook: script.hook, body: script.body, debateQuestion: script.debateQuestion, wordCount: script.wordCount },
       targetDurationS: script.targetDurationS,
+      performance: {
+        seed: script.performance.seed,
+        format: script.performance.format.id,
+        arc: `${script.performance.opening.tone}/${script.performance.opening.pace} -> ${script.performance.middle.tone} -> ${script.performance.closing.tone}/${script.performance.closing.pace}`,
+        nonVerbal: script.performance.nonVerbal,
+        cueTarget: script.performance.cueTarget,
+        stylistic: script.performance.stylistic,
+        // Only Gemini performs the inline tags. On Edge the script's laughs
+        // and sighs are stripped along with every other tag and simply are
+        // not in the audio.
+        deliveryApplied: tts.driver === "gemini-tts",
+      },
       narration: {
         driver: tts.driver,
         voice: tts.driver === "gemini-tts" ? HOST_GEMINI_VOICE : voice,

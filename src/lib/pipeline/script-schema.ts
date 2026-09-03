@@ -11,26 +11,53 @@ export const CriticResponseSchema = z
   .strict();
 
 /**
- * The `move` a beat performs — plan v2 §4, and the single most load-bearing
- * field in the discourse format. With two hosts the dynamic came free from
- * alternating voices; with one host it has to be made explicit, or the
- * script degrades into the flat narration this format exists to escape.
+ * The `move` a beat performs — the single most load-bearing field in the
+ * script format. With two hosts the dynamic came free from alternating
+ * voices; with one host it has to be made explicit, or the script degrades
+ * into the flat narration this format exists to escape.
  *
- * Order here is the canonical order of the argument — `question` ->
- * `attempt` -> `pushback` -> `reframe` -> `land` -> `open` — and it is
- * documentation, not a constraint: a script may skip moves and may repeat
- * them. What it may not do is reach a `land` without ever having been wrong.
- * That rule is structural and lives in `validateBeatStructure`
- * (discourse.ts), because a shape cannot express it.
+ * The first six are the discourse arc — `question` -> `attempt` ->
+ * `pushback` -> `reframe` -> `land` -> `open` — which was the *only* shape a
+ * script could take until 2026-09-03. It is now one format among several
+ * (see `SCRIPT_FORMATS` in performance.ts), so the vocabulary widened to
+ * cover what the others actually do: a story has a `setup` and a `turn`, a
+ * hot take has `evidence` and a `verdict`, and every format wants an `aside`
+ * and a `punchline` available for the joke the writer is asked to land.
+ *
+ * Nothing here is enforced as an ordering any more. The lecture gate that
+ * required a `pushback` between an `attempt` and a `land` was removed by
+ * operator direction on 2026-09-03: it could only ever describe one of these
+ * formats, and it failed whole renders for scripts that were merely a
+ * different shape. `move` now feeds delivery direction (tts-direction.ts),
+ * PLAN's shot hints, and beat boundaries for the footage cuts — all of which
+ * degrade gracefully on a move they did not expect, which the gate did not.
  */
-const DISCOURSE_MOVES = ["question", "attempt", "pushback", "reframe", "land", "open"] as const;
+const BEAT_MOVES = [
+  // The discourse arc.
+  "question",
+  "attempt",
+  "pushback",
+  "reframe",
+  "land",
+  "open",
+  // Narrative and argumentative shapes.
+  "setup",
+  "turn",
+  "escalation",
+  "evidence",
+  "verdict",
+  "confession",
+  // Available to every format.
+  "aside",
+  "punchline",
+] as const;
 
-const DiscourseMoveSchema = z.enum(DISCOURSE_MOVES);
-export type DiscourseMove = z.infer<typeof DiscourseMoveSchema>;
+const BeatMoveSchema = z.enum(BEAT_MOVES);
+export type BeatMove = z.infer<typeof BeatMoveSchema>;
 
 const DiscourseBeatSchema = z
   .object({
-    move: DiscourseMoveSchema,
+    move: BeatMoveSchema,
     text: z.string().min(1),
   })
   .strict();
@@ -38,16 +65,19 @@ const DiscourseBeatSchema = z
 export type DiscourseBeat = z.infer<typeof DiscourseBeatSchema>;
 
 /**
- * SCRIPT's v3 response (plan v2 §4). `hook` and `open_question` stay
- * top-level rather than being inferred from the first and last beats: they
- * are the two lines the format is most opinionated about — a hook under
- * three seconds, and a closing question that is genuinely unresolved — and
- * asking for them by name is what lets the prompt hold each to its own rule.
+ * SCRIPT's response. `hook` and `open_question` stay top-level rather than
+ * being inferred from the first and last beats: they are the two lines every
+ * format is most opinionated about — a hook under three seconds, and a
+ * closing line that leaves something genuinely open — and asking for them by
+ * name is what lets the prompt hold each to its own rule.
  *
- * The beat list carries the argument itself. Two beats is the floor the
- * schema can enforce; the real floor is structural and lives in
- * discourse.ts, because "has at least one pushback between an attempt and a
- * land" is not something a shape can express.
+ * Beat `text` may carry inline delivery tags (`[giggles]`, `[excitedly]`).
+ * They are stripped on every path but the Gemini TTS one — see
+ * delivery-tags.ts, which is where that guarantee actually lives.
+ *
+ * Two beats is the floor, and it is the only structural rule left. The
+ * ordering gate that once sat behind this schema was removed by operator
+ * direction on 2026-09-03.
  */
 export const DiscourseScriptResponseSchema = z
   .object({
