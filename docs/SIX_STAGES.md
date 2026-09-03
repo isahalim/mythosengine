@@ -69,11 +69,46 @@ Below it, `src/app/stages/LandingDemo.tsx` is the only thing a signed-out
 reader can be shown. It scrubs the **real** seven stages of
 `scripts/pipeline/render.ts` — WATCH, RESEARCH, SCRIPT, PLAN, SOURCE, EDIT,
 RENDER, under those names, because the person reading this is the person who
-will later read those names in a log. Each stage lands one more fragment out
-of depth, so by RENDER the glass has assembled into a 9:16 pane with a real
-finished Short inside it, playable. **The video is pipeline output**
-(`public/demo/`), not a mock: a landing page that fakes the product is the
-one thing this surface cannot do, given §9 is an argument about audit trails.
+will later read those names in a log.
+
+**Scrolling builds; clicking opens.** The scroll lands the sixteen fragments
+of the portrait cut one slice at a time until the pane is whole — a slab,
+with a video sealed inside it. From there it is the reader's move (operator
+sketch, 2026-09-03):
+
+| State | What it is | What the reader does |
+|---|---|---|
+| `sealed` | The unbroken slab, 3D and lit under the cursor | Click to crack it |
+| `cracked` | The fragments spring apart; hovering one reveals the frame behind it | Click again to play |
+| `open` | The middle clears, the video plays, the rim fragments stay live | Watch it |
+
+Three things are worth knowing about how that is built.
+
+**The whole cut, not the review section's eight.** `forgeLayout` picks a
+deliberately sparse subset (37–48% coverage) because a review card should
+read as a *card made of shards*. A sealed slab cannot: eight fragments with
+holes between them read as scattered glass however they are arranged. All
+sixteen `MOBILE` pieces tessellate, so at rest they meet along their real
+photographed edges. The hover reveal is the review card's, class for class
+(`.forge-dream`, `.shard--hot`) — a reader who signs in should recognise the
+object they were just playing with. Only the content differs: the console
+reveals the Pexels stills a render is sourcing from an authenticated
+endpoint, and this reveals frames of the finished video, which is what a
+signed-out page actually has.
+
+**The middle clears in `open`, it does not merely fade.** The first version
+pushed each fragment outward by a proportion of its own distance from the
+centre, which moves rim pieces a long way and middle ones almost not at all
+— so the video played under four shards sitting across it. Fragments inside
+`RIM_THRESHOLD` are now cleared *and* given `pointer-events: none`, because
+an invisible fragment still swallows the click meant for the play button
+underneath it.
+
+**Three transforms, one owner each.** The outer wrapper is the scroll
+assembly (written every frame by `useScrollAssembly`), the inner one is the
+slab state (a CSS transition), and the `.shard` itself is the cursor pose
+(the spring loop in `useShardField`, live in every state including `sealed`).
+They compose; none of them fights another for the same style.
 
 Motion is hand-written (`src/app/glass/useScrollAssembly.ts`) rather than
 GSAP/Lenis/three.js — CLAUDE.md forbids adding a framework without operator
@@ -86,6 +121,21 @@ deltas (which drifts, and breaks on a restored scroll position), per-shard
 staggered windows, and all reads and writes batched into one rAF. Native
 scrolling is never hijacked, and `prefers-reduced-motion` lands every
 fragment at once.
+
+**Opacity and position ride separate curves, and that is not a detail.**
+They shared one 42%-wide window at first, so the opening fragment sat at
+opacity 0.01 when the reader arrived and had reached only 0.26 by the second
+stage: a screen and a half of scrolling against a blank pane, under a caption
+confidently announcing "STAGE 1 OF 7". Nothing was broken and it was
+indistinguishable from broken — reported by the operator as "I am stuck on
+this and can't move forward". A fragment now reaches full opacity in the
+first third of its window and spends the rest travelling, so scrolling always
+does something visible.
+
+**The video is pipeline output** (`public/demo/`, built by
+`scripts/make-demo-asset.mjs` from a real export), not a mock: a landing page
+that fakes the product is the one thing this surface cannot do, given §9 is
+an argument about audit trails.
 
 ### Stage 2 — the shard is the input
 

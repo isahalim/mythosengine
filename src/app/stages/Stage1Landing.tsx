@@ -179,7 +179,7 @@ export function Stage1Landing({ setKey, onSignedIn }: Stage1Props) {
       </div>
     </div>
     <div id="how-it-works">
-      <LandingDemo setKey={setKey} />
+      <LandingDemo />
     </div>
     </>
   );

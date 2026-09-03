@@ -60,5 +60,28 @@ run([
 // first caption mid-word.
 run(["-ss", "2.5", "-i", VIDEO, "-frames:v", "1", "-q:v", "4", POSTER]);
 
+/**
+ * One frame per fragment of the landing demo's glass, for the hover reveal.
+ *
+ * The review section's cards reveal the Pexels stills a render is sourcing,
+ * read from an authenticated endpoint. The landing page has no session, so
+ * it reveals frames of the finished video instead — which is the better
+ * answer anyway: what is behind the glass is literally what is inside it,
+ * and inventing stock imagery to decorate a landing page would be the one
+ * thing this particular product must not do.
+ *
+ * Sampled across the middle 80% so neither the opening wave nor the closing
+ * one supplies every fragment.
+ */
+const FRAGMENTS = 8;
+const duration = Number(
+  execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", VIDEO], { encoding: "utf8" }).trim(),
+);
+for (let i = 0; i < FRAGMENTS; i++) {
+  const at = duration * (0.1 + (0.8 * i) / (FRAGMENTS - 1));
+  run(["-ss", at.toFixed(2), "-i", VIDEO, "-frames:v", "1", "-vf", "scale=360:-2", "-q:v", "6", join(OUT_DIR, `frame-${i + 1}.jpg`)]);
+}
+
 const mb = (p) => (statSync(p).size / 1e6).toFixed(2);
-console.log(`demo asset: ${VIDEO} (${mb(VIDEO)} MB), poster ${POSTER} (${mb(POSTER)} MB)`);
+const frameBytes = Array.from({ length: FRAGMENTS }, (_, i) => statSync(join(OUT_DIR, `frame-${i + 1}.jpg`)).size).reduce((a, b) => a + b, 0);
+console.log(`demo asset: ${VIDEO} (${mb(VIDEO)} MB), poster ${POSTER} (${mb(POSTER)} MB), ${FRAGMENTS} frames (${(frameBytes / 1e6).toFixed(2)} MB)`);

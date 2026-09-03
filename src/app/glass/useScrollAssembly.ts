@@ -31,10 +31,8 @@ import { useEffect, useRef, type RefObject } from "react";
 import { jitter } from "./geometry.ts";
 
 export interface AssemblyOptions {
-  /** How much of the timeline one fragment takes to settle, as a fraction of the whole. */
-  window?: number;
-  /** Fraction of the timeline reserved after the last fragment lands, for the payoff. */
-  tail?: number;
+  /** How many fragments settle before the payoff — the rest of the timeline is the tail. */
+  assemblyEnd?: number;
   /** Called with 0..1 on every frame the progress actually changes. */
   onProgress?: (p: number) => void;
 }
@@ -43,6 +41,28 @@ const clamp01 = (n: number): number => (n < 0 ? 0 : n > 1 ? 1 : n);
 
 /** Smoothstep. Linear scroll feels mechanical; this gives each fragment a soft arrival. */
 const ease = (t: number): number => t * t * (3 - 2 * t);
+
+/**
+ * How much of a fragment's window is spent fading in, as opposed to flying
+ * into place.
+ *
+ * This number is the whole reason the first version read as broken. Opacity
+ * and position used to share one curve over a window 42% of the timeline
+ * wide, so the first fragment sat at **opacity 0.01** when the reader
+ * arrived and had only reached 0.26 by the second stage — a screen and a
+ * half of scrolling against a blank pane, under a caption confidently
+ * announcing "STAGE 1 OF 7". Nothing was broken and it was indistinguishable
+ * from broken.
+ *
+ * So the two are separated. A fragment reaches full opacity in the first
+ * third of its window and spends the rest travelling: it announces itself
+ * immediately, then earns its place. Scrolling always does something
+ * visible.
+ */
+const FADE_FRACTION = 0.34;
+
+/** Never fully invisible once its window has opened — the first frame of a fragment's life is still a fragment. */
+const MIN_VISIBLE = 0.12;
 
 function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -56,7 +76,7 @@ export function useScrollAssembly(
   trackRef: RefObject<HTMLElement | null>,
   stageRef: RefObject<HTMLElement | null>,
   count: number,
-  { window: settleWindow = 0.42, tail = 0.18, onProgress }: AssemblyOptions = {},
+  { assemblyEnd = 0.82, onProgress }: AssemblyOptions = {},
 ): void {
   // Held in a ref so changing the callback does not tear down the loop and
   // restart the animation mid-scroll.
@@ -75,11 +95,14 @@ export function useScrollAssembly(
     let frame = 0;
     let last = -1;
 
-    // Each fragment's slice of the timeline. Spread across everything before
-    // the tail, so the last one lands with room to spare and the payoff is
-    // not competing with a shard still in flight.
-    const runway = Math.max(0.0001, 1 - tail - settleWindow);
-    const startOf = (i: number): number => (shards.length === 1 ? 0 : (i / (shards.length - 1)) * runway);
+    // Each fragment gets its own slice of the assembly, and lands inside it.
+    // The slices are what ties the motion to the captions: the reader is told
+    // "STAGE 3 OF 7" and a fragment arrives while they are being told it. The
+    // window is a little wider than the slice so two neighbours overlap in
+    // flight and the pane assembles continuously rather than in ticks.
+    const slice = assemblyEnd / shards.length;
+    const settleWindow = slice * 1.35;
+    const startOf = (i: number): number => i * slice;
 
     const render = (): void => {
       frame = 0;
@@ -94,7 +117,10 @@ export function useScrollAssembly(
         progressRef.current?.(p);
 
         shards.forEach((el, i) => {
-          const local = reduced ? 1 : ease(clamp01((p - startOf(i)) / settleWindow));
+          const raw = reduced ? 1 : clamp01((p - startOf(i)) / settleWindow);
+          const local = ease(raw);
+          // Fast in, slow into place — see FADE_FRACTION.
+          const shown = raw <= 0 ? 0 : Math.max(MIN_VISIBLE, ease(clamp01(raw / FADE_FRACTION)));
           // Where this fragment comes in from. Deterministic per index, so
           // the assembly is identical on every visit and on a resize —
           // `jitter` is the same helper the resting poses use.
@@ -111,7 +137,7 @@ export function useScrollAssembly(
           const scale = 0.72 + 0.28 * local;
 
           el.style.transform = `translate3d(${tx.toFixed(2)}px, ${ty.toFixed(2)}px, ${tz.toFixed(1)}px) rotateX(${rx.toFixed(2)}deg) rotateZ(${rz.toFixed(2)}deg) scale(${scale.toFixed(3)})`;
-          el.style.opacity = local.toFixed(3);
+          el.style.opacity = shown.toFixed(3);
         });
       }
     };
@@ -128,5 +154,5 @@ export function useScrollAssembly(
       window.removeEventListener("scroll", schedule);
       window.removeEventListener("resize", schedule);
     };
-  }, [trackRef, stageRef, count, settleWindow, tail]);
+  }, [trackRef, stageRef, count, assemblyEnd]);
 }
