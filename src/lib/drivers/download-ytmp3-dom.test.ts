@@ -108,6 +108,11 @@ const FIXTURE_HTML = `<!doctype html>
   }
   function runConversion() {
     conversionAttempts++;
+    // Reported to the fixture's own server, same origin, before any outcome
+    // branching — so a test can count conversion STARTS rather than infer
+    // them from how long the driver took. The hang outcome returns early
+    // below and still gets counted, which is the case that needs it most.
+    fetch('/conversion-start');
     var result = document.getElementById('result');
     var status = document.getElementById('status-el');
     result.style.display = 'block';
@@ -226,6 +231,8 @@ describe.skipIf(!hasFfmpeg())("DomYtmp3DownloadDriver", () => {
   let server: Server;
   let baseUrl: string;
   let fileRequests: string[];
+  /** One entry per conversion the fixture page actually started (its `/conversion-start` beacon). */
+  let conversionStarts: number;
 
   beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), "ytmp3-dom-test-"));
@@ -240,8 +247,15 @@ describe.skipIf(!hasFfmpeg())("DomYtmp3DownloadDriver", () => {
   beforeEach(async () => {
     const realVideoBytes = await readFile(realVideoPath);
     fileRequests = [];
+    conversionStarts = 0;
     server = createServer((req, res) => {
       const path = (req.url ?? "").split("?")[0];
+      if (path === "/conversion-start") {
+        conversionStarts++;
+        res.writeHead(204);
+        res.end();
+        return;
+      }
       if (path.startsWith("/files/")) {
         fileRequests.push(path);
         res.writeHead(200, { "content-type": "video/mp4" });
@@ -379,6 +393,9 @@ describe.skipIf(!hasFfmpeg())("DomYtmp3DownloadDriver", () => {
 
     expect(result.ok).toBe(true);
     expect(fileRequests).toEqual(["/files/real.mp4"]);
+    // The first conversion failed and the driver pressed the page's own
+    // retry: two starts, not one and not three.
+    expect(conversionStarts).toBe(2);
   });
 
   it("gives up after the configured number of conversion attempts", async () => {
@@ -395,6 +412,7 @@ describe.skipIf(!hasFfmpeg())("DomYtmp3DownloadDriver", () => {
     if (!result.ok) expect(result.error.kind).toBe("provider_error");
     // Retrying is bounded — a converter that keeps failing is telling us
     // something real, and must not spin the job until the Actions timeout.
+    expect(conversionStarts).toBe(2);
     expect(fileRequests).toEqual([]);
   });
 
@@ -407,14 +425,22 @@ describe.skipIf(!hasFfmpeg())("DomYtmp3DownloadDriver", () => {
       maxConversionAttempts: 3,
     });
 
-    const startedAt = Date.now();
     const result = await driver.fetchVideo({ url: YOUTUBE_URL });
-    const elapsed = Date.now() - startedAt;
 
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.kind).toBe("timeout");
-    // One timeout budget, not three.
-    expect(elapsed).toBeLessThan(1_200 * 2);
+    // **One conversion start, not three**, counted at the fixture's server
+    // rather than inferred from the clock.
+    //
+    // This used to assert `elapsed < conversionTimeoutMs * 2`, and it was
+    // measuring the wrong thing: `elapsed` covers the whole of
+    // `fetchVideo` — launching Chromium, navigating, filling the form —
+    // and only 1.2s of that is the budget under test. A loaded two-core
+    // Actions runner spent 2,743ms on a single attempt and failed CI for a
+    // driver that had behaved perfectly. Wall clock cannot bound "how many
+    // times did it try" when the fixed cost of everything else is not
+    // itself bounded; the count can, and it is what the test is named for.
+    expect(conversionStarts).toBe(1);
   });
 
   it("times out — rather than hanging — when the page never resolves either way", async () => {
