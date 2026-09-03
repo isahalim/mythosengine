@@ -10,7 +10,7 @@
  * src/server/auth/webauthn.ts's verify* functions expect, so this file is
  * plumbing with no crypto of its own.
  */
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   startAuthentication,
   startRegistration,
@@ -49,6 +49,30 @@ export function Stage1Landing({ setKey, onSignedIn }: Stage1Props) {
   const [token, setToken] = useState("");
 
   const say = (message: string, error = false): void => setStatus({ message, error });
+
+  /**
+   * Let the document scroll, for as long as this stage is mounted.
+   *
+   * `body { overflow: hidden }` is right for stages 2-6 — they are
+   * viewport-sized and scroll internally — and it propagates to the
+   * viewport, so on the landing it removed the page's scrollport
+   * entirely. The demo below is scroll-driven and the "See it build one"
+   * cue is an anchor, so both were dead: the reader reached the demo,
+   * scrolled, and nothing moved.
+   *
+   * Cleared on unmount rather than left on, because signing in returns to
+   * a stage machine that owns the viewport again, and the page is put back
+   * to the top first: stage 2 rendering under a stale 3-screen scroll
+   * offset is a blank screen.
+   */
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.scroll = "page";
+    return () => {
+      window.scrollTo(0, 0);
+      delete root.dataset.scroll;
+    };
+  }, []);
 
   const signIn = useCallback(async () => {
     setBusy(true);

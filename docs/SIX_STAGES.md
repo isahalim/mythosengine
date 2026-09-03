@@ -132,6 +132,21 @@ this and can't move forward". A fragment now reaches full opacity in the
 first third of its window and spends the rest travelling, so scrolling always
 does something visible.
 
+**Native scrolling requires a scrollport, and the landing had none.** The
+demo reads page scroll, and `src/styles/global.css` sets `body { overflow:
+hidden }` because stages 2-6 are viewport-sized and scroll internally. With
+`<html>` left `visible` that value propagates to the viewport, so the whole
+document was unscrollable: the wheel, the trackpad, Page Down and the "See
+it build one" anchor were all inert, progress stayed pinned at 0, and the
+reader sat on "STAGE 1 OF 7" indefinitely — the second time this demo has
+looked broken while being intact, and the first time it actually was.
+Measured before: 4,816px of scrollable content, `scrollY` still 0 after
+3,200px of wheel. The landing now opts the document back into native
+scrolling for as long as it is mounted (`html[data-scroll="page"]`, set and
+cleared by `Stage1Landing`, which also returns the page to the top on the
+way out so stage 2 does not render under a three-screen scroll offset).
+Nothing about the input device, and nothing the demo's own code could fix.
+
 **The video is pipeline output** (`public/demo/`, built by
 `scripts/make-demo-asset.mjs` from a real export), not a mock: a landing page
 that fakes the product is the one thing this surface cannot do, given §9 is

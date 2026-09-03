@@ -30,6 +30,46 @@ body {
 }
 
 /* ------------------------------------------------------------------ */
+/*  The landing is the one tall document.                              */
+/*                                                                    */
+/*  Stages 2-6 are viewport-sized and scroll internally, so the rule   */
+/*  above pins the page. The landing is not: it is a full-height hero  */
+/*  followed by the demo's 560vh scroll track, and the demo is driven  */
+/*  entirely by native page scroll (`useScrollAssembly`).             */
+/*                                                                    */
+/*  `overflow: hidden` on <body> does not stay on <body>. With <html>  */
+/*  left `visible`, the body's value propagates to the viewport, so    */
+/*  the document had no scrollport at all: the wheel, the trackpad,    */
+/*  Page Down and the "See it build one" anchor were all inert, the    */
+/*  progress the demo reads stayed pinned at 0, and the reader sat on  */
+/*  STAGE 1 OF 7 forever. Nothing about the input device: there was    */
+/*  nothing to scroll.                                                */
+/*                                                                    */
+/*  So the landing opts the document back into native scrolling for    */
+/*  as long as it is mounted (Stage1Landing sets and clears the        */
+/*  attribute). Both elements have to be released: `height: 100%`      */
+/*  alone would cap the document at one viewport.                      */
+/* ------------------------------------------------------------------ */
+html[data-scroll="page"],
+html[data-scroll="page"] body {
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+}
+
+/* The cue is an anchor to a screen and a half further down; landing on
+   it instantly reads as a page swap rather than as travel. */
+html[data-scroll="page"] {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-scroll="page"] {
+    scroll-behavior: auto;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  The veil.                                                          */
 /*                                                                    */
 /*  The spheres are deliberately big and saturated (board 1), which is */
