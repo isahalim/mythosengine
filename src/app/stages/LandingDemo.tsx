@@ -131,9 +131,21 @@ export function LandingDemo() {
             top by half of it, and 68vh puts it where the sketch drew the
             line. Still `min()`ed against the viewport's width, because the
             cut is 9:16 and a tall narrow screen would otherwise size the
-            pane wider than the phone holding it. */}
+            pane wider than the screen holding it.
+
+            **A phone needs its own pair of numbers** (operator sketch on an
+            iPhone, 2026-09-03). The width cap is what governs there — 74vw
+            of a 402px screen is a 297px-tall pane, barely a third of the
+            viewport — so the same line drawn across the top of the screen
+            sat twice as far above the glass as it does on a laptop. Below
+            `sm` the cap is lifted to 130vw (the pane is then at most 73vw
+            wide, so it still cannot outgrow the screen) and height governs
+            on a phone too. 64vh rather than 68 because the caption wraps to
+            more lines on a narrow screen and the stack is centred: the
+            copy's extra height would otherwise push the glass back down.
+            `sm:` restores the laptop's exact pair, which is already right. */}
         <ShardPlayer
-          className="h-[min(68vh,74vw)] shrink-0"
+          className="h-[min(64vh,130vw)] shrink-0 sm:h-[min(68vh,74vw)]"
           src={DEMO_VIDEO}
           poster={DEMO_POSTER}
           revealUrl={frameUrl}
