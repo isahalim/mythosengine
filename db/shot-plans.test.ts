@@ -31,8 +31,8 @@ describe("shot plans", () => {
       "scr1",
       "trace1",
       [
-        { position: 0, beatIndex: null, intent: "opening", query: "city street crowd", source: "pexels", characterAction: null },
-        { position: 1, beatIndex: 0, intent: "the real thing", query: "GTA 6 walkthrough gameplay", source: "youtube", characterAction: null },
+        { position: 0, beatIndex: null, intent: "opening", query: "city street crowd", source: "pexels" },
+        { position: 1, beatIndex: 0, intent: "the real thing", query: "GTA 6 walkthrough gameplay", source: "youtube" },
       ],
       NOW,
     );
@@ -50,8 +50,8 @@ describe("shot plans", () => {
       "scr1",
       "trace1",
       [
-        { position: 0, beatIndex: null, intent: "a", query: "one query", source: "pexels", characterAction: null },
-        { position: 1, beatIndex: 0, intent: "b", query: "two query", source: "pexels", characterAction: null },
+        { position: 0, beatIndex: null, intent: "a", query: "one query", source: "pexels" },
+        { position: 1, beatIndex: 0, intent: "b", query: "two query", source: "pexels" },
       ],
       NOW,
     );
@@ -68,7 +68,7 @@ describe("shot plans", () => {
     // A shot that failed one candidate and succeeded on the next must not
     // keep displaying the reason it nearly did not.
     await seedScript(ctx, "scr1", "trace1");
-    await saveShotPlan(ctx.client, "scr1", "trace1", [{ position: 0, beatIndex: null, intent: "a", query: "one query", source: "pexels", characterAction: null }], NOW);
+    await saveShotPlan(ctx.client, "scr1", "trace1", [{ position: 0, beatIndex: null, intent: "a", query: "one query", source: "pexels" }], NOW);
 
     await advanceShot(ctx.db, "scr1", 0, "failed", LATER, { error: "first candidate was not a video" });
     await advanceShot(ctx.db, "scr1", 0, "clipped", LATER, { footageSegmentId: "seg1" });
@@ -83,8 +83,8 @@ describe("shot plans", () => {
     // stopped hours ago.
     await seedScript(ctx, "dead", "dead-trace");
     await seedScript(ctx, "live", "live-trace");
-    await saveShotPlan(ctx.client, "dead", "dead-trace", [{ position: 0, beatIndex: null, intent: "a", query: "one query", source: "youtube", characterAction: null }], NOW);
-    await saveShotPlan(ctx.client, "live", "live-trace", [{ position: 0, beatIndex: null, intent: "b", query: "two query", source: "youtube", characterAction: null }], NOW);
+    await saveShotPlan(ctx.client, "dead", "dead-trace", [{ position: 0, beatIndex: null, intent: "a", query: "one query", source: "youtube" }], NOW);
+    await saveShotPlan(ctx.client, "live", "live-trace", [{ position: 0, beatIndex: null, intent: "b", query: "two query", source: "youtube" }], NOW);
     await advanceShot(ctx.db, "dead", 0, "downloading", NOW);
     await advanceShot(ctx.db, "live", 0, "downloading", NOW);
 
@@ -99,7 +99,7 @@ describe("shot plans", () => {
 
   it("leaves a shot that actually made it into a video alone", async () => {
     await seedScript(ctx, "scr1", "old-trace");
-    await saveShotPlan(ctx.client, "scr1", "old-trace", [{ position: 0, beatIndex: null, intent: "a", query: "one query", source: "pexels", characterAction: null }], NOW);
+    await saveShotPlan(ctx.client, "scr1", "old-trace", [{ position: 0, beatIndex: null, intent: "a", query: "one query", source: "pexels" }], NOW);
     await advanceShot(ctx.db, "scr1", 0, "composited", NOW, { footageSegmentId: "seg1" });
 
     expect(await reapAbandonedShots(ctx.db, [], LATER)).toBe(0);
@@ -108,7 +108,7 @@ describe("shot plans", () => {
 
   it("treats `clipped` as unfinished, because the clip never reached a video", async () => {
     await seedScript(ctx, "scr1", "dead-trace");
-    await saveShotPlan(ctx.client, "scr1", "dead-trace", [{ position: 0, beatIndex: null, intent: "a", query: "one query", source: "pexels", characterAction: null }], NOW);
+    await saveShotPlan(ctx.client, "scr1", "dead-trace", [{ position: 0, beatIndex: null, intent: "a", query: "one query", source: "pexels" }], NOW);
     await advanceShot(ctx.db, "scr1", 0, "clipped", NOW, { footageSegmentId: "seg1" });
 
     expect(await reapAbandonedShots(ctx.db, [], LATER)).toBe(1);

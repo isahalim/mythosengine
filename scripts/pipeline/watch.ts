@@ -36,6 +36,10 @@ async function main(): Promise<void> {
   // nothing to add is a single read.
   const seeded = await seedSourcesFromYaml(env.db, env.rawClient, await readFile(SOURCES_YAML_PATH, "utf8"));
   if (seeded.inserted > 0) console.warn(`SEED: ${seeded.inserted} new source(s) added from data/sources.yml.`);
+  // Reported separately from an insert, because it means something different
+  // and more surprising: a source this system was already polling now points
+  // somewhere else. Silence here is what let the file and the table disagree.
+  if (seeded.updated > 0) console.warn(`SEED: ${seeded.updated} existing source(s) re-pointed to match data/sources.yml.`);
 
   // A previous run killed by the Actions job timeout leaves its row
   // `running` forever, which the console then reports as a live stage.

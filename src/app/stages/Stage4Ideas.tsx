@@ -5,24 +5,29 @@
  * each video grows a third, larger fragment, and the same caustic dial
  * picks which story it carries.
  *
- * Candidates come from GET /console/ideas. Entering this stage now does two
- * things it did not before 2026-09-02 (operator direction): it re-runs
- * WATCH's ingest **once**, so the corpus holds the latest discourse rather
- * than whatever the last scheduled poll left, and it has the model order one
- * topic's candidates rather than BM25.
+ * Candidates come from GET /console/ideas, ranked by BM25 and nothing else.
+ * Entering this stage re-runs WATCH's ingest **once** first, so the corpus
+ * holds the latest discourse rather than whatever the last scheduled poll
+ * left behind.
  *
- * Both halves are optional and neither can fail the screen. A feed that does
- * not answer, or a Worker with no Groq credential, leaves the operator
- * looking at the ideas they would have seen anyway, with a line saying so.
+ * A model reranker sat on the per-topic path for one day (2026-09-02) and
+ * was removed on 2026-09-03 by operator direction. It reordered the same
+ * corpus with the same prompt every visit, so it cost a request and landed
+ * in nearly the same order. Freshness is what this screen was missing, and
+ * freshness comes from the ingest plus a recency weight in the rank
+ * (src/server/console/ideas.ts) — both plain code, no credential, no
+ * degraded mode to explain to the operator.
+ *
+ * The ingest is still optional and still cannot fail the screen: a feed that
+ * does not answer leaves the operator looking at the ideas they would have
+ * seen anyway, with a line saying so.
  *
  * A video whose operator chose "let the agent decide" is ranked across every
  * topic and the strongest signal wins; the topic that won is recorded,
- * because "agent" is not a topic the queue accepts. **That path stays on
- * BM25** — see the fetch effect for why merging seven reranked lists is not
- * something a score-sort can do.
+ * because "agent" is not a topic the queue accepts.
  */
 import { useCallback, useEffect, useState } from "react";
-import { cancelRunPick, describeError, getRunPlan, listIdeas, listIdeasReranked, refreshIdeaSources } from "../api.ts";
+import { cancelRunPick, describeError, getRunPlan, listIdeas, refreshIdeaSources } from "../api.ts";
 import type { DriverError } from "../../lib/drivers/types.ts";
 import { FloatingField, FloatingGroup, ringPositions } from "../glass/FloatingField.tsx";
 import { videoShards } from "../glass/videoGlass.ts";
@@ -188,40 +193,30 @@ export function Stage4Ideas({ videos, onSetIdea, onConfirm, onUnauthorized, comp
     setError(null);
     setCandidates([]);
 
-    // The agent's pick genuinely ranks across every topic rather than
-    // quietly defaulting to one — that is what the dial promised.
-    // ---- one topic: the model orders it ----
+    // ---- one topic ----
     //
-    // The returned order IS the ranking, so nothing here re-sorts it.
-    // `RankedIdea.score` is BM25's blend and the reranker deliberately does
-    // not write to it, so a score-sort would silently undo the model's work
-    // and leave a feature that costs a request and changes nothing.
+    // The server returns them already ordered, so nothing here re-sorts.
     if (!isAgentChoice(choice)) {
-      void listIdeasReranked(choice, PER_TOPIC, taken).then((result) => {
+      void listIdeas(choice, PER_TOPIC, taken).then((result) => {
         if (cancelled) return;
         setLoading(false);
         if (!result.ok) {
           fail(result.error);
           return;
         }
-        if (result.value.degradedReason !== null) {
-          setError(`Ranked by keyword rather than by the model (${result.value.degradedReason}).`);
-        }
-        setCandidates(result.value.ideas.map((idea) => ({ idea, topic: choice })));
+        setCandidates(result.value.map((idea) => ({ idea, topic: choice })));
       });
       return () => {
         cancelled = true;
       };
     }
 
-    // ---- "let the agent decide": every topic, still on BM25 ----
+    // ---- "let the agent decide": every topic at once ----
     //
-    // Deliberately not reranked. Merging seven model-ordered lists needs a
-    // score that compares across them, and the reranker produces positions
-    // within one topic rather than a number — so the merge below would throw
-    // the ordering away, at the cost of seven model calls per stage entry.
-    // BM25's `score` is the only value here that is comparable across
-    // topics, which is what this path has always sorted on.
+    // The agent's pick genuinely ranks across every topic rather than
+    // quietly defaulting to one — that is what the dial promised. `score` is
+    // the only value here comparable across topics, which is what the merge
+    // below sorts on.
     void Promise.all([...TOPICS].map((t) => listIdeas(t, PER_TOPIC, taken).then((r) => ({ topic: t, result: r })))).then((settled) => {
       if (cancelled) return;
       setLoading(false);

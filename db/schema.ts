@@ -275,13 +275,6 @@ export const shotPlans = sqliteTable(
     /** What was typed into the search box — why this shot is in this video. */
     query: text("query").notNull(),
     source: text("source", { enum: ["youtube", "pexels"] }).notNull(),
-    /**
-     * Which of the host's pack actions plays over this shot, or null when
-     * nothing chose one (the heuristic fallback, the viral path, and every
-     * plan written before 2026-09-01). Null means "apply the pack default",
-     * never "no host".
-     */
-    characterAction: text("character_action"),
     status: text("status", { enum: ["planned", "searching", "downloading", "clipped", "composited", "failed"] }).notNull(),
     /** Set once the clip exists and has provenance. Null before that, and null forever on a shot that failed. */
     footageSegmentId: text("footage_segment_id"),

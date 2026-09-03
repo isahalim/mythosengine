@@ -110,6 +110,53 @@ describe("rankIdeas", () => {
     expect(idea.sourceKind).toBe("reddit");
     expect(idea.url).toBe("http://x/a");
   });
+
+  /**
+   * The half of "make stage 4 current" that the ingest cannot do. Until
+   * 2026-09-03 the blend said nothing about time at all, so a story from
+   * last week outranked one ingested seconds ago whenever it had marginally
+   * better term overlap — and the candidate pool is several days deep.
+   */
+  describe("recency", () => {
+    const isoAgo = (ms: number): string => new Date(Date.now() - ms).toISOString();
+    const HOUR = 60 * 60 * 1000;
+
+    it("puts a story from minutes ago above an equally relevant one from last week", async () => {
+      await seed([
+        { id: "old", title: "Senate election policy vote on the surveillance law", observedAt: isoAgo(7 * 24 * HOUR) },
+        { id: "new", title: "Senate election policy vote on the surveillance law", observedAt: isoAgo(5 * 60 * 1000) },
+      ]);
+
+      expect((await rankIdeas(ctx.db, "politics")).map((i) => i.signalId)).toEqual(["new", "old"]);
+    });
+
+    it("does not let a fresh irrelevant story outrank a strong older one", async () => {
+      // Recency is a weight, not a filter. A decay steep enough to bury
+      // relevance would just be sorting by `observedAt` with extra steps.
+      await seed([
+        { id: "strong", title: "Senate election policy vote government law president", engagement: 9, observedAt: isoAgo(20 * HOUR) },
+        { id: "weak", title: "Local council vote delayed", engagement: 1, observedAt: isoAgo(60 * 1000) },
+      ]);
+
+      expect((await rankIdeas(ctx.db, "politics"))[0].signalId).toBe("strong");
+    });
+
+    it("reports the freshness credit, so the ordering stays inspectable", async () => {
+      await seed([{ id: "a", title: "Senate election policy vote", observedAt: isoAgo(12 * HOUR) }]);
+
+      // One half-life in, by construction.
+      const [idea] = await rankIdeas(ctx.db, "politics");
+      expect(idea.freshness).toBeCloseTo(0.5, 2);
+    });
+
+    it("scores a future-dated row no higher than a brand new one", async () => {
+      // SCORE already rejects these as a feed bug; nothing here should be
+      // able to hand one a credit above 1 and float it to the top anyway.
+      await seed([{ id: "future", title: "Senate election policy vote", observedAt: new Date(Date.now() + 48 * HOUR).toISOString() }]);
+
+      expect((await rankIdeas(ctx.db, "politics"))[0].freshness).toBeLessThanOrEqual(1);
+    });
+  });
 });
 
 describe("isTopic", () => {

@@ -90,21 +90,9 @@ export interface RankedIdea {
   engagementScore: number;
   relevance: number;
   matchedTerms: number;
+  /** Recency credit, 1 at this instant and halving every 12 hours — see `RECENCY_WEIGHT` in src/server/console/ideas.ts. */
+  freshness: number;
   score: number;
-}
-
-/**
- * One topic's ideas as the reranking endpoint answers them.
- *
- * The array's order is the ranking. `rerankedBy` is null when the model did
- * not produce it, which is the only way a caller can tell a model-ordered
- * list from the BM25 fallback — `score` is BM25's blend either way, so
- * re-sorting by it silently discards a rerank.
- */
-export interface RerankedIdeas {
-  ideas: RankedIdea[];
-  rerankedBy: string | null;
-  degradedReason: string | null;
 }
 
 /** What one stage-entry source refresh managed. Reported, not implied: a feed outage shows as "3 of 5 answered", never as a shorter list. */

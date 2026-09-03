@@ -6,6 +6,7 @@ import { scripts, signals, sources } from "../../../db/schema.ts";
 import { ok, type Result } from "../result.ts";
 import type { DriverError, LlmDriver, LlmRequest, LlmResponse } from "../drivers/types.ts";
 import { critiqueScript } from "./critic.ts";
+import { GROQ_LIGHT_MODEL, GROQ_REASONING_MODEL } from "../../config/models.ts";
 
 const PROMPT_TEMPLATE = "Script: {{script_json}} Signal: {{signal_json}}. Output JSON only.";
 
@@ -53,6 +54,24 @@ describe("critiqueScript", () => {
 
     expect(ctx.db.select().from(scripts).where(eq(scripts.id, "scr1")).get()?.originalityScore).toBe(0.8);
     expect(ctx.db.select().from(signals).get()?.state).toBe("critiqued");
+  });
+
+  /**
+   * This file used to spell `"openai/gpt-oss-120b"` out inline, which is what
+   * CLAUDE.md forbids, and nothing tested it — so CRITIC silently missed
+   * every model change from the day it was written until 2026-09-03. The
+   * assertion is on the *constant*, so a future move takes this with it, and
+   * on the id being absent from the source, so re-inlining one fails here.
+   */
+  it("asks for the model named in config, never one inlined here", async () => {
+    const llm = new ScriptedLlm([llmResponse(JSON.stringify({ originality_score: 0.5, policy_flags: [], verdict: "approved", reason: "ok" }))]);
+    await critiqueScript(ctx.client, script, signal, llm, PROMPT_TEMPLATE);
+
+    // The lighter model since 2026-09-03 (operator direction). Moving CRITIC
+    // off SCRIPT's model also ends the compromise where the critic graded its
+    // own writer's work.
+    expect(llm.calls[0].model).toBe(GROQ_LIGHT_MODEL);
+    expect(llm.calls[0].model).not.toBe(GROQ_REASONING_MODEL);
   });
 
   it("is advisory only — a rejected verdict still transitions the signal forward", async () => {

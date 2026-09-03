@@ -67,9 +67,6 @@ describe("router", () => {
       hotKv,
       vaultKv,
       vaultMasterKey: MASTER_KEY_B64,
-      // Undefined on purpose: the tests exercise the model-free ideas path,
-      // and a Worker with no Groq credential must still serve stage 4.
-      groqApiKeyFallback: undefined,
       sessionSigningKey: SESSION_SIGNING_KEY,
       consoleEnrollmentToken: ENROLLMENT_TOKEN,
       pexelsApiKeyFallback: undefined,
@@ -475,23 +472,16 @@ describe("router", () => {
         .run();
     }
 
-    it("serves stage 4 in BM25 order when this Worker has no model credential", async () => {
-      // `groqApiKeyFallback: undefined` above. A missing credential must
-      // degrade the ordering and say so, never fail the screen — the same
-      // rule the TTS and RESEARCH upgrades follow.
+    it("serves stage 4 as a bare BM25 array, with no model and no credential anywhere", async () => {
+      // The Worker makes no model call at all (operator direction,
+      // 2026-09-03). `?rerank=1` was a real branch for one day and is gone:
+      // an unknown parameter must not resurrect it or change the shape.
       const cookie = await completeRegistrationAndLogin();
-      const res = await handleApiRequest(apiRequest("/console/ideas?topic=ai&rerank=1", { cookie }), deps);
-      expect(res?.status).toBe(200);
-      const body = (await res?.json()) as { ideas: unknown[]; rerankedBy: string | null; degradedReason: string | null };
-      expect(Array.isArray(body.ideas)).toBe(true);
-      expect(body.rerankedBy).toBeNull();
-      expect(body.degradedReason).toContain("no Groq credential");
-    });
-
-    it("keeps the unflagged ideas read a bare array, so nothing that polls it pays for a model", async () => {
-      const cookie = await completeRegistrationAndLogin();
-      const res = await handleApiRequest(apiRequest("/console/ideas?topic=ai", { cookie }), deps);
-      expect(Array.isArray(await res?.json())).toBe(true);
+      for (const path of ["/console/ideas?topic=ai", "/console/ideas?topic=ai&rerank=1"]) {
+        const res = await handleApiRequest(apiRequest(path, { cookie }), deps);
+        expect(res?.status).toBe(200);
+        expect(Array.isArray(await res?.json())).toBe(true);
+      }
     });
 
     it("refreshes the sources behind a session, and reports what it managed", async () => {

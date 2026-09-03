@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { DriverError, LlmDriver } from "../drivers/types.ts";
-import { GROQ_REASONING_MODEL } from "../../config/models.ts";
+import { GROQ_LIGHT_MODEL } from "../../config/models.ts";
 import { extractKeywords } from "./keywords.ts";
 
 /**
@@ -150,7 +150,7 @@ Output JSON only, as: {"title": "...", "description": "...", "hashtags": ["...",
  */
 export async function generateUploadMetadata(llm: LlmDriver, source: UploadMetadataSource): Promise<UploadMetadata> {
   const completion = await llm.complete({
-    model: GROQ_REASONING_MODEL,
+    model: GROQ_LIGHT_MODEL,
     messages: [{ role: "system", content: buildPrompt(source) }],
     jsonSchema: true,
     maxTokens: METADATA_MAX_TOKENS,

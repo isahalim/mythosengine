@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { generateUploadMetadata, heuristicUploadMetadata, trimToSentence } from "./upload-metadata.ts";
-import { GROQ_REASONING_MODEL } from "../../config/models.ts";
+import { GROQ_LIGHT_MODEL, GROQ_REASONING_MODEL } from "../../config/models.ts";
 import type { DriverError, LlmDriver } from "../drivers/types.ts";
 import { err, ok } from "../result.ts";
 
@@ -59,7 +59,7 @@ describe("heuristicUploadMetadata", () => {
 });
 
 describe("generateUploadMetadata", () => {
-  it("asks the reasoning model the pipeline actually runs on", async () => {
+  it("asks the lighter model, named from config rather than inlined here", async () => {
     const asked: string[] = [];
     const llm: LlmDriver = {
       complete: (req) => {
@@ -68,7 +68,11 @@ describe("generateUploadMetadata", () => {
       },
     };
     await generateUploadMetadata(llm, SOURCE);
-    expect(asked).toEqual([GROQ_REASONING_MODEL]);
+    // Moved off the 120b model on 2026-09-03 (operator direction): one short
+    // JSON from a script that is already written, with a heuristic fallback
+    // under it, has no judgement in it a larger model resolves better.
+    expect(asked).toEqual([GROQ_LIGHT_MODEL]);
+    expect(asked).not.toContain(GROQ_REASONING_MODEL);
   });
 
   it("takes the model's listing when it is well formed", async () => {

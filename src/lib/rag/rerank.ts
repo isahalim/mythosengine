@@ -100,19 +100,20 @@ export async function rerankPassages(
  * The reranking itself, over anything that can be described as one line of
  * text.
  *
- * Extracted on 2026-09-02 when the Ideas screen needed the same reordering
- * over a different row type (src/server/console/ideas-refresh.ts). The parts
- * worth sharing are not the prompt — they are the three checks under it: a
- * position off the end of the list must not conjure an item, a repeated
- * position must not duplicate one, and a partial answer must degrade to
- * "partially reranked" rather than to a silently shorter list. Those are
- * exactly the properties a second copy would get subtly wrong.
+ * Generic over the row type, and no longer exported. It was extracted and
+ * exported on 2026-09-02 for the Ideas screen, which needed the same
+ * reordering over a different row; the operator removed that caller on
+ * 2026-09-03 and stage 4 is plain BM25 again, so RESEARCH's retrieval is the
+ * only reranking left in the system. The shape stays because the three
+ * checks under the prompt are the part worth keeping honest: a position off
+ * the end of the list must not conjure a passage, a repeated position must
+ * not duplicate one, and a partial answer must degrade to "partially
+ * reranked" rather than to a silently shorter list.
  *
- * Returns the reason alongside the order, because a caller rendering this to
- * a person needs to say why the list is merely BM25-ordered, where RESEARCH
- * only needed it logged.
+ * Returns the reason alongside the order — RESEARCH only logs it, but a
+ * silent degrade is how a reranker stops working without anyone noticing.
  */
-export async function rerankByLabel<T>(
+async function rerankByLabel<T>(
   llm: LlmDriver,
   query: string,
   candidates: readonly T[],

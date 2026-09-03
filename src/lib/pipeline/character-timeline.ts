@@ -1,28 +1,33 @@
+import { actionSequence, type PackAction, type CharacterPack } from "./character-pack.ts";
 import type { CharacterClip } from "../drivers/types.ts";
-import { clipPath, isKnownAction, isReaction, isTransition, transitionIds, type CharacterPack } from "./character-pack.ts";
 
 /**
- * The host's action track for one render: which of the pack's 19 actions is
- * on screen, and for how long.
+ * The host's action track for one render: which of the pack's actions is on
+ * screen, and for how long.
  *
- * **The cuts are the footage's cuts.** One action per composited shot,
- * sharing that shot's exact span — so when the picture turns because the
- * argument turned (src/lib/pipeline/montage-timeline.ts), the host turns
- * with it. Giving the host its own independent cutting rhythm was the
- * obvious alternative and is worse: two unrelated cadences cutting past
- * each other reads as a sync fault, and there is no third thing on screen
- * to motivate a host cut that the footage does not.
+ * **Deterministic, start to finish** (operator direction, 2026-09-03). The
+ * host waves hello, runs every other action in the pack once through in
+ * manifest order, loops that cycle for as long as the video lasts, and waves
+ * goodbye at the end. That is the entire rule. Nothing chooses; there is no
+ * input here but the pack and a duration.
  *
- * **Why the rules are enforced here rather than trusted to PLAN.** The
- * pack's `agent_selection_rules` are handed to the model in the prompt, and
- * a model mostly follows them. Mostly is not good enough for the ones whose
- * violation is *visible*: two reactions back to back reads as a twitch, a
- * goodbye wave in the middle of an argument reads as the video ending, and
- * an action id that does not exist is a missing file at encode time. Those
- * three are checked deterministically, after the model, the same way
- * `validateShots` checks the queries PLAN emits. Every correction is
- * recorded and reaches the audit package — a silent fix would leave a
- * reviewer unable to tell what PLAN actually chose.
+ * **What this replaced, and why it is not a downgrade.** From 2026-09-01 PLAN
+ * picked one action per shot from the manifest's `use_when` descriptions, and
+ * this module then re-checked those picks against the pack's
+ * `agent_selection_rules` and corrected the ones whose violation was visible
+ * — a mid-video sign-off, two chained reactions, an invented id. Both halves
+ * are gone. What that arrangement bought was a host whose gestures tracked
+ * the argument; what it cost was a model call whose output had to be
+ * validated, a per-shot correction log in every audit package, and a class of
+ * failure a reviewer could only find by watching. A fixed cycle cannot be
+ * wrong, cannot be corrected, costs nothing and is identical in every video.
+ *
+ * Two consequences worth knowing rather than discovering. The host now cuts
+ * on its own cadence instead of on the footage's, so its cuts and the
+ * montage's drift past each other. And the cycle includes the pack's silent
+ * actions (idle, nod, shrug, thinking), which play under continuous
+ * narration. Both follow directly from "every animation in sequence" and both
+ * were accepted when this was specified.
  *
  * Pure, and separated from both the pack loader and the encoder for that
  * reason: which action plays when is the part of this feature that can be
@@ -30,113 +35,92 @@ import { clipPath, isKnownAction, isReaction, isTransition, transitionIds, type 
  * that gets tested without a file system or an encoder anywhere near it.
  */
 
-export interface CharacterScene {
-  /** The composited footage shot this action covers. */
-  position: number;
-  /** What PLAN chose, or null if it chose nothing for this shot. */
-  actionId: string | null;
-  /** Seconds this shot is on screen — the span the action must fill. */
-  durationS: number;
-}
+/**
+ * The shortest an action may be on screen.
+ *
+ * The pack runs at 12fps, so this is ten frames. Below about that, a hard cut
+ * in and a hard cut out of a different action reads as a dropped frame rather
+ * than as a gesture — and the only clip that is ever trimmed is the one that
+ * lands the goodbye wave on the end of the video, which would otherwise be
+ * whatever remainder the arithmetic happened to leave.
+ */
+const MIN_ACTION_S = 0.8;
 
 export interface CharacterTimelineInput {
   pack: CharacterPack;
-  scenes: CharacterScene[];
-  /**
-   * Whether the narration is still running under the last scene. The outro
-   * wave is a sign-off, so it belongs only where the video actually ends.
-   */
-  allowOutro?: boolean;
+  /** Seconds of finished video the host has to cover, from the first frame to the last. */
+  videoDurationS: number;
 }
 
 export interface CharacterTimelineResult {
   clips: CharacterClip[];
-  /** Every correction made to PLAN's choices, in order, for the audit package. Empty when the model's plan was used as given. */
-  adjustments: string[];
+  /** Total length of the track. Never less than `videoDurationS` — see `buildCharacterTimeline`. */
+  trackDurationS: number;
 }
 
 /**
- * Lays the host's actions across the narration.
+ * Lays the host's actions across the whole video.
  *
- * Returns an empty track only for an empty input — a render with no
- * composited shots has no host, which the caller treats as "no overlay"
- * rather than as an error.
+ * **The track is always at least as long as the video, never shorter**, and
+ * that asymmetry is deliberate. The encoder cuts the composite at the
+ * video's own duration, so an overshoot costs the goodbye wave up to
+ * `MIN_ACTION_S` of its tail — a 3.0s wave playing 2.2s, which still reads
+ * as a wave. An undershoot would cost the last fraction of a second its host
+ * entirely, and a presenter blinking out just before the end is the kind of
+ * defect that looks like a crash. Given the choice, overshoot.
+ *
+ * Returns an empty track only for a video with no duration, which the caller
+ * treats as "no overlay" rather than as an error.
  */
 export function buildCharacterTimeline(input: CharacterTimelineInput): CharacterTimelineResult {
-  const { pack, scenes } = input;
-  const adjustments: string[] = [];
-  if (scenes.length === 0) return { clips: [], adjustments };
+  const { videoDurationS } = input;
+  if (!Number.isFinite(videoDurationS) || videoDurationS <= 0) return { clips: [], trackDurationS: 0 };
 
-  const { intro, outro } = transitionIds(pack);
-  const allowOutro = input.allowOutro ?? true;
+  const { intro, middle, outro } = actionSequence(input.pack);
+  const clips: CharacterClip[] = [];
+  const play = (action: PackAction, durationS: number): void => {
+    clips.push({ filePath: action.filePath, actionId: action.id, durationS, naturalDurationS: action.durationS });
+  };
 
-  const chosen: string[] = [];
+  // The greeting, whole. A video too short to hold it is cut by the encoder
+  // rather than trimmed here: a wave that gets cut off is a wave, and a
+  // 2-second video has no room for a running order anyway.
+  if (intro !== null) play(intro, intro.durationS);
+  let elapsed = intro === null ? 0 : intro.durationS;
 
-  for (let i = 0; i < scenes.length; i++) {
-    const scene = scenes[i];
-    const isFirst = i === 0;
-    const isLast = i === scenes.length - 1;
-    let action = scene.actionId;
+  // Time the sign-off needs at the end. Reserved before the cycle runs, so
+  // the last thing the viewer sees is the whole goodbye and not whatever the
+  // cycle happened to be in the middle of.
+  const outroS = outro?.durationS ?? 0;
 
-    // 1. Nothing chosen, or an action this pack does not have. A model that
-    //    invents an id must not become a missing file at encode time.
-    if (action === null) {
-      action = pack.defaults.speaking;
-      adjustments.push(`shot ${scene.position}: PLAN chose no action — defaulted to ${action}.`);
-    } else if (!isKnownAction(pack, action)) {
-      const invented = action;
-      action = pack.defaults.speaking;
-      adjustments.push(`shot ${scene.position}: "${invented}" is not an action in pack ${pack.pack} — defaulted to ${action}.`);
+  if (middle.length > 0) {
+    // Whole actions, in the pack's order, cycling for as long as one more
+    // whole action still leaves room for the sign-off.
+    let i = 0;
+    while (elapsed + middle[i % middle.length].durationS + outroS <= videoDurationS) {
+      const action = middle[i % middle.length];
+      play(action, action.durationS);
+      elapsed += action.durationS;
+      i++;
     }
 
-    // 2. Transitions belong at the ends and nowhere else. A goodbye wave
-    //    mid-argument reads as the video ending; a hello wave in the middle
-    //    reads as a second video starting.
-    if (isTransition(pack, action)) {
-      if (action === intro && !isFirst) {
-        adjustments.push(`shot ${scene.position}: ${action} is the opening greeting and this is not the opening shot — replaced with ${pack.defaults.speaking}.`);
-        action = pack.defaults.speaking;
-      } else if (action === outro && !(isLast && allowOutro)) {
-        const why = isLast ? "the narration is still running here" : "this is not the closing shot";
-        adjustments.push(`shot ${scene.position}: ${action} is the sign-off and ${why} — replaced with ${pack.defaults.speaking}.`);
-        action = pack.defaults.speaking;
-      }
+    // One partial action closes the gap between the last whole one and the
+    // sign-off. `Math.max` is what makes the track overshoot rather than
+    // flicker: a 0.2s remainder is played as 0.8s and the encoder takes the
+    // difference off the end of the wave.
+    const gap = videoDurationS - elapsed - outroS;
+    if (gap > 0) {
+      const action = middle[i % middle.length];
+      const durationS = Math.min(Math.max(gap, MIN_ACTION_S), action.durationS);
+      play(action, durationS);
+      elapsed += durationS;
     }
-
-    // 3. Never two reactions in a row. The pack's own rule, and the one
-    //    whose violation is most obviously wrong on screen: reactions are
-    //    single beats of emphasis, and chaining them reads as a twitch
-    //    rather than as a response to anything.
-    const previous = chosen[chosen.length - 1];
-    if (previous !== undefined && isReaction(pack, action) && isReaction(pack, previous)) {
-      adjustments.push(`shot ${scene.position}: ${action} follows the reaction ${previous} — replaced with ${pack.defaults.speaking}, because reactions are one beat and do not chain.`);
-      action = pack.defaults.speaking;
-    }
-
-    chosen.push(action);
   }
 
-  const clips: CharacterClip[] = scenes.map((scene, i) => ({
-    filePath: clipPath(pack, chosen[i]),
-    actionId: chosen[i],
-    durationS: scene.durationS,
-  }));
+  if (outro !== null) {
+    play(outro, outro.durationS);
+    elapsed += outro.durationS;
+  }
 
-  return { clips, adjustments };
-}
-
-/**
- * The default action for a shot with no plan at all — the whole-track
- * fallback used when PLAN was degraded and chose nothing for anything.
- *
- * Speaking rather than idle, because this show is continuous voiceover:
- * the host is talking under every shot unless a reaction beat says
- * otherwise, and a silent idle loop under narration reads as a dropped
- * lip-sync rather than as a stylistic choice.
- */
-export function defaultTrack(pack: CharacterPack, scenes: CharacterScene[]): CharacterTimelineResult {
-  return buildCharacterTimeline({
-    pack,
-    scenes: scenes.map((scene) => ({ ...scene, actionId: pack.defaults.speaking })),
-  });
+  return { clips, trackDurationS: elapsed };
 }

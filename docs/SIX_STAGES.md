@@ -80,44 +80,79 @@ no topic was named.
 
 ### Stage 4 — where the stories come from
 
-Entering this stage does two things, both added 2026-09-02 by operator
-direction so that "each time I enter the ideas section the ideas could be
-different" is true rather than nearly true.
+The list is **BM25, and it is current at the moment the operator opens it**.
+Those are two separate problems and they have two separate answers; a model
+reranker sat here from 2026-09-02 to 2026-09-03 and solved neither, because
+reordering the same corpus with the same prompt lands in nearly the same
+order every visit. Removing it also took the Worker's last model call, and
+its need for a Groq credential.
 
-**`POST /console/ideas/refresh`, once.** WATCH's ingest and SCORE re-run on
-entry, so the corpus holds what was published since the last scheduled poll
-rather than whatever that poll left behind. Once per entry, never per topic:
-a video set to "let the agent choose" asks for all seven topics at once, and
-seven concurrent crawls of the same five feeds is a race, not a refresh. The
-sources are fetched concurrently with an 8-second ceiling, because a person
-is watching this one — the scheduled job is serial and patient for good
-reasons that do not apply here.
+**`POST /console/ideas/refresh`, once per entry.** WATCH's ingest and SCORE
+re-run, so the corpus holds what was published since the last scheduled poll.
+Once per entry, never per topic: a video set to "let the agent choose" asks
+for all seven topics at once, and seven concurrent crawls of the same feeds
+is a race, not a refresh.
 
-**`GET /console/ideas?rerank=1`, per topic.** BM25 picks three times as many
-candidates as the operator will see and `openai/gpt-oss-120b` orders them,
-judging headlines the way the operator does. This is the Worker's only model
-call; the chat and voice agents that were its others went with the console on
-2026-08-31.
+It polls **one source per host**, rotating to whichever that host has left
+stalest, with retries on 429 switched off. That is measured, not cautious.
+From one IP on 2026-09-03:
 
-The ingest half is what makes the list *new* and the rerank half is what
-makes it *good*. Reranking alone would have been the feature in appearance
-only: the same corpus reordered by the same prompt lands in nearly the same
-order every visit.
+| what was sent | what came back |
+|---|---|
+| three concurrent reddit.com requests | `429`, `429`, `429` |
+| one request | `200`, 25 entries |
+| a second request 5s later | `429` |
+| one request after ~45s idle | `200` |
 
-**Neither half may fail the screen.** A dead feed, a Worker with no Groq
-credential, a rate-limited reranker — each costs the list its freshness or
-its ordering, is reported in the dial's hint line, and leaves the operator
-able to pick a story. The stage says which it got: `rerankedBy` is null when
-the order is BM25's.
+Reddit serves roughly one RSS request per IP per 30-60 seconds. The previous
+refresh fetched all five sources concurrently with three retries each — up to
+nine reddit.com requests in a burst — so **every Reddit fetch on stage entry
+was failing**, and the only fresh sources landing were BBC and NPR. One
+request per host per entry always succeeds; three never do. Rotating by
+`lastSeenAt` means three entries cover all three subreddits, and the one
+polled is always the one with the most to say. Adding subreddits to
+`data/sources.yml` lengthens the rotation rather than adding requests.
+
+The feeds are `rising.rss`. A `hot` feed's newest entry measured ~4 hours old
+— proven discourse, but not what is being argued about right now; `new` is
+mostly posts nobody has seen yet.
+
+**`GET /console/ideas`, per topic.** BM25 relevance (0.35), engagement
+(0.25), topic-term overlap (0.15) and **recency** (0.25). That fourth weight
+was added 2026-09-03 and its absence was a bug rather than a missing nicety:
+the other three say nothing about time at all, so a week-old story outranked
+one ingested twenty seconds earlier whenever it had marginally better term
+overlap — over a candidate pool of the newest 750 scored signals, which on
+this source list is several days deep. The ingest is what makes today's
+stories present; this is what makes them visible.
+
+The decay is exponential with a 12-hour half-life and is deliberately **not**
+normalized across the candidate set, unlike the other three. Normalizing
+would hand the newest candidate 1.0 whatever its age, so a corpus where
+everything is four days old would still crown a "freshest" story and call it
+recent. Absolute is the honest answer: when nothing is new, recency
+contributes nothing to anyone and the other three decide. `RankedIdea`
+reports `freshness` alongside `relevance` and `matchedTerms`, so why a story
+is first is inspectable rather than magic.
+
+**The refresh may not fail the screen.** A dead feed, a rate-limited host, an
+ingest that returns nothing — each costs the list its freshness, is reported
+in the dial's hint line, and leaves the operator able to pick a story.
+
+One related fix: `seedSourcesFromYaml` only ever *inserted*, so editing a
+`url` in `data/sources.yml` changed nothing in a database that had already
+been seeded — the file and the table would disagree silently and forever.
+Found moving Reddit to `rising.rss`, which would otherwise have been a no-op
+in production. It now reconciles `url` and `enabled` on existing rows, and
+drops that row's `etag`/`last_modified` when the URL genuinely changes: a
+stored `If-Modified-Since` handed to a different feed can earn a 304 for a
+document this system has never read.
 
 A video whose operator chose "let the agent choose" is ranked across **every**
 topic and the strongest signal wins; the topic that won is recorded
 separately from the operator's choice, because `agent` is not a topic the
-queue accepts and queuing it would 422. **That path stays on BM25 on
-purpose** — it merges seven topics by `score`, and the reranker returns
-positions within one topic rather than a number comparable across them, so
-reranking there would cost seven model calls and then be thrown away by the
-merge.
+queue accepts and queuing it would 422. `score` is the only value comparable
+across topics, which is what that merge sorts on.
 
 Anything already spoken for elsewhere in the run is excluded, so one run
 never makes two videos about the same story.
@@ -315,8 +350,10 @@ defect rather than a flake:
 3. **The host was in the repo root.** `right_person.gif` belonged at
    `assets/character/`, so renders had been silently producing v1's look —
    footage and captions, no host. *(That asset was retired on 2026-09-01 for
-   the 19-action robot character pack; the same degrade-don't-fail behaviour
-   now applies to a missing `assets/character/robot_character_pack/`.)*
+   the 19-action robot character pack, and the host became its own render
+   pass on 2026-09-03; the same degrade-don't-fail behaviour applies to a
+   missing `assets/character/robot_character_pack/` and now to an overlay
+   pass that cannot run at all.)*
 4. **EXPORT.** A 128s render is ~42 MB and KV caps a value at 25 MiB, so the
    whole video was made and then thrown away. Blobs moved to R2 (operator
    direction, which lifts CLAUDE.md's "no R2"), written through the Worker's
@@ -363,7 +400,7 @@ Prerequisites and their failure modes:
 
 | Needs | If missing |
 |---|---|
-| `GROQ_API_KEY` | Nothing that reasons can run — reranking, SCRIPT, CRITIC, PLAN and EDIT are all on it, and RESEARCH falls back to it — so the pipeline stops and names the variable |
+| `GROQ_API_KEY` | Nothing that reasons can run — reranking, SCRIPT, PLAN and EDIT are on `gpt-oss-120b`, CRITIC and EXPORT's listing on `gpt-oss-20b`, and RESEARCH falls back to the first — so the pipeline stops and names the variable. The Worker needs no Groq key at all since 2026-09-03 |
 | **ffmpeg built with libass** | RENDER fails with `No such filter: 'ass'`. Homebrew's plain `ffmpeg` 9.0.1 bottle has no libass; `ffmpeg-full` does |
 | `edge_tts` (Python) | TTS fails. `pip install edge-tts` |
 | `assets-library` branch | No footage to draw from in `gameplay` mode; `local-seed` refuses rather than inventing a clip |
@@ -454,12 +491,12 @@ Two things the first real composite taught us:
   none of them. Every clip is normalised to 1080x1920, yuv420p, 30fps,
   square pixels first.
 - **`-shortest` does not settle the length** once the footage track has a
-  definite end. The host is composited with `overlay=...:shortest=0` so a
-  looping character can never truncate the video, and that keeps the video
-  stream alive past the audio: a 12.0s narration produced a 13.5s render.
-  The narration's measured duration is now passed as an explicit `-t`. A
-  single looped clip never hit this, because nothing in that graph ever
-  ended.
+  definite end: a 12.0s narration produced a 13.5s render. The narration's
+  measured duration is now passed as an explicit `-t`. A single looped clip
+  never hit this, because nothing in that graph ever ended. The host overlay
+  pass carries the same lesson and the same fix — `overlay=...:shortest=0`
+  so the character can never truncate the video, and an explicit `-t` to say
+  where it actually ends.
 
 ## Revision — 2026-09-01, an ALIGN failure no longer costs the video
 
@@ -510,25 +547,56 @@ script repeats them. Three of eight shots illustrated nothing, and no amount
 of tuning the counting fixes that — "which phrase in this beat is a
 *picture*" is not a counting problem.
 
-### PLAN — the picture *and* the host
+### PLAN — the picture, and only the picture
 
-PLAN emits one shot per beat, and since 2026-09-01 each shot also names which
-of the host's 19 pack actions plays over it. The action vocabulary is rendered
-into the prompt from the pack's own `manifest.json`, so a pack that gains or
-loses an action cannot leave the prompt advertising a clip nobody can play.
-
-The pack's rules are then enforced *deterministically* after the model
-(`src/lib/pipeline/character-timeline.ts`), not trusted to it — a model mostly
-follows them, and "mostly" is not enough for the three whose violation is
-visible: two reactions back to back reads as a twitch, a goodbye wave
-mid-argument reads as the video ending, and an invented action id is a missing
-file at encode time. Every correction is recorded and reaches the audit
-package, so a reviewer can tell what PLAN actually chose from what it was
-given.
+PLAN emits one shot per beat: a filmable query, a provider, and one sentence
+of intent for the reviewer. It named the host's action per shot between
+2026-09-01 and 2026-09-03 and no longer does — the host is a fixed cycle now
+(see **HOST** below), so there is nothing about it left to decide, validate or
+correct.
 
 On `politics`, `tech`, `science` and `ai`, PLAN is told to prefer `youtube`
 over stock, and SOURCE raises its download budget from 2 to 4 to honour it.
 There is no stock clip of the actual hearing.
+
+### HOST — a second pass, and nothing chooses it
+
+RENDER hands back a **finished, publishable Short with no host in it**:
+footage cut to the beats, narration, burned-in captions. The character goes on
+top of that in its own ffmpeg pass (`src/lib/drivers/character-overlay-ffmpeg.ts`).
+
+The performance is fixed (operator direction, 2026-09-03). The host waves
+hello, runs the pack's other 17 actions once through in manifest order, loops
+that 50.5-second cycle for as long as the video lasts, and waves goodbye. The
+only rule is that the first and last actions are the waves.
+
+Three things follow from making it a separate pass:
+
+- **A failed overlay costs the host, not the video.** A missing pack, an
+  unreadable manifest, an encoder error: the export is the hostless render,
+  flagged with `characterAbsentReason`. Inside the render's filtergraph the
+  identical failure took the video with it.
+- **One input instead of forty-four.** A 128-second video is ~44 actions. As
+  `-i` arguments that is 44 concurrent decodes of lossless RGBA on the
+  operator's own machine; through ffmpeg's concat demuxer it is one input.
+  That works because every pack MOV is `png / 640x680 / rgba / 12fps` and PNG
+  is all-intra, so the one `outpoint` trim that lands the wave on the end of
+  the video is frame-exact.
+- **The host sits on top of the captions, safely.** The captions are ASS
+  `Alignment: 5`, so they sit at the vertical middle of the frame; the host
+  occupies 10%–44% of the height from the bottom. They do not meet. Moving
+  either one is a change that has to be checked against the other.
+
+The track is built to run *past* the video's end rather than stop short of it,
+and the pass cuts it with an explicit `-t`. An overshoot clips up to 0.8s off
+the goodbye wave's tail; an undershoot would leave the last moment of the
+video with no presenter, which reads as a crash. Audio is stream-copied, so
+the second encode costs the picture one generation and the narration nothing.
+
+Two consequences that were accepted rather than overlooked: the host cuts on
+its own 12fps cadence rather than on the footage's, and the pack's silent
+actions (idle, nod, shrug, thinking) play under continuous narration. Both
+follow directly from "every animation in sequence".
 
 ### PLAN
 

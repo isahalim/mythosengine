@@ -16,6 +16,14 @@ import { Bm25Index, tokenize } from "../../lib/rag/bm25.ts";
  * and it has no ambiguity a model resolves better than a scoring function.
  * Spending Groq's daily budget on a screen the operator refreshes while
  * choosing would cost real capacity for no decision quality.
+ *
+ * A model reranker was wrapped around this on 2026-09-02 and deleted on
+ * 2026-09-03 (operator direction). It reordered the same corpus with the
+ * same prompt on every visit, so it landed in nearly the same order every
+ * time and cost a request to do it. What stage 4 was actually missing was
+ * freshness, and freshness is two pieces of plain code: an ingest that
+ * reaches the sources (src/server/console/ideas-refresh.ts) and a rank that
+ * prefers what it just brought back (`RECENCY_WEIGHT` below).
  */
 
 /** The topic set from plan v2 §7 step 2, in the order the console offers them. */
@@ -36,7 +44,7 @@ export function isTopic(value: string): value is Topic {
  * a query expansion, not a taxonomy, and every term here is one that shows
  * up in real headline text.
  */
-export const TOPIC_QUERIES: Record<Topic, string> = {
+const TOPIC_QUERIES: Record<Topic, string> = {
   viral: "viral trending outrage backlash internet reaction video meme celebrity drama",
   politics: "politics election government policy law senate parliament vote president minister protest",
   tech: "tech technology software app startup chip platform company launch data privacy security",
@@ -57,6 +65,8 @@ export interface RankedIdea {
   relevance: number;
   /** How many of the topic's distinct terms the title actually contains. This, not `relevance`, is what makes a story eligible for a topic — see `rankIdeas`. */
   matchedTerms: number;
+  /** Recency credit, 1 at this instant and halving every 12 hours. Reported so "why is this first" is answerable without re-deriving the blend. */
+  freshness: number;
   /** The blended rank score, so the ordering is inspectable rather than magic. */
   score: number;
 }
@@ -65,8 +75,9 @@ export interface RankedIdea {
 const CANDIDATE_LIMIT = 750;
 
 /**
- * How the three signals blend. Each is normalized to 0-1 within the
- * candidate set first, so the weights mean what they look like they mean.
+ * How the four signals blend. The first three are normalized to 0-1 within
+ * the candidate set, so the weights mean what they look like they mean.
+ * Recency is not — see `recency`.
  *
  * Relevance alone hands the operator the most on-topic story regardless of
  * whether anyone is arguing about it, which is the opposite of what this
@@ -80,10 +91,61 @@ const CANDIDATE_LIMIT = 750;
  * a fresh install — every topic term is discarded and every score is zero.
  * Term overlap does not degrade that way, so it both breaks the tie and
  * decides eligibility below.
+ *
+ * **`RECENCY` is the fourth, added 2026-09-03, and its absence was a real
+ * bug rather than a missing nicety.** The other three say nothing at all
+ * about time, so a four-day-old story with better term overlap outranked one
+ * ingested twenty seconds earlier — and the candidate pool is the newest 750
+ * *scored* signals, which on this source list is several days deep. The
+ * operator asked for a list that is current at the moment they open it; the
+ * ingest is what makes today's stories present, and this is what makes them
+ * visible. It is weighted below relevance on purpose: the newest headline in
+ * the corpus is not automatically the best story, it just should not have to
+ * out-argue a week-old one to be seen.
  */
-const RELEVANCE_WEIGHT = 0.45;
-const ENGAGEMENT_WEIGHT = 0.35;
-const MATCH_WEIGHT = 0.2;
+const RELEVANCE_WEIGHT = 0.35;
+const ENGAGEMENT_WEIGHT = 0.25;
+const MATCH_WEIGHT = 0.15;
+const RECENCY_WEIGHT = 0.25;
+
+/**
+ * How long a signal takes to lose half its recency credit.
+ *
+ * Twelve hours, matched to what the sources actually produce rather than
+ * picked round: Reddit's `rising` feed turns over in hours, and BBC/NPR
+ * headlines are stale to a discourse channel by the next morning. A story
+ * from this morning keeps ~0.5, yesterday's ~0.06, and last week's
+ * effectively nothing — which is the intent, since the corpus holds several
+ * days and the operator is choosing what to argue about today.
+ *
+ * Exponential rather than a hard cutoff so nothing falls off a cliff: a
+ * genuinely dominant older story can still outrank a fresh irrelevant one on
+ * the other three weights, which a time filter would make impossible.
+ */
+const RECENCY_HALF_LIFE_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * Recency credit for one signal, 0-1, against the moment the list is built.
+ *
+ * `observedAt` is when WATCH saw it, not when it was posted — the feeds do
+ * not all carry a reliable publish time, and for "what is being argued about
+ * right now" the difference is minutes. An unparseable date scores 0 rather
+ * than throwing: a malformed row should sink, never fail the screen.
+ *
+ * **Deliberately not normalized across the candidate set**, unlike the other
+ * three weights. Normalizing would hand the newest candidate 1.0 whatever
+ * its age, so a corpus where everything is four days old would still crown a
+ * "freshest" story and call it recent. Absolute is what the operator is
+ * asking about: when nothing is new, recency contributes nothing to anyone
+ * and the other three decide, which is the honest answer.
+ */
+function recency(observedAt: string, now: number): number {
+  const seen = Date.parse(observedAt);
+  if (!Number.isFinite(seen)) return 0;
+  // Clamped at 0 so a future-dated row (a feed bug SCORE already rejects)
+  // cannot score above a brand new one.
+  return 2 ** (-Math.max(now - seen, 0) / RECENCY_HALF_LIFE_MS);
+}
 
 function normalize(values: number[]): (value: number) => number {
   const max = values.reduce((highest, value) => (value > highest ? value : highest), 0);
@@ -119,7 +181,8 @@ export async function rankIdeas(db: AppDb, topic: Topic, limit = 5, exclude: str
   const topicTerms = new Set(tokenize(TOPIC_QUERIES[topic]));
   const matchCount = (title: string): number => new Set(tokenize(title).filter((term) => topicTerms.has(term))).size;
 
-  const scored = rows.map((row) => ({ row, relevance: hits.get(row.id) ?? 0, matchedTerms: matchCount(row.title) }));
+  const now = Date.now();
+  const scored = rows.map((row) => ({ row, relevance: hits.get(row.id) ?? 0, matchedTerms: matchCount(row.title), recency: recency(row.observedAt, now) }));
 
   const normalizeRelevance = normalize(scored.map((candidate) => candidate.relevance));
   const normalizeEngagement = normalize(scored.map((candidate) => candidate.row.engagementScore));
@@ -130,7 +193,7 @@ export async function rankIdeas(db: AppDb, topic: Topic, limit = 5, exclude: str
     // candidate for that topic — it would be offered purely on engagement,
     // under a heading it has nothing to do with.
     .filter((candidate) => candidate.matchedTerms > 0)
-    .map(({ row, relevance, matchedTerms }): RankedIdea => ({
+    .map(({ row, relevance, matchedTerms, recency: freshness }): RankedIdea => ({
       signalId: row.id,
       title: row.title,
       url: row.canonicalUrl,
@@ -139,10 +202,12 @@ export async function rankIdeas(db: AppDb, topic: Topic, limit = 5, exclude: str
       engagementScore: row.engagementScore,
       relevance,
       matchedTerms,
+      freshness,
       score:
         RELEVANCE_WEIGHT * normalizeRelevance(relevance) +
         ENGAGEMENT_WEIGHT * normalizeEngagement(row.engagementScore) +
-        MATCH_WEIGHT * normalizeMatches(matchedTerms),
+        MATCH_WEIGHT * normalizeMatches(matchedTerms) +
+        RECENCY_WEIGHT * freshness,
     }))
     .sort((a, b) => b.score - a.score || a.signalId.localeCompare(b.signalId))
     .slice(0, limit);

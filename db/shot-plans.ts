@@ -33,7 +33,6 @@ export interface NewShot {
   query: string;
   source: "youtube" | "pexels";
   /** The host's action over this shot, or null when nothing chose one. */
-  characterAction: string | null;
 }
 
 /**
@@ -49,9 +48,9 @@ export async function saveShotPlan(rawClient: RawSqlClient, scriptId: string, tr
   await execAtomic(
     rawClient,
     shots.map((shot) => ({
-      sql: `INSERT INTO shot_plans (id, script_id, trace_id, position, beat_index, intent, query, source, character_action, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?)`,
-      params: [crypto.randomUUID(), scriptId, traceId, shot.position, shot.beatIndex, shot.intent, shot.query, shot.source, shot.characterAction, nowIso, nowIso],
+      sql: `INSERT INTO shot_plans (id, script_id, trace_id, position, beat_index, intent, query, source, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?)`,
+      params: [crypto.randomUUID(), scriptId, traceId, shot.position, shot.beatIndex, shot.intent, shot.query, shot.source, nowIso, nowIso],
     })),
   );
 }

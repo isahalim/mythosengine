@@ -20,6 +20,7 @@ import { selectTtsDrivers, synthesizeWithFallback } from "../../src/lib/pipeline
 import { readGeminiTtsBudget, recordGeminiTtsAttempt, settleGeminiTtsAttempt } from "../../src/lib/pipeline/tts-budget.ts";
 import { CHARACTER_BOTTOM_MARGIN_RATIO, CHARACTER_HEIGHT_RATIO, HOST_GEMINI_VOICE, resolveCharacterPack } from "../../src/lib/pipeline/character.ts";
 import { buildCharacterTimeline } from "../../src/lib/pipeline/character-timeline.ts";
+import { FfmpegCharacterOverlayDriver } from "../../src/lib/drivers/character-overlay-ffmpeg.ts";
 import { extractKeywords } from "../../src/lib/pipeline/keywords.ts";
 import { type ResearchBrief } from "../../src/lib/rag/research.ts";
 import { researchWithFallback, selectResearchProviders } from "../../src/lib/rag/research-provider.ts";
@@ -43,7 +44,7 @@ import { PexelsDriver } from "../../src/lib/drivers/pexels.ts";
 import { GroqWhisperDriver } from "../../src/lib/drivers/groq-whisper.ts";
 import { FfmpegRenderDriver } from "../../src/lib/drivers/render-ffmpeg.ts";
 import { createGroqDriverFromEnv, createGroqLimiter } from "../../src/lib/drivers/resolve-groq-driver.ts";
-import { GEMINI_RESEARCH_MODEL, GROQ_REASONING_MODEL } from "../../src/config/models.ts";
+import { GEMINI_RESEARCH_MODEL, GROQ_LIGHT_MODEL, GROQ_REASONING_MODEL } from "../../src/config/models.ts";
 import { RerankingRetriever } from "../../src/lib/rag/rerank.ts";
 import { editClips, type EditableClip } from "../../src/lib/pipeline/edit.ts";
 import { generateUploadMetadata } from "../../src/lib/pipeline/upload-metadata.ts";
@@ -200,10 +201,12 @@ async function main(): Promise<void> {
   const chosenSignal = pickedSignal ?? weightedPick;
   if (pickedSignal !== undefined) console.warn(`RUN PICK: rendering the operator's queued ${claimedPick?.topic} pick — ${pickedSignal.title}`);
 
-  // One driver, one model, for reranking, SCRIPT, CRITIC, PLAN and EDIT —
-  // and for RESEARCH whenever its Gemini attempt does not land. See
-  // src/config/models.ts for which model, and why the 2026-09-01 Gemini
-  // split was reverted for every stage but the one below.
+  // One driver for every Groq stage, but no longer one model: SCRIPT, PLAN,
+  // EDIT and RESEARCH's fallback are on gpt-oss-120b, while CRITIC and
+  // EXPORT's listing moved to gpt-oss-20b on 2026-09-03 (operator
+  // direction). Each stage names its own from src/config/models.ts, which is
+  // the only file that may spell a model id — a stage that names one inline
+  // drifts silently, which is exactly what CRITIC did until this change.
   //
   // The single limiter matters as much as the single model. It is the
   // account's pacing, shared by every stage below, so RESEARCH's tool loop
@@ -282,14 +285,6 @@ async function main(): Promise<void> {
   // to decide — which second of the run to take is answered by motion
   // scoring and chance, not by language.
   const planRunId = await startRun(env.db, "plan", traceId);
-  // The host is resolved BEFORE planning, not just before rendering: PLAN
-  // now chooses which of her actions plays over each shot, and it can only
-  // do that if it is handed the pack's real action vocabulary. A missing
-  // pack means no `character_action` in the prompt and a render with no
-  // host — degraded, and recorded as such, exactly as before.
-  const character = await resolveCharacterPack(REPO_DIR);
-  if (!character.present) console.warn(`RENDER: ${character.reason}`);
-
   const planInput = {
     hook: script.hook,
     beats: script.beats ?? [],
@@ -297,7 +292,7 @@ async function main(): Promise<void> {
     debateQuestion: script.debateQuestion,
     topic: claimedPick?.topic ?? null,
   };
-  const planResult = await planShots(llm, planInput, { model: GROQ_REASONING_MODEL, ...(character.present ? { pack: character.pack } : {}) });
+  const planResult = await planShots(llm, planInput, { model: GROQ_REASONING_MODEL });
   // planShots never returns an error — the worst case is the heuristic plan.
   const plan = planResult.ok ? planResult.value : heuristicPlan({ hook: script.hook, beats: script.beats ?? [], body: script.body, debateQuestion: script.debateQuestion, topic: null }, "PLAN returned an error");
   await finishRun(env.db, planRunId, plan.degradedReason === null ? "succeeded" : "failed", plan.degradedReason ?? undefined);
@@ -327,6 +322,11 @@ async function main(): Promise<void> {
   // returned: Edge emits MP3, Gemini WAV. FFmpeg probes by content and would
   // decode either under either name, but a `.mp3` holding WAV is a trap for
   // the next person to open the work directory.
+  // Two files, because the host is composited by its own pass
+  // (src/lib/drivers/character-overlay-ffmpeg.ts). `renderPath` is the
+  // finished video — footage, narration, captions, no host — and it is what
+  // gets exported if the overlay pass cannot run.
+  const renderPath = join(workDir, `${script.id}.render.mp4`);
   const outputPath = join(workDir, `${script.id}.mp4`);
 
   try {
@@ -479,11 +479,7 @@ async function main(): Promise<void> {
     const captionCues = buildCaptionCues(wordTimings, 3, extractKeywords({ hook: script.hook, body: script.body, debateQuestion: script.debateQuestion }));
 
     // ---- RENDER ----
-    // The host was resolved before PLAN, which needed her action vocabulary
-    // to choose one per shot. A missing pack degrades the video to v1's look
-    // rather than failing the render, and the reason is recorded — "why is
-    // she not in this one" is not answerable from the video itself.
-
+    //
     // The footage track, laid out across the narration on the script's own
     // beat boundaries (src/lib/pipeline/montage-timeline.ts), so the picture
     // turns where the argument does rather than on a timer.
@@ -523,31 +519,6 @@ async function main(): Promise<void> {
     const editedPathAt = (position: number): string => edits.clips.find((clip) => clip.position === position)?.filePath ?? shotAt(position).filePath;
 
     const footageClips = timeline.map((slot) => ({ filePath: editedPathAt(slot.position), durationS: slot.durationS }));
-
-    // ---- The host's action track ----
-    //
-    // One action per composited shot, sharing that shot's exact span, so
-    // the host turns where the picture and the argument turn. PLAN chose
-    // them; `buildCharacterTimeline` enforces the pack's own rules over the
-    // top (no chained reactions, no mid-video sign-off, no invented ids) and
-    // reports every correction it had to make.
-    const characterTrack = character.present
-      ? buildCharacterTimeline({
-          pack: character.pack,
-          scenes: timeline.map((slot) => ({
-            position: slot.position,
-            actionId: plan.shots.find((planned) => planned.position === shotAt(slot.position).planPosition)?.characterAction ?? null,
-            durationS: slot.durationS,
-          })),
-          // The narration runs to the very end of this video, so there is no
-          // silent tail for a sign-off wave to live in.
-          allowOutro: false,
-        })
-      : { clips: [], adjustments: [] };
-    for (const adjustment of characterTrack.adjustments) console.warn(`HOST: ${adjustment}`);
-    if (characterTrack.clips.length > 0) {
-      console.warn(`HOST: ${characterTrack.clips.map((clip) => clip.actionId).join(" -> ")}`);
-    }
 
     // Every clip that will actually be composited, with the provenance the
     // export must carry and the second of the finished video it occupies.
@@ -604,20 +575,69 @@ async function main(): Promise<void> {
       footageClips,
       narrationAudioPath,
       captionCues,
-      outputPath,
+      outputPath: renderPath,
       outputDurationS: narrationDurationMs / 1000,
-      // Omitted entirely when there is no host or no action survived, which
-      // is the encoder's contract — an overlay with an empty track is an
-      // error there rather than a silently hostless video.
-      ...(characterTrack.clips.length > 0
-        ? { characterOverlay: { clips: characterTrack.clips, heightRatio: CHARACTER_HEIGHT_RATIO, bottomMarginRatio: CHARACTER_BOTTOM_MARGIN_RATIO } }
-        : {}),
     });
     if (!renderResult.ok) {
       await finishRun(env.db, renderRunId, "failed", renderResult.error.kind);
       throw new Error(`RENDER failed: ${renderResult.error.message}`);
     }
     await finishRun(env.db, renderRunId, "succeeded");
+
+    // ---- HOST ----
+    //
+    // A second ffmpeg pass over the finished video (operator direction,
+    // 2026-09-03). No model chose any of this: the host waves hello, runs
+    // every other action in the pack in manifest order on a loop, and waves
+    // goodbye, for exactly as long as the video lasts.
+    //
+    // **Never fatal, at either level.** A missing or unreadable pack, or an
+    // encoder that cannot composite, leaves `renderPath` — a complete,
+    // publishable Short with footage, narration and captions and no host —
+    // and the reason reaches the audit package. The same contract RESEARCH
+    // and EDIT have, and the reason this is a separate pass at all: inside
+    // the render's filtergraph the identical failure took the video with it.
+    const character = await resolveCharacterPack(REPO_DIR);
+    if (!character.present) console.warn(`HOST: ${character.reason}`);
+
+    const characterTrack = character.present
+      ? buildCharacterTimeline({ pack: character.pack, videoDurationS: renderResult.value.durationS })
+      : { clips: [], trackDurationS: 0 };
+
+    // The finished file, whichever pass produced it. Reassigned only when the
+    // overlay actually succeeds, so every failure path below leaves EXPORT
+    // pointing at the hostless render rather than at a file that may not
+    // exist.
+    let finishedPath = renderPath;
+    let hostAbsentReason = character.present ? null : character.reason;
+
+    if (character.present && characterTrack.clips.length === 0) {
+      // Only reachable from a video with no measurable duration, which would
+      // be a broken render — but an absent host with no reason beside it is
+      // the one thing the audit package is not allowed to contain.
+      hostAbsentReason = `the host track came out empty for a ${renderResult.value.durationS}s video — published as footage and captions only.`;
+      console.warn(`HOST: ${hostAbsentReason}`);
+    }
+
+    if (characterTrack.clips.length > 0) {
+      const hostRunId = await startRun(env.db, "host", traceId);
+      const overlayResult = await new FfmpegCharacterOverlayDriver().composite({
+        videoPath: renderPath,
+        overlay: { clips: characterTrack.clips, heightRatio: CHARACTER_HEIGHT_RATIO, bottomMarginRatio: CHARACTER_BOTTOM_MARGIN_RATIO },
+        outputPath,
+        durationS: renderResult.value.durationS,
+      });
+      if (overlayResult.ok) {
+        finishedPath = outputPath;
+        await finishRun(env.db, hostRunId, "succeeded");
+        console.warn(`HOST: ${characterTrack.clips.length} action(s), ${characterTrack.trackDurationS.toFixed(1)}s over a ${renderResult.value.durationS.toFixed(1)}s video.`);
+      } else {
+        hostAbsentReason = `the host overlay pass failed (${overlayResult.error.kind}: ${overlayResult.error.message}) — published as footage and captions only.`;
+        await finishRun(env.db, hostRunId, "failed", overlayResult.error.kind);
+        console.warn(`HOST: ${hostAbsentReason}`);
+      }
+    }
+    const hostOnScreen = finishedPath === outputPath;
 
     // ---- AUDIT SUMMARY (deterministic, no model call, never blocks) ----
     const recentScripts = await env.db.select().from(scripts).orderBy(desc(scripts.createdAt)).limit(100).all();
@@ -634,15 +654,19 @@ async function main(): Promise<void> {
         alignMatchRatio,
         captionTiming,
       },
-      characterAbsentReason: character.present ? null : character.reason,
-      character: character.present && characterTrack.clips.length > 0
-        ? {
-            pack: character.pack.pack,
-            packVersion: character.pack.version,
-            actions: characterTrack.clips.map((clip, index) => ({ position: timeline[index].position, actionId: clip.actionId })),
-            adjustments: characterTrack.adjustments,
-          }
-        : null,
+      characterAbsentReason: hostAbsentReason,
+      // Recorded only when the host is genuinely in the file. A sequence
+      // beside a `characterAbsentReason` would describe a performance no
+      // frame of the export contains.
+      character:
+        hostOnScreen && character.present
+          ? {
+              pack: character.pack.pack,
+              packVersion: character.pack.version,
+              sequence: characterTrack.clips.map((clip) => clip.actionId),
+              trackDurationS: characterTrack.trackDurationS,
+            }
+          : null,
       edit: { model: edits.model, degradedReason: edits.degradedReason, clips: edits.clips.map(({ position, edited, toolsRun, skippedReason }) => ({ position, edited, toolsRun, skippedReason })) },
       // Which provider and model actually answered each reasoning stage, and
       // why it was not the preferred one. Only RESEARCH can report a
@@ -658,6 +682,13 @@ async function main(): Promise<void> {
           fallbackReason: researchOutcome.fallbackReason,
         },
         { stage: "SCRIPT", provider: "groq" as const, model: GROQ_REASONING_MODEL, fallbackReason: null },
+        // On the lighter model since 2026-09-03, and recorded here for that
+        // reason: CRITIC's originality score is the one number in the audit
+        // package a reviewer weighs against the script itself, and "which
+        // model graded this" is not recoverable from the score. It is also
+        // no longer the model that wrote the script, which is the whole
+        // point of moving it (src/config/models.ts).
+        { stage: "CRITIC", provider: "groq" as const, model: GROQ_LIGHT_MODEL, fallbackReason: null },
         { stage: "PLAN", provider: "groq" as const, model: GROQ_REASONING_MODEL, fallbackReason: null },
       ],
       originalityScore: critic.originalityScore,
@@ -717,11 +748,14 @@ async function main(): Promise<void> {
     console.warn(`METADATA: "${uploadMetadata.title}" · ${uploadMetadata.hashtags.length} hashtag(s)`);
 
     const exportRunId = await startRun(env.db, "export", traceId);
-    const fileBytes = await readFile(outputPath);
+    // `finishedPath`, never `outputPath`: they are the same file only when
+    // the overlay pass ran. Exporting `outputPath` unconditionally would read
+    // a file that does not exist on every degraded-host render.
+    const fileBytes = await readFile(finishedPath);
     const exportDriver = env.exportDriver;
     const exportResult = await runExport(
       env.db,
-      outputPath,
+      finishedPath,
       fileBytes,
       {
         renderId,

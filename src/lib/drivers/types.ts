@@ -251,42 +251,20 @@ export interface CaptionCue {
 }
 
 /**
- * A looping character composited over the footage, chroma-keyed.
+ * One action of the host, in the order it plays.
  *
- * The key values are measured, not guessed (plan v2 §2): the asset's
- * background is a flat `#e5505c` and her face is `#e48080` — the same red
- * channel, 48/36 apart in green and blue. `similarity` 0.10 removes the
- * background with her face, blush, glasses and hair intact; **0.14 begins
- * eating her face and 0.20 destroys it**, so 0.10 is the ceiling rather than
- * a starting point.
- */
-/**
- * One hold in the character's loop — a beat where she waits on screen
- * instead of running straight through to the end.
+ * The host is a *track*, not a single looping asset: the pack ships 19
+ * separate actions and `src/lib/pipeline/character-timeline.ts` lays them
+ * end to end deterministically — hello, then every other action in manifest
+ * order on a loop, then goodbye.
  *
- * The loop is 5.6s of continuous motion, which reads as restless under a
- * two-minute narration. Holds stretch it by parking her on chosen frames,
- * so she still moves but arrives at the end of the cycle far less often.
- *
- * `frames: 1` freezes on `atFrame`. `frames: 2` or more cycles through that
- * many consecutive frames for the whole hold, which keeps a little life in
- * her rather than stopping her dead.
- */
-/**
- * One action of the host, on screen for a span of the video.
- *
- * The host is a *track* now, not a single looping asset (operator
- * direction, 2026-09-01). The robot pack ships 19 separate actions and PLAN
- * chooses one per scene, so the host is assembled the same way the footage
- * is: an ordered list of clips, each held for as long as its scene lasts,
- * concatenated into one stream and composited once.
- *
- * This replaced a single GIF stretched by hand-counted frame holds. Those
- * holds existed only because one 5.6-second loop had to cover a
- * two-minute narration without reading as a fidget, and they were tied to
- * frame numbers counted off that one asset — replacing the asset meant
- * recounting them. Cutting between real actions solves the same problem
- * with the pack's own material and no magic numbers.
+ * **There is no chroma key anywhere in this system.** The original host was
+ * a GIF on a flat `#e5505c` field behind a face whose red channel matched
+ * it, which left a tolerance window so narrow that 0.14 ate her cheeks and
+ * 0.20 destroyed the face. The pack's MOVs carry a real 8-bit alpha
+ * channel, so the key, its similarity, its blend and that whole class of bug
+ * are gone. The hand-counted frame holds that stretched that GIF are gone
+ * with it: holding an action now means playing the next one.
  */
 export interface CharacterClip {
   /** Path to the action clip. An alpha MOV from the pack's `mov/` directory. */
@@ -294,22 +272,25 @@ export interface CharacterClip {
   /** The manifest action id (e.g. `talk_emphatic_loop`) — recorded in the audit package. */
   actionId: string;
   /**
-   * Seconds this action is on screen. The clip is looped to fill the span
-   * if it is shorter and cut if it is longer; every clip in the pack is a
-   * seamless loop, so holding one is invisible.
+   * Seconds of this action that play.
+   *
+   * Equal to `naturalDurationS` for every clip but one: the single partial
+   * action that lands the goodbye wave on the end of the video. **Never
+   * greater** — the track is assembled with ffmpeg's concat demuxer, which
+   * can cut an entry short but cannot loop one, so a request for more than
+   * the file holds is not a thing the encoder can honour.
    */
   durationS: number;
+  /** The clip's own length, so a caller can tell a trimmed action from a whole one without re-reading the manifest. */
+  naturalDurationS: number;
 }
 
 /**
- * The host's track for one render.
+ * The host's track and where it sits in the frame.
  *
- * **There is no chroma key any more, and that is the point.** The old asset
- * was a flat `#e5505c` fill behind a face whose red channel matched it
- * exactly, which left a tolerance window so narrow that 0.14 ate her cheeks
- * and 0.20 destroyed the face. The robot pack's MOVs carry a real 8-bit
- * alpha channel, so the key, its similarity, its blend, and the whole class
- * of "raising this number takes her face with it" bug are simply gone.
+ * Composited by its own ffmpeg pass over an already-finished video
+ * (`src/lib/drivers/character-overlay-ffmpeg.ts`), not by the render — see
+ * that file for why the two are separate.
  */
 export interface CharacterOverlay {
   /** The ordered action track. Never empty — a render with no actions composites no host at all. */
@@ -323,6 +304,26 @@ export interface CharacterOverlay {
    * flush-bottom anchor would plant a floating robot on the floor.
    */
   bottomMarginRatio: number;
+}
+
+/**
+ * One pass of the character overlay: a finished video in, the same video
+ * with the host on top out.
+ */
+export interface CharacterOverlayRequest {
+  /** The finished video — footage, narration and burned-in captions, no host. */
+  videoPath: string;
+  overlay: CharacterOverlay;
+  outputPath: string;
+  /**
+   * How long the finished video is, from `RenderResponse.durationS`.
+   *
+   * Passed as an explicit `-t` because the host track is built to run *past*
+   * the end rather than stop short of it
+   * (src/lib/pipeline/character-timeline.ts), so something has to say where
+   * the video ends. That something is the video's own measured length.
+   */
+  durationS: number;
 }
 
 /**
@@ -352,17 +353,12 @@ export interface RenderRequest {
    * How long the finished video should be — the narration's measured
    * length.
    *
-   * Explicit rather than left to `-shortest`, because `-shortest` alone does
-   * not settle it once the footage track has a definite end: the character
-   * overlay is composited with `shortest=0` (so a looping host can never
-   * truncate the video) and keeps the video stream alive past the audio,
-   * which produced a 13.5s render over a 12.0s narration the first time a
-   * montage was composited. A single looped clip never hit this because
-   * nothing in that graph ever ended.
+   * Explicit rather than left to `-shortest`, which does not settle it once
+   * the footage track has a definite end — the first montage ever composited
+   * came out 13.5s over a 12.0s narration. A single looped clip never hit
+   * this, because nothing in that graph ever ended.
    */
   outputDurationS?: number;
-  /** Absent means no character — the v1 look, and what a render falls back to when the asset is missing. */
-  characterOverlay?: CharacterOverlay;
 }
 
 export interface RenderResponse {

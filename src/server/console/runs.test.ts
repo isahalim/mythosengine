@@ -173,8 +173,8 @@ describe("getRunProgress", () => {
       "scr1",
       TRACE,
       [
-        { position: 0, beatIndex: null, intent: "opening", query: "city street crowd walking", source: "pexels", characterAction: null },
-        { position: 1, beatIndex: 0, intent: "the real thing", query: "GTA 6 walkthrough gameplay", source: "youtube", characterAction: null },
+        { position: 0, beatIndex: null, intent: "opening", query: "city street crowd walking", source: "pexels" },
+        { position: 1, beatIndex: 0, intent: "the real thing", query: "GTA 6 walkthrough gameplay", source: "youtube" },
       ],
       "2026-08-31T10:00:31.000Z",
     );

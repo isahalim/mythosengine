@@ -1,11 +1,14 @@
 /**
  * Which model answers a reasoning stage. One file, one answer.
  *
- * **Groq `openai/gpt-oss-120b` answers every reasoning stage and every tool
- * loop** — retrieval reranking, SCRIPT, CRITIC, PLAN and EDIT, plus
- * RESEARCH whenever the Gemini attempt below does not land (operator
- * direction, 2026-09-01, reverting the Gemini split made earlier the same
- * day).
+ * **Groq `openai/gpt-oss-120b` answers SCRIPT, PLAN, EDIT and RESEARCH's
+ * fallback** (operator direction, 2026-09-01, reverting the Gemini split
+ * made earlier the same day). Two stages have since moved off it —
+ * see `GROQ_LIGHT_MODEL` — and one has stopped calling a model at all:
+ * stage 4's Ideas list went back to plain BM25 on 2026-09-03 by operator
+ * direction, so the Worker again makes no model call anywhere.
+ * `rerankPassages` still reorders RESEARCH's retrieval inside the pipeline,
+ * and that one is here.
  *
  * **The single exception is RESEARCH's first attempt**, which goes to
  * `GEMINI_RESEARCH_MODEL` (operator direction, 2026-09-02) and falls back
@@ -21,22 +24,21 @@
  * exhaustion. A per-minute ceiling a normal render cannot stay under is a
  * dependency, not an upgrade.
  *
- * *Why 120b and not the 20b model.* RESEARCH and PLAN previously ran on
- * `openai/gpt-oss-20b` to keep their tokens out of the 120b model's
- * separate daily budget. The operator's direction is explicit that the
- * smaller model is not to be used, so that split is gone and the whole
- * reasoning path shares one 200K token/day allowance
- * (`QUOTAS.groq.tokensPerDayGptOss`). The measured cost of a render is
- * ~15-25K tokens for RESEARCH plus a few thousand each for the rest, so
- * three renders a day sit inside it — but with less headroom than the
- * two-model split had, which is why `scripts/verify-quotas.mjs` and the
- * per-day figure in ARCHITECTURE.md §0 are worth watching.
+ * *Why 120b and not the 20b model, for the stages still here.* Groq meters
+ * tokens per model per day, so every stage left on this model competes for
+ * one 200K allowance (`QUOTAS.groq.tokensPerDayGptOss`). Measured on the
+ * 2026-09-02 render, what remains costs ~130K a render: EDIT ~90-110K
+ * across ~34 tool turns, RESEARCH ~15-25K when it falls back here, and a
+ * few thousand each for SCRIPT and PLAN. **That is two renders a day, not
+ * three**, and EDIT is the whole reason. The fix is fewer tool turns or a
+ * shorter `EDIT_TOOLS`, not a smaller model — moving EDIT was offered on
+ * 2026-09-03 and declined, because a weaker model's tool-calling degrades
+ * into "every clip as sourced" quietly. `scripts/verify-quotas.mjs` and the
+ * per-day figure in ARCHITECTURE.md §0 are what watch this.
  *
- * CRITIC shares this model with SCRIPT, which is a known compromise rather
- * than an oversight: a critic on the writer's own model is grading its own
- * work, and the second opinion is now a second *prompt*, not a second
- * model. It was the arrangement that shipped every video before
- * 2026-09-01.
+ * CRITIC used to share this model with SCRIPT, which was a known compromise
+ * rather than an oversight: a critic on the writer's own model is grading
+ * its own work. It no longer does — see `GROQ_LIGHT_MODEL`.
  */
 export const GROQ_REASONING_MODEL = "openai/gpt-oss-120b";
 
@@ -80,3 +82,47 @@ export const GEMINI_RESEARCH_MODEL = "gemini-3.7-flash";
  * six — it is paced by a token bucket, not by a per-minute request count.
  */
 export const GEMINI_RESEARCH_MAX_ITERATIONS = 4;
+
+/**
+ * The lighter half of the reasoning path — **CRITIC and EXPORT's listing
+ * only** (operator direction, 2026-09-03).
+ *
+ * *Why this model exists again.* It was deleted on 2026-09-01, when every
+ * reasoning stage was consolidated onto `GROQ_REASONING_MODEL`, and
+ * CLAUDE.md's NEVER block recorded that as permanent. The operator's
+ * direction of 2026-09-03 reverses it for exactly two stages, and a CLI
+ * prompt outranks a written ADR by that document's own rule.
+ *
+ * *Why these two and not the others.* Groq meters tokens **per model per
+ * day**, so a stage moved here stops competing with SCRIPT and RESEARCH for
+ * the same 200K. That argument applies to every stage, so it cannot be the
+ * whole test — the second test is what a weaker answer costs:
+ *
+ * - **EXPORT's listing** turns a script that is already written into a
+ *   title, a description and hashtags. There is no judgement in it that a
+ *   larger model resolves better, it is ~1.5K tokens a render, and it
+ *   already falls back to `heuristicUploadMetadata` on any failure. Nothing
+ *   downstream reads it; the operator pastes it into YouTube Studio and
+ *   edits it if it is wrong.
+ * - **CRITIC** is advisory by construction (ARCHITECTURE.md §5.4): its
+ *   verdict never stops a signal, it only reaches the audit package. Moving
+ *   it also *fixes* something. `src/config/models.ts` used to note that a
+ *   critic sharing SCRIPT's model is grading its own work and that the
+ *   second opinion had become a second prompt rather than a second model.
+ *   It is a second model again.
+ *
+ * *What deliberately did not move.* EDIT and PLAN were both considered on
+ * 2026-09-03 and both declined by the operator. EDIT is the largest consumer
+ * in the system (~90-110K tokens a render, ~34 tool turns), so moving it
+ * would have been the biggest budget win available — and it is precisely
+ * the stage where a weaker model's tool-calling degrades quietly into "every
+ * clip as sourced". PLAN's queries are the difference between footage that
+ * illustrates the argument and a crystal mobile. Both stay on
+ * `GROQ_REASONING_MODEL`, which keeps that model at ~130K tokens a render
+ * and two renders a day as the practical ceiling.
+ *
+ * SCRIPT and RESEARCH are not candidates and never were: one is the product,
+ * and the other is already reading sources truncated by
+ * `fitToRequestBudget`.
+ */
+export const GROQ_LIGHT_MODEL = "openai/gpt-oss-20b";

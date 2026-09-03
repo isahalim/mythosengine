@@ -7,8 +7,21 @@ import type { DriverError, LlmDriver } from "../drivers/types.ts";
 import { assertSignalTransition } from "../state.ts";
 import { CriticResponseSchema } from "./script-schema.ts";
 import { requestValidatedJson } from "./request-json.ts";
+import { GROQ_LIGHT_MODEL } from "../../config/models.ts";
 
-const CRITIC_MODEL = "openai/gpt-oss-120b";
+/**
+ * The lighter model (operator direction, 2026-09-03), and named from
+ * `src/config/models.ts` rather than inline — this file used to spell the id
+ * out itself, which is the exact thing CLAUDE.md forbids and the reason a
+ * stage can drift from every other one without a test noticing.
+ *
+ * CRITIC is advisory: its verdict never stops a signal reaching FOOTAGE
+ * SELECT, it only reaches the audit package for a human to read. Moving it
+ * here also ends the compromise `src/config/models.ts` recorded — a critic
+ * on the writer's own model was grading its own work, and the second
+ * opinion is a second model again rather than a second prompt.
+ */
+const CRITIC_MODEL = GROQ_LIGHT_MODEL;
 const PROMPT_PATH = join(process.cwd(), "prompts", "critic.v1.md");
 
 export interface CriticVerdict {

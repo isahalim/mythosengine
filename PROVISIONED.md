@@ -32,7 +32,7 @@ Last updated: `2026-08-29`
 
 ## Worker secrets (set, unreadable, do not regenerate)
 
-`GROQ_API_KEY` · `TURNSTILE_SECRET_KEY` · `VAULT_MASTER_KEY` · `SESSION_SIGNING_KEY` · `CONSOLE_ENROLLMENT_TOKEN` · `GEMINI_API_KEY` (optional) · `PEXELS_API_KEY` (optional) · `GITHUB_DISPATCH_TOKEN` (added 2026-08-31)
+`GROQ_API_KEY` (**no longer read by the Worker as of 2026-09-03** — stage 4's reranker was its only reader and was deleted; the secret is left in place rather than regenerated, and the pipeline's own `GROQ_API_KEY` in Actions is unaffected) · `TURNSTILE_SECRET_KEY` · `VAULT_MASTER_KEY` · `SESSION_SIGNING_KEY` · `CONSOLE_ENROLLMENT_TOKEN` · `GEMINI_API_KEY` (optional) · `PEXELS_API_KEY` (optional) · `GITHUB_DISPATCH_TOKEN` (added 2026-08-31)
 
 Verify with `npx wrangler secret list`. If one is missing, name it and stop.
 

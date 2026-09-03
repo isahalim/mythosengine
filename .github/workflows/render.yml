@@ -64,9 +64,11 @@ jobs:
     # the operator runs ./run.sh.
     runs-on: [self-hosted, macOS, ARM64]
     # 15 was sized for a 47-second video on a GitHub-hosted runner. v2's
-    # ceiling is 180s of narration plus a character composite, and a laptop
-    # is not a dedicated CI box, so 30 minutes per video is the working
-    # figure — and `count` can be 6.
+    # ceiling is 180s of narration, EDIT's tool loop (measured at nineteen
+    # minutes for eight clips), and *two* encodes since 2026-09-03 — the
+    # render, then the character overlay on top of it. A laptop is not a
+    # dedicated CI box, so 30 minutes per video is the working figure — and
+    # `count` can be 6.
     #
     # Static, not `fromJSON(inputs.count) * 30`. That expression is not
     # accepted here: GitHub failed to parse the whole file and reported a

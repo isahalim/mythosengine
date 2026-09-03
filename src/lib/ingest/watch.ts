@@ -14,14 +14,31 @@ export interface WatchOptions {
   timeoutMs?: number;
   userAgent?: string;
   /**
-   * Fetch every enabled source at once instead of one after another.
+   * Fetch every source at once instead of one after another.
    *
    * Off by default, because the scheduled job's serial poll is a deliberate
    * choice and not an oversight — see `watchAllEnabledSources`. On for the
-   * Ideas screen's refresh (src/server/console/ideas-refresh.ts), where a
-   * person is waiting on the result and the source list is small and known.
+   * Ideas screen's refresh (src/server/console/ideas-refresh.ts), which is a
+   * person waiting on a result rather than a crawler on a timer — but only
+   * safe there because that caller now sends **one source per host**. Firing
+   * three reddit.com feeds at once is what this flag used to do, and Reddit
+   * answered all three with 429.
    */
   concurrent?: boolean;
+  /**
+   * Whether a 429 is worth a second attempt. Default true, matching
+   * `fetchWithRetry`.
+   *
+   * False for the interactive refresh, and measured rather than assumed:
+   * Reddit's RSS budget from one IP is roughly a request per 30-60 seconds
+   * (a second request 5s after a 200 came back 429; the same request after
+   * ~45s idle came back 200). Three attempts inside an 8-second timeout
+   * cannot outrun a window that long — they only spend the next window's
+   * request too. This is the same lesson `http.ts` already carries for a
+   * daily quota and CLAUDE.md carries for Gemini TTS: retrying a rate limit
+   * you cannot wait out buys a second copy of the same answer.
+   */
+  retryOn429?: boolean;
 }
 
 export interface WatchSourceResult {
@@ -54,7 +71,16 @@ export async function watchSource(
   const fetchResult = await fetchWithRetry(
     source.url,
     { headers },
-    { timeoutMs: options.timeoutMs ?? 15_000, maxAttempts: 3, baseDelayMs: 500, fetchImpl: options.fetchImpl },
+    {
+      timeoutMs: options.timeoutMs ?? 15_000,
+      // One attempt when 429s are not worth retrying: the retry budget is
+      // the thing being conserved, so spending three attempts to learn the
+      // same thing is the failure, not the fix.
+      maxAttempts: options.retryOn429 === false ? 1 : 3,
+      baseDelayMs: 500,
+      fetchImpl: options.fetchImpl,
+      ...(options.retryOn429 === false ? { retryOn429: false } : {}),
+    },
   );
 
   if (!fetchResult.ok) {
@@ -119,25 +145,35 @@ export async function watchSource(
   return { sourceId: source.id, status: "fetched", itemsObserved: inserted };
 }
 
-export async function watchAllEnabledSources(db: Db, options: WatchOptions = {}): Promise<WatchSourceResult[]> {
-  const enabled = await db.select().from(sources).where(eq(sources.enabled, 1)).all();
-
+/**
+ * Polls an explicit list of sources.
+ *
+ * Split out from `watchAllEnabledSources` on 2026-09-03 so the Ideas
+ * refresh can poll a *subset* — one source per host — rather than every
+ * enabled row. The scheduled job still wants all of them, and calls the
+ * wrapper below.
+ */
+export async function watchSources(db: Db, toPoll: readonly (typeof sources.$inferSelect)[], options: WatchOptions = {}): Promise<WatchSourceResult[]> {
   // Serialized by default, not Promise.all: the scheduled poll hits external
   // sites on a timer, and there is no reason to hit several at once and
   // every reason not to (rate limits, being a considerate crawler).
   //
   // `concurrent` is the exception the Ideas refresh asks for, and it is a
   // different situation rather than the same one in a hurry: a person
-  // triggered it, is waiting on it, and the list is five conditional GETs
-  // that mostly come back 304. Serializing those would multiply a wait
-  // somebody is watching by the number of sources.
+  // triggered it and is waiting on it. It is only sound because that caller
+  // sends one source per host, so no two requests in the batch share a rate
+  // limit bucket.
   if (options.concurrent) {
-    return Promise.all(enabled.map((source) => watchSource(db, source, options)));
+    return Promise.all(toPoll.map((source) => watchSource(db, source, options)));
   }
 
   const results: WatchSourceResult[] = [];
-  for (const source of enabled) {
+  for (const source of toPoll) {
     results.push(await watchSource(db, source, options));
   }
   return results;
+}
+
+export async function watchAllEnabledSources(db: Db, options: WatchOptions = {}): Promise<WatchSourceResult[]> {
+  return watchSources(db, await db.select().from(sources).where(eq(sources.enabled, 1)).all(), options);
 }

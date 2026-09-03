@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { FfmpegRenderDriver, buildFilterGraph } from "./render-ffmpeg.ts";
-import type { CharacterOverlay } from "./types.ts";
 
 const fixturesDir = join(import.meta.dirname, "__fixtures__");
 const fixture = (name: string) => join(fixturesDir, name);
@@ -129,112 +128,48 @@ describe("FfmpegRenderDriver", () => {
   });
 });
 
-const overlay = (actionIds: string[]): CharacterOverlay => ({
-  clips: actionIds.map((actionId, i) => ({ filePath: `/tmp/pack/${actionId}.mov`, actionId, durationS: 4 + i })),
-  heightRatio: 0.34,
-  bottomMarginRatio: 0.1,
-});
-
-describe("FfmpegRenderDriver character track", () => {
-  it("feeds every action as its own looped, length-capped input", async () => {
-    const driver = new FfmpegRenderDriver({
-      ffmpegBin: fixture("fake-ffmpeg-record-argv.py"),
-      ffprobeBin: fixture("fake-ffprobe-success.py"),
-    });
-    const result = await driver.compose({
-      ...withOutput("/tmp/render-test-track.mp4"),
-      characterOverlay: overlay(["talk_neutral_loop", "surprised_reaction"]),
-    });
-    expect(result.ok).toBe(true);
-
-    // One invocation, not two. The old host needed a separate ffmpeg pass to
-    // bake hand-counted frame holds into a derived file; cutting between real
-    // actions needs no derivation at all.
-    const calls = readRecordedArgv();
-    expect(calls).toHaveLength(1);
-    const argv = calls[0];
-
-    expect(argv).toContain("/tmp/pack/talk_neutral_loop.mov");
-    expect(argv).toContain("/tmp/pack/surprised_reaction.mov");
-    // Each action loops to fill its scene and is cut to that scene's length.
-    expect(argv).toContain("4.000");
-    expect(argv).toContain("5.000");
-    // The GIF demuxer's flag has no place here: the pack ships MOVs.
-    expect(argv).not.toContain("-ignore_loop");
-  });
-
-  it("never chroma-keys, because the pack carries a real alpha channel", async () => {
-    const driver = new FfmpegRenderDriver({
-      ffmpegBin: fixture("fake-ffmpeg-record-argv.py"),
-      ffprobeBin: fixture("fake-ffprobe-success.py"),
-    });
-    await driver.compose({ ...withOutput("/tmp/render-test-alpha.mp4"), characterOverlay: overlay(["talk_neutral_loop"]) });
-    const graph = readRecordedArgv()[0].join(" ");
-    expect(graph).not.toContain("colorkey");
-    expect(graph).not.toContain("chromakey");
-    // yuva420p, not yuv420p: dropping the alpha plane is the one mistake in
-    // this graph that still encodes successfully, flattening the host onto a
-    // black rectangle.
-    expect(graph).toContain("yuva420p");
-  });
-
-  it("refuses an overlay declared with no actions rather than building an empty concat", async () => {
-    const driver = new FfmpegRenderDriver({ ffmpegBin: fixture("fake-ffmpeg-fail.py") });
-    const result = await driver.compose({
-      ...withOutput("/tmp/render-test-never-written.mp4"),
-      characterOverlay: { clips: [], heightRatio: 0.34, bottomMarginRatio: 0.1 },
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.error.kind).toBe("invalid_response");
-      expect(result.error.message).toContain("omit it entirely");
-    }
-  });
-});
-
 describe("buildFilterGraph", () => {
   const assPath = "/tmp/captions.ass";
 
-  it("skips concat for a single footage clip and a single action", () => {
-    const graph = buildFilterGraph({ assPath, footageClipCount: 1, character: { clipCount: 1, heightRatio: 0.34, bottomMarginRatio: 0.1 } });
+  it("skips concat for a single footage clip", () => {
+    const graph = buildFilterGraph({ assPath, footageClipCount: 1 });
     expect(graph).not.toContain("concat");
-    expect(graph).toContain("overlay=");
+    expect(graph).toContain("ass=");
   });
 
-  it("concatenates both tracks independently when each has several clips", () => {
-    const graph = buildFilterGraph({ assPath, footageClipCount: 3, character: { clipCount: 3, heightRatio: 0.34, bottomMarginRatio: 0.1 } });
+  it("concatenates a montage into one stream before burning captions on it", () => {
+    const graph = buildFilterGraph({ assPath, footageClipCount: 3 });
     expect(graph).toContain("concat=n=3:v=1:a=0[fg]");
-    expect(graph).toContain("concat=n=3:v=1:a=0[ch]");
-  });
-
-  it("numbers the host's inputs after the footage clips and the narration", () => {
-    // Footage occupies 0..1, narration is 2, so the host starts at 3. Getting
-    // this wrong composites the narration's (non-existent) video or a footage
-    // clip over itself.
-    const graph = buildFilterGraph({ assPath, footageClipCount: 2, character: { clipCount: 2, heightRatio: 0.34, bottomMarginRatio: 0.1 } });
-    expect(graph).toContain("[3:v]");
-    expect(graph).toContain("[4:v]");
-  });
-
-  it("burns the captions last so the host can never cover a word", () => {
-    const graph = buildFilterGraph({ assPath, footageClipCount: 1, character: { clipCount: 2, heightRatio: 0.34, bottomMarginRatio: 0.1 } });
-    expect(graph.indexOf("overlay=")).toBeLessThan(graph.indexOf("ass="));
+    expect(graph.indexOf("concat=")).toBeLessThan(graph.indexOf("ass="));
     expect(graph.endsWith("[v]")).toBe(true);
   });
 
-  it("floats the host clear of the bottom edge rather than planting it on the floor", () => {
-    const graph = buildFilterGraph({
-      assPath,
-      footageClipCount: 1,
-      character: { clipCount: 1, heightRatio: 0.34, bottomMarginRatio: 0.1 },
-      outputHeight: 1920,
-    });
-    expect(graph).toContain("overlay=(W-w)/2:H-h-192");
-  });
-
-  it("omits the host entirely when there is no character", () => {
+  /**
+   * The host moved to its own pass over the finished video on 2026-09-03
+   * (operator direction), so nothing in this graph composites a character.
+   * Asserted rather than assumed: an overlay left here would put the host
+   * *under* the captions and quietly undo the whole point of the split.
+   */
+  it("composites no host at all — that is a separate pass now", () => {
     const graph = buildFilterGraph({ assPath, footageClipCount: 2 });
     expect(graph).not.toContain("overlay=");
+    expect(graph).not.toContain("yuva420p");
+    expect(graph).not.toContain("colorkey");
     expect(graph).toContain("concat=n=2");
+  });
+
+  it("maps only the footage clips and the narration, so no input is left unaccounted for", async () => {
+    const driver = new FfmpegRenderDriver({
+      ffmpegBin: fixture("fake-ffmpeg-record-argv.py"),
+      ffprobeBin: fixture("fake-ffprobe-success.py"),
+    });
+    const result = await driver.compose(withOutput("/tmp/render-test-nohost.mp4"));
+    expect(result.ok).toBe(true);
+
+    const argv = readRecordedArgv()[0];
+    // One footage clip at index 0, narration at index 1 — and no pack MOV
+    // anywhere in the argument list.
+    expect(argv).toContain("1:a");
+    expect(argv.some((arg) => arg.endsWith(".mov"))).toBe(false);
   });
 });

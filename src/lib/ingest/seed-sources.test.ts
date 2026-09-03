@@ -52,4 +52,57 @@ describe("seedSourcesFromYaml", () => {
   it("throws on a document that isn't shaped like a sources file", async () => {
     await expect(seedSourcesFromYaml(ctx.db, ctx.client, "not: a sources file\n")).rejects.toThrow();
   });
+
+  /**
+   * Existing rows used to be skipped outright, so an edited URL never
+   * reached a database that had already been seeded — the file and the table
+   * would disagree silently and forever. Found moving Reddit from `hot.rss`
+   * to `rising.rss` on 2026-09-03, which would otherwise have been a no-op
+   * in production.
+   */
+  describe("reconciling rows that already exist", () => {
+    const before = `sources:\n  - id: r\n    kind: rss\n    url: https://www.reddit.com/r/AskReddit/hot.rss\n`;
+
+    it("re-points a changed url and counts it as an update, not a skip", async () => {
+      await seedSourcesFromYaml(ctx.db, ctx.client, before);
+      const after = `sources:\n  - id: r\n    kind: rss\n    url: https://www.reddit.com/r/AskReddit/rising.rss\n`;
+
+      const result = await seedSourcesFromYaml(ctx.db, ctx.client, after);
+
+      expect(result).toEqual({ inserted: 0, updated: 1, skipped: 0 });
+      expect(ctx.db.select().from(sources).all()[0].url).toBe("https://www.reddit.com/r/AskReddit/rising.rss");
+    });
+
+    it("drops the conditional-GET validators when the url changes", async () => {
+      await seedSourcesFromYaml(ctx.db, ctx.client, before);
+      ctx.client.exec(`UPDATE sources SET etag = '"abc"', last_modified = 'Wed, 03 Sep 2026 00:00:00 GMT' WHERE id = 'r'`);
+
+      await seedSourcesFromYaml(ctx.db, ctx.client, `sources:\n  - id: r\n    kind: rss\n    url: https://www.reddit.com/r/AskReddit/rising.rss\n`);
+
+      // An If-Modified-Since built for the old feed can earn a 304 from the
+      // new one, which is a source that looks polled and is permanently empty.
+      const row = ctx.db.select().from(sources).all()[0];
+      expect(row.etag).toBeNull();
+      expect(row.lastModified).toBeNull();
+    });
+
+    it("keeps the validators when only `enabled` changes", async () => {
+      await seedSourcesFromYaml(ctx.db, ctx.client, before);
+      ctx.client.exec(`UPDATE sources SET etag = '"abc"' WHERE id = 'r'`);
+
+      const result = await seedSourcesFromYaml(ctx.db, ctx.client, `${before.trimEnd()}\n    enabled: false\n`);
+
+      // Toggling a flag is not a new resource; throwing away a working
+      // conditional GET would re-download the feed for nothing.
+      expect(result.updated).toBe(1);
+      const row = ctx.db.select().from(sources).all()[0];
+      expect(row.enabled).toBe(0);
+      expect(row.etag).toBe('"abc"');
+    });
+
+    it("still reports an unchanged file as entirely skipped", async () => {
+      await seedSourcesFromYaml(ctx.db, ctx.client, realSourcesYaml);
+      expect(await seedSourcesFromYaml(ctx.db, ctx.client, realSourcesYaml)).toMatchObject({ inserted: 0, updated: 0 });
+    });
+  });
 });

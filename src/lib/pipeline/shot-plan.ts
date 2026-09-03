@@ -6,7 +6,6 @@ import type { DriverError, LlmDriver } from "../drivers/types.ts";
 import { extractKeywords } from "./keywords.ts";
 import { requestValidatedJson } from "./request-json.ts";
 import { GROQ_REASONING_MODEL } from "../../config/models.ts";
-import { describeActionsForPrompt, isKnownAction, type CharacterPack } from "./character-pack.ts";
 import { ok, type Result } from "../result.ts";
 
 /**
@@ -30,10 +29,16 @@ import { ok, type Result } from "../result.ts";
  */
 
 /**
- * The default when RENDER does not name one. PLAN asks for an actionable,
- * detailed plan covering both footage and the host's action per shot, which
- * is why it is on the larger model rather than the small one it used to
- * share with RESEARCH — see src/config/models.ts.
+ * The default when RENDER does not name one.
+ *
+ * On `GROQ_REASONING_MODEL` rather than the lighter one, and re-decided
+ * rather than inherited: PLAN was moved to the larger model on 2026-09-01
+ * partly because it also chose the host's action per shot, and the host is
+ * deterministic since 2026-09-03 (src/lib/pipeline/character-timeline.ts),
+ * so that half of the reason expired. The operator was offered the move and
+ * declined it on the half that remains — PLAN's queries are the difference
+ * between footage that illustrates the argument and a crystal mobile, which
+ * is exactly the judgement the smaller model is worse at.
  */
 const PLAN_MODEL = GROQ_REASONING_MODEL;
 const PROMPT_PATH = join(process.cwd(), "prompts", "shot-plan.v2.md");
@@ -71,14 +76,6 @@ export const ShotPlanResponseSchema = z
             intent: z.string().min(1).max(200),
             query: z.string().min(1).max(80),
             source: z.enum(["youtube", "pexels"]),
-            /**
-             * Which of the host's actions plays over this shot. Optional in
-             * the schema, not in the prompt: a model that omits it gets the
-             * pack default rather than a rejected plan, because the action
-             * is the least important thing about a shot and losing a whole
-             * montage over one missing field would be absurd.
-             */
-            character_action: z.string().min(1).max(64).optional(),
           })
           .strict(),
       )
@@ -95,13 +92,6 @@ export interface PlannedShot {
   /** What gets searched. */
   query: string;
   source: "youtube" | "pexels";
-  /**
-   * The host's action over this shot — one of the character pack's ids, or
-   * null when PLAN named none and the timeline should apply the pack
-   * default. Validated against the loaded pack, never trusted as given:
-   * src/lib/pipeline/character-timeline.ts enforces the pack's own rules.
-   */
-  characterAction: string | null;
 }
 
 export interface ShotPlan {
@@ -176,8 +166,6 @@ export function isFilmableQuery(query: string, { allowSingleWord = false }: { al
 }
 
 export interface PlanOptions {
-  /** The loaded character pack, so the model is briefed with the real action vocabulary and the answer can be checked against it. */
-  pack?: CharacterPack;
   /** Overridden by RENDER when the Gemini ladder is spent and Groq is answering instead. */
   model?: string;
   promptTemplate?: string;
@@ -252,10 +240,6 @@ function viralPlan(beats: DiscourseBeat[]): ShotPlan {
       // recognises repeats of VIRAL_QUERY and reuses the source.
       query: VIRAL_QUERY,
       source: "youtube" as const,
-      // Null, not a named action: the viral path spends no token deciding
-      // anything, and the character timeline's pack default (a talking
-      // loop) is exactly right under continuous narration.
-      characterAction: null,
     })),
     origin: "viral_gameplay",
     degradedReason: null,
@@ -334,9 +318,6 @@ export function heuristicPlan(input: PlanInput, reason: string): ShotPlan {
           : "Keyword fallback — drawn from this beat's own words, because PLAN did not run.",
       query,
       source: "pexels",
-      // PLAN did not run, so nothing chose an action either. The timeline
-      // applies the pack default across the whole track.
-      characterAction: null,
     });
   }
 
@@ -352,7 +333,6 @@ export function heuristicPlan(input: PlanInput, reason: string): ShotPlan {
       intent: "Neutral B-roll — PLAN did not run, so this illustrates nothing in particular.",
       query,
       source: "pexels",
-      characterAction: null,
     });
   }
 
@@ -373,11 +353,7 @@ function loadPromptTemplate(): string {
  * shot fewer is fine, and a query this code invented to patch a hole would
  * be exactly the unillustrative filler the stage was built to stop.
  */
-export function validateShots(
-  raw: z.infer<typeof ShotPlanResponseSchema>,
-  beatCount: number,
-  pack?: CharacterPack,
-): { shots: PlannedShot[]; rejected: string[] } {
+export function validateShots(raw: z.infer<typeof ShotPlanResponseSchema>, beatCount: number): { shots: PlannedShot[]; rejected: string[] } {
   const seen = new Set<string>();
   const seenBeats = new Set<number>();
   const shots: PlannedShot[] = [];
@@ -424,15 +400,8 @@ export function validateShots(
     seen.add(key);
     if (shot.beat_index === null) seenOpening = true;
     else seenBeats.add(shot.beat_index);
-    // An action this pack does not have becomes null rather than a
-    // rejection: the shot's picture is the point, and the host falls back
-    // to the pack default. The timeline records the substitution for the
-    // audit package (src/lib/pipeline/character-timeline.ts), so a model
-    // that keeps inventing ids is visible rather than silently corrected.
-    const action = shot.character_action?.trim();
-    const characterAction = action !== undefined && action.length > 0 && (pack === undefined || isKnownAction(pack, action)) ? action : null;
 
-    shots.push({ position: shots.length, beatIndex: shot.beat_index, intent: shot.intent.trim(), query, source: shot.source, characterAction });
+    shots.push({ position: shots.length, beatIndex: shot.beat_index, intent: shot.intent.trim(), query, source: shot.source });
   }
 
   return { shots, rejected };
@@ -450,7 +419,6 @@ export async function planShots(
   if (input.topic === "viral") return ok(viralPlan(input.beats));
 
   const promptTemplate = options.promptTemplate ?? loadPromptTemplate();
-  const pack = options.pack;
 
   const systemPrompt = promptTemplate
     .replace(
@@ -465,17 +433,12 @@ export async function planShots(
     // The source guidance is topic-dependent, so it is composed here rather
     // than written into the prompt file as a static paragraph the model has
     // to apply conditionally.
-    .replace("{{source_guidance}}", sourceGuidance(input.topic))
-    // The action vocabulary comes off the pack's own manifest, so a pack
-    // that gains or loses an action can never leave the prompt advertising
-    // a clip nobody can play.
-    .replace("{{character_actions}}", pack === undefined ? "  (no character pack loaded — omit character_action)" : describeActionsForPrompt(pack))
-    .replace("{{character_rules}}", pack === undefined ? "  (no character pack loaded)" : pack.agentSelectionRules.map((rule) => `  - ${rule}`).join("\n"));
+    .replace("{{source_guidance}}", sourceGuidance(input.topic));
 
   const validated = await requestValidatedJson(llm, options.model ?? PLAN_MODEL, systemPrompt, ShotPlanResponseSchema);
   if (!validated.ok) return ok(heuristicPlan(input, `${validated.error.kind}: ${validated.error.message}`));
 
-  const { shots, rejected } = validateShots(validated.value, input.beats.length, pack);
+  const { shots, rejected } = validateShots(validated.value, input.beats.length);
 
   // Too few usable shots means the model did not do the job, and the
   // heuristic is not obviously worse than two shots over a three-minute

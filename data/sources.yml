@@ -10,22 +10,36 @@
 #
 # This is a starting list, not a fixed one. Revise freely — nothing else in
 # the pipeline depends on these specific sources, only on the `sources`
-# table having *some* enabled rows.
+# table having *some* enabled rows. Editing a `url` or `enabled` here does
+# reach the live table: seedSourcesFromYaml reconciles both on every run.
+#
+# `rising.rss`, not `hot.rss` (operator direction, 2026-09-03). Measured on
+# 2026-09-03, the newest entry in a `hot` feed was ~4 hours old — proven
+# discourse, but not "what is being argued about right now", which is what
+# stage 4 is for. `rising` is minutes-to-an-hour old and has already cleared
+# enough votes to be real, where `new` is mostly posts nobody has seen.
+#
+# One further constraint, measured the same day: reddit.com serves roughly
+# ONE RSS request per IP per 30-60 seconds. Three concurrent requests came
+# back 429/429/429; a single one came back 200 with 25 entries. That is why
+# the Ideas refresh polls one source per host and rotates
+# (src/server/console/ideas-refresh.ts) — adding more reddit.com rows here
+# lengthens the rotation, it does not add requests.
 
 sources:
   - id: reddit-askreddit
     kind: rss
-    url: https://www.reddit.com/r/AskReddit/hot.rss
+    url: https://www.reddit.com/r/AskReddit/rising.rss
     enabled: true
 
   - id: reddit-amitheasshole
     kind: rss
-    url: https://www.reddit.com/r/AmItheAsshole/hot.rss
+    url: https://www.reddit.com/r/AmItheAsshole/rising.rss
     enabled: true
 
   - id: reddit-trueoffmychest
     kind: rss
-    url: https://www.reddit.com/r/TrueOffMyChest/hot.rss
+    url: https://www.reddit.com/r/TrueOffMyChest/rising.rss
     enabled: true
 
   - id: news-bbc

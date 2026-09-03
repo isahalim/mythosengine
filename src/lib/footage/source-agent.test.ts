@@ -126,9 +126,9 @@ describe("sourceShots", () => {
   it("sources a mixed plan from both providers, in plan order", async () => {
     const result = await sourceShots(
       plan([
-        { position: 0, beatIndex: null, intent: "opening", query: "empty courtroom gallery", source: "pexels", characterAction: null },
-        { position: 1, beatIndex: 0, intent: "the real thing", query: "GTA 6 walkthrough gameplay", source: "youtube", characterAction: null },
-        { position: 2, beatIndex: 1, intent: "closing", query: "hands sorting paperwork", source: "pexels", characterAction: null },
+        { position: 0, beatIndex: null, intent: "opening", query: "empty courtroom gallery", source: "pexels" },
+        { position: 1, beatIndex: 0, intent: "the real thing", query: "GTA 6 walkthrough gameplay", source: "youtube" },
+        { position: 2, beatIndex: 1, intent: "closing", query: "hands sorting paperwork", source: "pexels" },
       ]),
       deps(),
     );
@@ -144,8 +144,8 @@ describe("sourceShots", () => {
     // the only record that a frame came from anywhere.
     await sourceShots(
       plan([
-        { position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels", characterAction: null },
-        { position: 1, beatIndex: 0, intent: "b", query: "GTA 6 walkthrough gameplay", source: "youtube", characterAction: null },
+        { position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels" },
+        { position: 1, beatIndex: 0, intent: "b", query: "GTA 6 walkthrough gameplay", source: "youtube" },
       ]),
       deps(),
     );
@@ -170,7 +170,6 @@ describe("sourceShots", () => {
         Array.from({ length: 4 }, (_, i) => ({
           position: i,
           beatIndex: i === 0 ? null : i - 1,
-          characterAction: null,
           intent: "gameplay",
           query: "GTA 6 walkthrough gameplay",
           source: "youtube" as const,
@@ -192,7 +191,7 @@ describe("sourceShots", () => {
     // A reviewer checking provenance opens the source; the head/tail buffer
     // is our bookkeeping, not theirs.
     await sourceShots(
-      plan([{ position: 0, beatIndex: null, intent: "g", query: "GTA 6 walkthrough gameplay", source: "youtube", characterAction: null }], "viral_gameplay"),
+      plan([{ position: 0, beatIndex: null, intent: "g", query: "GTA 6 walkthrough gameplay", source: "youtube" }], "viral_gameplay"),
       deps({ random: () => 0 }),
     );
 
@@ -205,9 +204,9 @@ describe("sourceShots", () => {
     const search = searchDriver([]);
     const result = await sourceShots(
       plan([
-        { position: 0, beatIndex: null, intent: "a", query: "first youtube thing", source: "youtube", characterAction: null },
-        { position: 1, beatIndex: 0, intent: "b", query: "second youtube thing", source: "youtube", characterAction: null },
-        { position: 2, beatIndex: 1, intent: "c", query: "third youtube thing", source: "youtube", characterAction: null },
+        { position: 0, beatIndex: null, intent: "a", query: "first youtube thing", source: "youtube" },
+        { position: 1, beatIndex: 0, intent: "b", query: "second youtube thing", source: "youtube" },
+        { position: 2, beatIndex: 1, intent: "c", query: "third youtube thing", source: "youtube" },
       ]),
       deps({ download: downloadDriver(downloads), search }),
     );
@@ -236,7 +235,6 @@ describe("sourceShots", () => {
           intent: "a",
           query: `youtube thing ${i}`,
           source: "youtube" as const,
-          characterAction: null,
         })),
       ),
       deps({ download: downloadDriver(downloads), search, topic: "politics" }),
@@ -266,9 +264,9 @@ describe("sourceShots", () => {
 
     const result = await sourceShots(
       plan([
-        { position: 0, beatIndex: null, intent: "a", query: "one query", source: "youtube", characterAction: null },
-        { position: 1, beatIndex: 0, intent: "b", query: "one query", source: "youtube", characterAction: null },
-        { position: 2, beatIndex: 1, intent: "c", query: "one query", source: "youtube", characterAction: null },
+        { position: 0, beatIndex: null, intent: "a", query: "one query", source: "youtube" },
+        { position: 1, beatIndex: 0, intent: "b", query: "one query", source: "youtube" },
+        { position: 2, beatIndex: 1, intent: "c", query: "one query", source: "youtube" },
       ]),
       shared,
     );
@@ -279,7 +277,7 @@ describe("sourceShots", () => {
   });
 
   it("never lets sourced footage satisfy a gameplay claim", async () => {
-    await sourceShots(plan([{ position: 0, beatIndex: null, intent: "g", query: "GTA 6 walkthrough gameplay", source: "youtube", characterAction: null }]), deps());
+    await sourceShots(plan([{ position: 0, beatIndex: null, intent: "g", query: "GTA 6 walkthrough gameplay", source: "youtube" }]), deps());
     const source = (await ctx.db.select().from(footageSources).all())[0];
     expect(source.kind).toBe("stock");
     expect(await claimNextFootageSegment(ctx.db, source.game, NOW)).toBeNull();
@@ -290,7 +288,7 @@ describe("sourceShots", () => {
       fetchImpl: (async () => new Response(JSON.stringify({ videos: [] }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch,
     });
     const result = await sourceShots(
-      plan([{ position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels", characterAction: null }]),
+      plan([{ position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels" }]),
       deps({ pexels: emptyPexels }),
     );
     expect(result.ok).toBe(false);
@@ -301,10 +299,10 @@ describe("sourceShots", () => {
     await ctx.db.insert(sources).values({ id: "s1", kind: "reddit", url: "http://x" }).run();
     await ctx.db.insert(signals).values({ id: "sig1", sourceId: "s1", canonicalUrl: "http://x/1", title: "t", observedAt: NOW, engagementScore: 1, simhash: "a", state: "scored" }).run();
     await ctx.db.insert(scripts).values({ id: "scr1", signalId: "sig1", hook: "h", body: "b", debateQuestion: "q", wordCount: 5, status: "draft", createdAt: NOW }).run();
-    await saveShotPlan(ctx.client, "scr1", "trace1", [{ position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels", characterAction: null }], NOW);
+    await saveShotPlan(ctx.client, "scr1", "trace1", [{ position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels" }], NOW);
 
     await sourceShots(
-      plan([{ position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels", characterAction: null }]),
+      plan([{ position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels" }]),
       deps({ scriptId: "scr1" }),
     );
 
@@ -367,9 +365,9 @@ describe("plan position vs composited position", () => {
     const result = await sourceShots(
       {
         shots: [
-          { position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels", characterAction: null },
-          { position: 1, beatIndex: 0, intent: "b", query: "prison corridor night", source: "pexels", characterAction: null },
-          { position: 2, beatIndex: 1, intent: "c", query: "hands sorting paperwork", source: "pexels", characterAction: null },
+          { position: 0, beatIndex: null, intent: "a", query: "empty courtroom gallery", source: "pexels" },
+          { position: 1, beatIndex: 0, intent: "b", query: "prison corridor night", source: "pexels" },
+          { position: 2, beatIndex: 1, intent: "c", query: "hands sorting paperwork", source: "pexels" },
         ],
         origin: "model",
         degradedReason: null,

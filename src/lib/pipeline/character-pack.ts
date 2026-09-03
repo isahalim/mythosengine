@@ -10,10 +10,20 @@ import { z } from "zod";
  * by hand off that exact asset (`{atFrame: 3}`, `{atFrame: 12}`,
  * `{atFrame: 28}`), which meant swapping the character meant recounting
  * them — the asset and the code were welded together. The robot pack ships
- * a machine-readable index of its 19 actions with `use_when`, `category`,
- * `mouth_moving`, `gesture` and `duration_ms` on each, plus an
- * `agent_selection_rules` array, so PLAN can be handed the vocabulary at
- * run time and this module can check the answer against it.
+ * a machine-readable index of its 19 actions with `category` and
+ * `duration_ms` on each, and that index is the whole of what decides what
+ * plays when.
+ *
+ * **No model reads any of this** (operator direction, 2026-09-03). PLAN used
+ * to be handed the action vocabulary and the pack's `agent_selection_rules`
+ * and asked to choose one action per shot; `character-timeline.ts` then
+ * corrected its choices against those same rules. Both halves are gone. The
+ * host now runs the pack's own clips in manifest order, on a loop, with the
+ * waves at the ends — which is deterministic, free, and identical in every
+ * video, so a reviewer never has to ask why the host did what it did.
+ * `use_when`, `mouth_moving`, `gesture` and `agent_selection_rules` were
+ * written for a model to read and no longer have a reader; they stay in the
+ * manifest because it is the pack's file, not ours.
  *
  * The pack's README states that its 19 action ids are shared with the human
  * host pack deliberately, so the two are drop-in interchangeable. Pointing
@@ -56,10 +66,8 @@ export interface CharacterPack {
   version: string;
   clips: CharacterClipSpec[];
   byId: Map<string, CharacterClipSpec>;
-  /** The manifest's own fallbacks: what to play when no rule applies. */
+  /** The manifest's own fallbacks. Only `speaking` is read now — it is what a pack with no transition clips opens and closes on. */
   defaults: { speaking: string; silent: string };
-  /** The manifest's selection rules, passed verbatim into the PLAN prompt so the model is briefed by the pack rather than by us. */
-  agentSelectionRules: string[];
 }
 
 /**
@@ -87,7 +95,6 @@ export function loadCharacterPack(repoDir: string, packDir: string = CHARACTER_P
     clips: parsed.clips,
     byId,
     defaults: parsed.defaults,
-    agentSelectionRules: parsed.agent_selection_rules,
   };
 }
 
@@ -98,43 +105,60 @@ export function clipPath(pack: CharacterPack, actionId: string): string {
   return join(pack.dir, clip.files.mov_alpha);
 }
 
+/** One action, as the timeline needs it: where the file is and how long it runs. */
+export interface PackAction {
+  id: string;
+  filePath: string;
+  /** The clip's own length in seconds, from the manifest. This is how long it plays; nothing stretches it. */
+  durationS: number;
+}
+
 /**
- * The action ids, as the PLAN prompt lists them for the model.
+ * The pack, laid out as the fixed running order the host performs.
  *
- * Rendered from the manifest rather than pasted into the prompt file, so a
- * pack that gains or loses an action cannot leave the prompt advertising
- * something that no longer exists — the failure mode where the model keeps
- * confidently naming a clip nobody can play.
+ * `intro` and `outro` are the waves, and `middle` is everything else in the
+ * manifest's own order. That order is not incidental — the pack lists its
+ * talking clips first and its reactions after, so cycling it reads as a
+ * presenter working through a point and then reacting, rather than as a
+ * shuffle. Keeping the manifest's order also means re-ordering the
+ * performance is editing the pack's JSON, with no code involved.
+ *
+ * The waves are found by `category === "transition"` and then by id, the
+ * same way the deleted `transitionIds` did, so renaming them in the pack
+ * does not strand this code. A pack with no transitions at all gets nulls
+ * and no waves: `buildCharacterTimeline` then runs the middle straight
+ * through, which is the right degradation for a pack that never had a
+ * greeting to give.
  */
-export function describeActionsForPrompt(pack: CharacterPack): string {
-  return pack.clips
-    .map((clip) => `  ${clip.id} (${clip.category}, ${clip.mouth_moving ? "speaking" : "silent"}) — ${clip.use_when}`)
-    .join("\n");
+export interface ActionSequence {
+  intro: PackAction | null;
+  middle: PackAction[];
+  outro: PackAction | null;
 }
 
-/**
- * Whether an action id exists in this pack. The deterministic check behind
- * PLAN: a model that invents `talk_shrug_loop` gets its shot defaulted
- * rather than a render that dies looking for a file.
- */
-export function isKnownAction(pack: CharacterPack, actionId: string): boolean {
-  return pack.byId.has(actionId);
+function toAction(pack: CharacterPack, clip: CharacterClipSpec): PackAction {
+  return { id: clip.id, filePath: join(pack.dir, clip.files.mov_alpha), durationS: clip.duration_ms / 1000 };
 }
 
-/** True for the two transition actions the manifest restricts to the ends of a video. */
-export function isTransition(pack: CharacterPack, actionId: string): boolean {
-  return pack.byId.get(actionId)?.category === "transition";
-}
-
-export function isReaction(pack: CharacterPack, actionId: string): boolean {
-  return pack.byId.get(actionId)?.category === "reaction";
-}
-
-/** The manifest's own intro/outro ids, found by category so renaming them in the pack does not strand this code. */
-export function transitionIds(pack: CharacterPack): { intro: string | null; outro: string | null } {
+export function actionSequence(pack: CharacterPack): ActionSequence {
   const transitions = pack.clips.filter((clip) => clip.category === "transition");
+  const intro = transitions.find((clip) => /hello|intro/i.test(clip.id)) ?? null;
+  const outro = transitions.find((clip) => /goodbye|outro/i.test(clip.id)) ?? null;
+  const ends = new Set([intro?.id, outro?.id]);
+
+  // Every non-wave clip, manifest order. A `transition` that is neither the
+  // hello nor the goodbye — this pack's README says its ids are shared with
+  // a human host pack, so a third one is possible — stays in the cycle
+  // rather than being silently dropped.
+  const middle = pack.clips.filter((clip) => !ends.has(clip.id));
+
   return {
-    intro: transitions.find((clip) => /hello|intro/i.test(clip.id))?.id ?? null,
-    outro: transitions.find((clip) => /goodbye|outro/i.test(clip.id))?.id ?? null,
+    intro: intro === null ? null : toAction(pack, intro),
+    // A pack of nothing but waves has no cycle to run, and a track of one
+    // hello and one goodbye would leave the rest of the video hostless.
+    // Everything it has, then, waves included — the alternative is a
+    // presenter who vanishes two minutes before the end.
+    middle: (middle.length > 0 ? middle : pack.clips).map((clip) => toAction(pack, clip)),
+    outro: outro === null ? null : toAction(pack, outro),
   };
 }

@@ -58,8 +58,11 @@ people disagreeing, and costs half as much to make.
 She appears in **every** video regardless of topic. She is the show's
 identity, so her profile is fixed content, not per-video generation.
 
-> **Superseded 2026-09-01** (operator direction). The host is now the 19-action
-> `assets/character/robot_character_pack/`, cut per scene by PLAN — see
+> **Superseded twice.** 2026-09-01 (operator direction): the host became the
+> 19-action `assets/character/robot_character_pack/`, cut per scene by PLAN.
+> 2026-09-03 (operator direction): PLAN stopped choosing anything about it —
+> the pack now runs a fixed cycle, waves at both ends, composited by its own
+> ffmpeg pass over an already-finished video (ARCHITECTURE.md §7.5). See
 > CLAUDE.md and ARCHITECTURE.md §5.7. Everything below describes the single
 > chroma-keyed GIF it replaced, and is kept because the measurements are the
 > reason the new pack's alpha channel matters: there is no key any more, so
@@ -458,7 +461,7 @@ what actually spoke; the fix is a host-voice setting in the console.
 **Resolved, then superseded.** The GIF was committed and rendered live, and on
 2026-09-01 it was retired for the robot character pack
 (`assets/character/robot_character_pack/`): 19 separate actions with a real
-8-bit alpha channel, chosen per scene by PLAN. The host is a track now, not a
+8-bit alpha channel, on a fixed cycle since 2026-09-03. The host is a track, not a
 looping asset, and neither the chroma key nor the hand-counted frame holds
 survive. See CLAUDE.md and ARCHITECTURE.md §5.7.
 

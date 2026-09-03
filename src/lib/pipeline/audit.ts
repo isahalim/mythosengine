@@ -123,21 +123,27 @@ interface NarrationProvenance {
 }
 
 /**
- * Which of the host's actions played over each shot, and every correction
- * made to PLAN's choices.
+ * Which pack performed, and in what order.
  *
- * In the audit package because it is a claim about the finished video that
- * a reviewer cannot check from the video alone: watching it tells you the
- * host shrugged over beat four, but not whether PLAN chose that or whether
- * the timeline substituted it for an invented id or a chained reaction.
+ * Shorter than it was, because the host stopped being a decision on
+ * 2026-09-03: it runs the pack's own actions in manifest order on a loop,
+ * with the waves at the ends, so there is no per-shot choice to justify and
+ * no correction log to keep. What a reviewer still cannot get from the video
+ * is *which pack and which version* produced it — swapping
+ * `CHARACTER_PACK_DIR` is how the presenter changes, and two exports a week
+ * apart can honestly have different hosts.
+ *
+ * `sequence` is kept because it is the cheap way to answer "did the overlay
+ * actually run the whole video" — a track that ends three actions in is a
+ * bug you would otherwise find by watching to the end.
  */
 interface CharacterProvenance {
   pack: string;
   packVersion: string;
-  /** Composited shot position -> the action that actually played. */
-  actions: { position: number; actionId: string }[];
-  /** Corrections the timeline had to make to PLAN's choices. Empty when the plan was used as given. */
-  adjustments: string[];
+  /** Every action that played, in order, first to last. Always opens on the hello wave and closes on the goodbye. */
+  sequence: string[];
+  /** Seconds of host track laid down. At or just past the video's own length — the overlay pass trims the overshoot. */
+  trackDurationS: number;
 }
 
 /**
@@ -199,7 +205,14 @@ export interface AuditSummaryInput {
   targetDurationS: number | null;
   /** How the narration was actually produced. Null only for callers that predate the discourse format. */
   narration: NarrationProvenance | null;
-  /** Why the host is not on screen, or null when she is. */
+  /**
+   * Why the host is not on screen, or null when it is.
+   *
+   * Two things reach this now: a missing or unreadable pack, and an overlay
+   * pass that failed. Both leave a complete, publishable Short with no host
+   * — see src/lib/drivers/character-overlay-ffmpeg.ts for why that is a
+   * separate pass that is allowed to fail.
+   */
   characterAbsentReason: string | null;
   /** Which actions the host performed, or null when she is not on screen. */
   character: CharacterProvenance | null;
@@ -355,12 +368,6 @@ export function computeAuditSummary(input: AuditSummaryInput): AuditResult {
 
   if (input.edit?.degradedReason != null) flags.push(`EDIT did not run: ${input.edit.degradedReason} — clips are as sourced`);
 
-  // Not a flag when PLAN simply chose well; a flag when the host's plan had
-  // to be corrected, because that means PLAN is producing choices this pack
-  // cannot honour and the video may look less deliberate than it reads.
-  if (input.character !== null && input.character.adjustments.length > 0) {
-    flags.push(`the host's action plan needed ${input.character.adjustments.length} correction(s)`);
-  }
 
   return {
     schemaValid: wordCountInBounds && hasDebateQuestion,
