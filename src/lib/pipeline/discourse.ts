@@ -25,8 +25,45 @@ const WORDS_PER_MINUTE = 165;
  */
 const DURATION_TOLERANCE = 0.25;
 
+/**
+ * How many words a script written to `targetDurationS` should run to, and
+ * the band around it that counts as on-target.
+ *
+ * Exported because AUDIT SUMMARY needs the identical answer: it flags a
+ * script whose word count is out of range (`wordCountBounds` in audit.ts),
+ * and a gate and a flag that disagree about the same script would be worse
+ * than either alone. That file used to keep its own copy of the two
+ * constants above with a comment claiming they were "one ruler" — they were
+ * two, and nothing would have noticed them drifting apart.
+ */
+export function wordCountRange(targetDurationS: number): { target: number; min: number; max: number } {
+  const target = (targetDurationS / 60) * WORDS_PER_MINUTE;
+  return {
+    target: Math.round(target),
+    min: Math.round(target * (1 - DURATION_TOLERANCE)),
+    max: Math.round(target * (1 + DURATION_TOLERANCE)),
+  };
+}
+
 export interface BeatStructureViolation {
   kind: "no_pushback" | "pushback_out_of_position" | "no_land" | "too_short" | "too_long";
+  /**
+   * Whether this violation may cost the day's video.
+   *
+   * `fatal` is the format itself — a script that never pushes back is the
+   * lecture this format exists to replace, and shipping one would defeat
+   * the point of having a gate. `advisory` is the length estimate, and it
+   * is a different kind of claim entirely: `estimatedReadSeconds` is one
+   * constant standing in for delivery speed, pauses and the operator's own
+   * `ttsRateRange`, and this file's own comments say nothing downstream
+   * trusts it. On 2026-09-03 that untrusted ruler killed a finished render
+   * over `118s is over the 113s ceiling` — a 4% miss on an estimate,
+   * against a real duration nobody had measured yet. A length miss earns a
+   * rewrite; it does not get to throw away a script, a RESEARCH brief and
+   * the day's video. AUDIT SUMMARY flags the same miss on the operator's
+   * review surface, computed from the same ruler, where it belongs.
+   */
+  severity: "fatal" | "advisory";
   message: string;
 }
 
@@ -85,13 +122,14 @@ export function validateBeatStructure(script: DiscourseScriptResponse, targetDur
   const lastLand = moves.lastIndexOf("land");
 
   if (lastLand === -1) {
-    violations.push({ kind: "no_land", message: "the script never lands — no beat has move 'land', so the argument has no payoff" });
+    violations.push({ kind: "no_land", severity: "fatal", message: "the script never lands — no beat has move 'land', so the argument has no payoff" });
   }
 
   const hasPushback = moves.includes("pushback");
   if (!hasPushback) {
     violations.push({
       kind: "no_pushback",
+      severity: "fatal",
       message: "no beat has move 'pushback' — the host never catches the hole in her own answer, which makes this a lecture rather than a discourse",
     });
   } else if (firstAttempt !== -1 && lastLand !== -1) {
@@ -102,23 +140,34 @@ export function validateBeatStructure(script: DiscourseScriptResponse, targetDur
     if (!hasPushbackBetween) {
       violations.push({
         kind: "pushback_out_of_position",
+        severity: "fatal",
         message: `there is a 'pushback' beat but none of them sits between the first 'attempt' (beat ${firstAttempt + 1}) and the last 'land' (beat ${lastLand + 1}) — the host has to be wrong before she is right`,
       });
     }
   }
 
+  // Both length messages quote the word counts, not only the seconds. A
+  // draft told just "118s is over the 113s ceiling" has to reverse-engineer
+  // the ruler to know how much to cut, and the live 2026-09-03 run shows
+  // what that costs: attempt one came back under the floor, attempt two
+  // overshot the ceiling, and the stage died having never been told the
+  // number it was aiming at.
   const estimate = estimatedReadSeconds(script);
+  const words = discourseWordCount(script);
+  const range = wordCountRange(targetDurationS);
   const floor = targetDurationS * (1 - DURATION_TOLERANCE);
   const ceiling = targetDurationS * (1 + DURATION_TOLERANCE);
   if (estimate < floor) {
     violations.push({
       kind: "too_short",
-      message: `estimated read time ${estimate.toFixed(0)}s is under the ${floor.toFixed(0)}s floor for a ${targetDurationS}s video — write more beats, not longer ones`,
+      severity: "advisory",
+      message: `estimated read time ${estimate.toFixed(0)}s is under the ${floor.toFixed(0)}s floor for a ${targetDurationS}s video: you wrote ${words} words, aim for about ${range.target} (${range.min}-${range.max}). Get there with more beats, not longer ones`,
     });
   } else if (estimate > ceiling) {
     violations.push({
       kind: "too_long",
-      message: `estimated read time ${estimate.toFixed(0)}s is over the ${ceiling.toFixed(0)}s ceiling for a ${targetDurationS}s video`,
+      severity: "advisory",
+      message: `estimated read time ${estimate.toFixed(0)}s is over the ${ceiling.toFixed(0)}s ceiling for a ${targetDurationS}s video: you wrote ${words} words, aim for about ${range.target} (${range.min}-${range.max}). Cut beats, do not compress them`,
     });
   }
 

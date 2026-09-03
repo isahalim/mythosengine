@@ -67,7 +67,16 @@ interface TtsSettingsUsed {
 export interface ExportPackageInput {
   renderId: string;
   script: { hook: string; body: string; debateQuestion: string };
-  critic: CriticVerdict;
+  /**
+   * The critic's verdict, or null when the critic could not be reached.
+   *
+   * Nullable because CRITIC is advisory and no longer fails the render
+   * (scripts/pipeline/render.ts). A null here is the honest record that no
+   * model graded this script — `auditResult.flags` carries the matching
+   * "no originality score" line — and is strictly better than a placeholder
+   * verdict, which a reviewer would read as a real second opinion.
+   */
+  critic: CriticVerdict | null;
   footage: FootageProvenance;
   ttsSettings: TtsSettingsUsed;
   auditResult: AuditResult;

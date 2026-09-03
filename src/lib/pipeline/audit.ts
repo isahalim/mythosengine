@@ -1,4 +1,5 @@
 import { hammingDistance, simhash64 } from "../ingest/simhash.ts";
+import { wordCountRange } from "./discourse.ts";
 
 /**
  * AUDIT SUMMARY (ARCHITECTURE.md §9) — the same checks the old POLICY GATE
@@ -267,14 +268,20 @@ const SCRIPT_SIMILARITY_FLAG_THRESHOLD = 0.85;
 /** v1's fixed range, used only when a script carries no target duration. */
 const MIN_WORD_COUNT = 130;
 const MAX_WORD_COUNT = 170;
-/** Same estimator and tolerance the SCRIPT gate uses (discourse.ts) — one ruler, so the two stages cannot disagree. */
-const WORDS_PER_MINUTE = 165;
-const DURATION_TOLERANCE = 0.25;
 
+/**
+ * Imported rather than restated. This used to be a local copy of
+ * discourse.ts's two constants under a comment claiming they were "one
+ * ruler, so the two stages cannot disagree" — they were two rulers that
+ * happened to agree, and nothing would have caught them drifting. It matters
+ * more now than it did: SCRIPT's gate no longer fails a render on length, so
+ * this flag is the *only* place a length miss reaches the operator, and a
+ * flag computed from a different band than the gate would be worse than none.
+ */
 function wordCountBounds(targetDurationS: number | null): { min: number; max: number } {
   if (targetDurationS === null) return { min: MIN_WORD_COUNT, max: MAX_WORD_COUNT };
-  const expected = (targetDurationS / 60) * WORDS_PER_MINUTE;
-  return { min: Math.round(expected * (1 - DURATION_TOLERANCE)), max: Math.round(expected * (1 + DURATION_TOLERANCE)) };
+  const { min, max } = wordCountRange(targetDurationS);
+  return { min, max };
 }
 
 /**

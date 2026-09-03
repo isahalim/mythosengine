@@ -5,7 +5,7 @@ import { createTestDb } from "../../../db/client.ts";
 import { scripts, signals, sources } from "../../../db/schema.ts";
 import { ok, type Result } from "../result.ts";
 import type { DriverError, LlmDriver, LlmRequest, LlmResponse } from "../drivers/types.ts";
-import { critiqueScript } from "./critic.ts";
+import { critiqueScript, markCritiquedWithoutVerdict } from "./critic.ts";
 import { GROQ_LIGHT_MODEL, GROQ_REASONING_MODEL } from "../../config/models.ts";
 
 const PROMPT_TEMPLATE = "Script: {{script_json}} Signal: {{signal_json}}. Output JSON only.";
@@ -123,6 +123,33 @@ describe("critiqueScript", () => {
     const result = await critiqueScript(ctx.client, script, signal, llm, PROMPT_TEMPLATE);
     expect(result.ok).toBe(false);
     expect(ctx.db.select().from(signals).get()?.state).toBe("scripted");
+    expect(ctx.db.select().from(scripts).where(eq(scripts.id, "scr1")).get()?.originalityScore).toBeNull();
+  });
+});
+
+describe("markCritiquedWithoutVerdict", () => {
+  let ctx: ReturnType<typeof createTestDb>;
+
+  beforeEach(() => {
+    ctx = createTestDb();
+    applyMigrations(ctx.client);
+    ctx.db.insert(sources).values({ id: "src1", kind: "rss", url: "https://example.com" }).run();
+    ctx.db
+      .insert(signals)
+      .values({ id: "sig1", sourceId: "src1", canonicalUrl: "https://example.com/1", title: "t", observedAt: "2026-08-28T00:00:00Z", engagementScore: 1, simhash: "abc", state: "scripted" })
+      .run();
+    ctx.db.insert(scripts).values({ id: "scr1", signalId: "sig1", hook: "h", body: "b", debateQuestion: "q", wordCount: 3, status: "draft", createdAt: "2026-08-28T01:00:00Z" }).run();
+  });
+
+  it("moves the signal on so the render can still export, without inventing a score", async () => {
+    // CRITIC is advisory, so an unreachable critic costs the second opinion
+    // and nothing else — but `critiqued -> exported` is the only legal edge
+    // into EXPORT, so the signal cannot be left behind in `scripted`.
+    await markCritiquedWithoutVerdict(ctx.client, "sig1");
+
+    expect(ctx.db.select().from(signals).get()?.state).toBe("critiqued");
+    // Null, not a placeholder: AUDIT SUMMARY reads this and flags "no
+    // originality score", which is the true statement.
     expect(ctx.db.select().from(scripts).where(eq(scripts.id, "scr1")).get()?.originalityScore).toBeNull();
   });
 });

@@ -5,10 +5,8 @@ import { createTestDb } from "../../../db/client.ts";
 import { scripts, signals, sources } from "../../../db/schema.ts";
 import { ok, type Result } from "../result.ts";
 import type { DriverError, LlmDriver, LlmRequest, LlmResponse } from "../drivers/types.ts";
-import { formatResearchBrief, generateDiscourseScript, generateScript } from "./script.ts";
+import { formatResearchBrief, generateDiscourseScript } from "./script.ts";
 import { GROQ_REASONING_MODEL } from "../../config/models.ts";
-
-const PROMPT_TEMPLATE = "Signal: {{signal_title_and_summary}}. Research: {{research_brief}} Output JSON only.";
 
 class ScriptedLlm implements LlmDriver {
   private call = 0;
@@ -25,169 +23,6 @@ class ScriptedLlm implements LlmDriver {
 function llmResponse(content: string): Result<LlmResponse, DriverError> {
   return ok({ content, finishReason: "stop", quotaRemaining: null, tokensUsed: null });
 }
-
-const VALID_SCRIPT_JSON = JSON.stringify({
-  hook: "Nobody expected this update to break the meta overnight.",
-  body: "The patch quietly nerfed the strongest build in the game, and top players are already switching. Casual players had no idea it was coming. The community is split between calling it a fix and calling it a betrayal.",
-  debate_question: "Was this the right call, or did the devs just kill the fun?",
-});
-
-describe("generateScript", () => {
-  let ctx: ReturnType<typeof createTestDb>;
-
-  beforeEach(() => {
-    ctx = createTestDb();
-    applyMigrations(ctx.client);
-    ctx.db.insert(sources).values({ id: "src1", kind: "rss", url: "https://example.com" }).run();
-    ctx.db
-      .insert(signals)
-      .values({ id: "sig1", sourceId: "src1", canonicalUrl: "https://example.com/1", title: "Big balance patch splits the community", observedAt: "2026-08-28T00:00:00Z", engagementScore: 1, simhash: "abc", state: "scored" })
-      .run();
-  });
-
-  const SIGNAL_FIXTURES = [
-    "Big balance patch splits the community",
-    "Streamer's meltdown over a missed jump goes viral",
-    "New DLC price sparks backlash across social media",
-    "Speedrunner discovers game-breaking exploit live on stream",
-    "Studio apologizes after leaked internal memo about crunch",
-  ];
-
-  it.each(SIGNAL_FIXTURES)("produces a schema-valid script for fixture signal %#", async (title) => {
-    const llm = new ScriptedLlm([llmResponse(VALID_SCRIPT_JSON)]);
-    const result = await generateScript(ctx.client, { id: "sig1", title }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.value.hook.length).toBeGreaterThan(0);
-      expect(result.value.body.length).toBeGreaterThan(0);
-      expect(result.value.debateQuestion.length).toBeGreaterThan(0);
-    }
-  });
-
-  it("inserts a draft script row and transitions the signal to scripted", async () => {
-    const llm = new ScriptedLlm([llmResponse(VALID_SCRIPT_JSON)]);
-    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
-    expect(result.ok).toBe(true);
-
-    if (!result.ok) throw new Error("expected an ok result");
-    const row = ctx.db.select().from(scripts).where(eq(scripts.id, result.value.id)).get();
-    expect(row?.status).toBe("draft");
-    expect(row?.signalId).toBe("sig1");
-
-    const signal = ctx.db.select().from(signals).get();
-    expect(signal?.state).toBe("scripted");
-  });
-
-  it("passes only the signal's title and the research brief — no other context (hallucination-boundary discipline)", async () => {
-    const llm = new ScriptedLlm([llmResponse(VALID_SCRIPT_JSON)]);
-    await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
-    expect(llm.calls).toHaveLength(1);
-    expect(llm.calls[0].messages[0].content).toBe(
-      "Signal: Big balance patch splits the community. Research: No research was available for this topic. Write from the signal alone (rule 5). Output JSON only.",
-    );
-  });
-
-  it("puts the research brief's substance into the prompt when there is one", async () => {
-    const llm = new ScriptedLlm([llmResponse(VALID_SCRIPT_JSON)]);
-    await generateScript(
-      ctx.client,
-      { id: "sig1", title: "Big balance patch splits the community" },
-      llm,
-      {
-        summary: "The patch halved a weapon's damage.",
-        keyPoints: ["Pro players called it overdue", "Casual players called it a nerf too far"],
-        citations: [{ signalId: "sig9", claim: "Pros called it overdue", title: "Pros react", url: "https://x/1", sourceKind: "reddit" }],
-        toolResultsDropped: 0, toolCallsMade: ["search_discourse"],
-        model: "openai/gpt-oss-20b",
-      },
-      () => Date.parse("2026-08-28T01:00:00Z"),
-      PROMPT_TEMPLATE,
-    );
-
-    const prompt = llm.calls[0].messages[0].content;
-    expect(prompt).toContain("The patch halved a weapon's damage.");
-    expect(prompt).toContain("Pro players called it overdue");
-    // The claim and its source travel together — the writer is told what
-    // each fact rests on, not just handed a pile of assertions.
-    expect(prompt).toContain("[reddit: Pros react]");
-  });
-
-  it("repairs once on invalid JSON, then succeeds", async () => {
-    const llm = new ScriptedLlm([llmResponse("not json at all"), llmResponse(VALID_SCRIPT_JSON)]);
-    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
-    expect(result.ok).toBe(true);
-    expect(llm.calls).toHaveLength(2);
-  });
-
-  it("hard-fails after the JSON is invalid twice in a row", async () => {
-    const llm = new ScriptedLlm([llmResponse("not json"), llmResponse("still not json")]);
-    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error.kind).toBe("invalid_response");
-  });
-
-  it("hard-fails when the response is valid JSON but fails schema validation twice", async () => {
-    const llm = new ScriptedLlm([llmResponse(JSON.stringify({ hook: "only a hook" })), llmResponse(JSON.stringify({ hook: "still only a hook" }))]);
-    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
-    expect(result.ok).toBe(false);
-  });
-
-  it("asks for enough completion budget to cover the model's reasoning as well as the script", async () => {
-    // SCRIPT failed live on 2026-08-31 with Groq's own words: "max completion
-    // tokens reached before generating a valid document". The script itself
-    // is ~250 tokens; the gpt-oss reasoning ahead of it is what overran 1024.
-    const llm = new ScriptedLlm([llmResponse(VALID_SCRIPT_JSON)]);
-    await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
-
-    expect(llm.calls[0].maxTokens).toBeGreaterThanOrEqual(3072);
-    // ...and not so large that one call can drain the 8k/min token bucket,
-    // which is how the old browser agent used to hang the job outright.
-    expect(llm.calls[0].maxTokens).toBeLessThan(6000);
-  });
-
-  it("repairs once when Groq rejects its own model's malformed JSON, instead of hard-failing", async () => {
-    // Groq validates JSON-mode output server-side and returns HTTP 400
-    // `json_validate_failed`. That is the model failing to produce valid
-    // JSON — what the repair loop is for — but it arrives as a provider
-    // error, and used to bypass it. SCRIPT died on exactly this live on
-    // 2026-08-31.
-    const llm = new ScriptedLlm([
-      { ok: false, error: { kind: "provider_error", message: `HTTP 400 from https://api.groq.com/...: {"error":{"code":"json_validate_failed"}}`, retryable: false } },
-      llmResponse(VALID_SCRIPT_JSON),
-    ]);
-    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
-
-    expect(result.ok).toBe(true);
-    expect(llm.calls).toHaveLength(2);
-  });
-
-  it("gives up after a second json_validate_failed rather than looping", async () => {
-    const rejection = { ok: false as const, error: { kind: "provider_error" as const, message: `HTTP 400: {"error":{"code":"json_validate_failed"}}`, retryable: false } };
-    const llm = new ScriptedLlm([rejection, rejection]);
-    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
-
-    expect(result.ok).toBe(false);
-    expect(llm.calls).toHaveLength(2);
-    expect(ctx.db.select().from(scripts).all()).toHaveLength(0);
-  });
-
-  it("does not retry a provider error that isn't the model's JSON failing", async () => {
-    // A rate limit or an outage is not something re-prompting can fix.
-    const llm = new ScriptedLlm([{ ok: false, error: { kind: "rate_limited", message: "HTTP 429", retryable: true } }]);
-    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
-
-    expect(result.ok).toBe(false);
-    expect(llm.calls).toHaveLength(1);
-  });
-
-  it("does not mutate the signal or insert a script when the LLM call itself fails", async () => {
-    const llm = new ScriptedLlm([{ ok: false, error: { kind: "timeout", message: "boom", retryable: true } }]);
-    const result = await generateScript(ctx.client, { id: "sig1", title: "Big balance patch splits the community" }, llm, null, () => Date.parse("2026-08-28T01:00:00Z"), PROMPT_TEMPLATE);
-    expect(result.ok).toBe(false);
-    expect(ctx.db.select().from(scripts).all()).toHaveLength(0);
-    expect(ctx.db.select().from(signals).get()?.state).toBe("scored");
-  });
-});
 
 describe("formatResearchBrief", () => {
   it("says so explicitly when there is no brief, rather than rendering an empty block", () => {
@@ -230,6 +65,11 @@ describe("generateDiscourseScript", () => {
       beats: moves.map((move, i) => ({ move, text: `${move} beat ${i} ${Array.from({ length: wordsPerBeat - 3 }, (_, w) => `w${w}`).join(" ")}` })),
       open_question: "So who was it actually for?",
     });
+  }
+
+  /** Words per beat that lands a `beatCount`-beat script on `seconds` at the estimator's 165 wpm. */
+  function wordsForSeconds(seconds: number, beatCount: number): number {
+    return Math.round(((seconds / 60) * 165 - 5 - 6) / beatCount);
   }
 
   const VALID_DISCOURSE = discourseJson(["question", "attempt", "pushback", "land"]);
@@ -312,6 +152,70 @@ describe("generateDiscourseScript", () => {
     // Nothing half-written: no script row, and the signal never left `scored`.
     expect(ctx.db.select().from(scripts).all()).toHaveLength(0);
     expect(ctx.db.select().from(signals).get()?.state).toBe("scored");
+  });
+
+  it("ships a script whose only fault is its length, instead of losing the render to an estimate", async () => {
+    // The 2026-09-03 failure, exactly: a complete, well-formed discourse
+    // script rejected for `118s is over the 113s ceiling for a 90s video`.
+    // A 4% miss on a 165-wpm guess is not worth a day's video — AUDIT
+    // SUMMARY flags the word count on the review surface instead.
+    const overlong = discourseJson(["question", "attempt", "pushback", "land"], 60);
+    const llm = new ScriptedLlm([llmResponse(overlong), llmResponse(overlong)]);
+    const result = await generate(llm, 60);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected an ok result");
+    expect(result.value.structureNotes).toHaveLength(1);
+    expect(result.value.structureNotes[0]).toContain("over the");
+
+    // And it is a real, complete row — not a half-written one.
+    expect(ctx.db.select().from(scripts).all()).toHaveLength(1);
+    expect(ctx.db.select().from(signals).get()?.state).toBe("scripted");
+  });
+
+  it("reports nothing when the draft is clean", async () => {
+    const result = await generate(new ScriptedLlm([llmResponse(VALID_DISCOURSE)]));
+    if (!result.ok) throw new Error("expected an ok result");
+    expect(result.value.structureNotes).toEqual([]);
+  });
+
+  it("still spends a rewrite on a length miss before accepting it", async () => {
+    // Advisory does not mean ignored: the model gets its one chance to hit
+    // the target, and the retry quotes the miss.
+    const llm = new ScriptedLlm([llmResponse(discourseJson(["question", "attempt", "pushback", "land"], 60)), llmResponse(VALID_DISCOURSE)]);
+    const result = await generate(llm, 60);
+
+    expect(result.ok).toBe(true);
+    expect(llm.calls).toHaveLength(2);
+    expect(llm.calls[1].messages[0].content).toContain("previous_attempt_rejected");
+    if (!result.ok) throw new Error("expected an ok result");
+    expect(result.value.structureNotes).toEqual([]);
+  });
+
+  it("keeps the draft closest to the target when a rewrite overshoots the other way", async () => {
+    // The live run's actual shape: attempt one under the floor, attempt two
+    // over the ceiling. The old loop scored only the last draft, so the
+    // better of the two was thrown away unlooked-at.
+    const tooShort = discourseJson(["question", "attempt", "pushback", "land"], 5);
+    const wayTooLong = discourseJson(["question", "attempt", "pushback", "land"], 300);
+    const result = await generate(new ScriptedLlm([llmResponse(tooShort), llmResponse(wayTooLong)]), 60);
+
+    if (!result.ok) throw new Error("expected an ok result");
+    expect(result.value.structureNotes[0]).toContain("under the");
+    expect(result.value.wordCount).toBeLessThan(100);
+  });
+
+  it("prefers a structurally sound draft over a better-timed lecture", async () => {
+    // Fatal beats advisory: a lecture is not improved by being the right
+    // length, so the well-formed draft wins even though it is the one that
+    // misses the duration.
+    const wellTimedLecture = discourseJson(["question", "attempt", "land"], wordsForSeconds(60, 3));
+    const mistimedButSound = discourseJson(["question", "attempt", "pushback", "land"], 60);
+    const result = await generate(new ScriptedLlm([llmResponse(wellTimedLecture), llmResponse(mistimedButSound)]), 60);
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("expected an ok result");
+    expect(JSON.parse(ctx.db.select().from(scripts).get()?.beats ?? "[]").map((b: { move: string }) => b.move)).toContain("pushback");
   });
 
   it("puts the requested duration in the prompt, because the model writes to it", async () => {

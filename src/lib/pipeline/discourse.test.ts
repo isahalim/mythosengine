@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DiscourseMove, DiscourseScriptResponse } from "./script-schema.ts";
-import { beatWordRanges, describeViolations, discourseWordCount, estimatedReadSeconds, flattenBeats, validateBeatStructure } from "./discourse.ts";
+import { beatWordRanges, describeViolations, discourseWordCount, estimatedReadSeconds, flattenBeats, validateBeatStructure, wordCountRange } from "./discourse.ts";
 
 /**
  * Beat text of a known length, so a test can ask for "a 60-second script"
@@ -94,6 +94,37 @@ describe("validateBeatStructure", () => {
     expect(validateBeatStructure(s, target)).toEqual([]);
   });
 
+  it("calls the structural faults fatal and the length faults advisory", () => {
+    // The split is the whole point: a lecture is the format failing, a
+    // length miss is a 165-wpm constant being approximately right. Only the
+    // first may cost the day's video (see generateDiscourseScript).
+    const lecture = script(["question", "attempt", "land"], wordsPerBeatFor(target, 3));
+    expect(validateBeatStructure(lecture, target).map((v) => [v.kind, v.severity])).toEqual([["no_pushback", "fatal"]]);
+
+    const noLand = script(["question", "attempt", "pushback"], wordsPerBeatFor(target, 3));
+    expect(validateBeatStructure(noLand, target).map((v) => v.severity)).toEqual(["fatal"]);
+
+    const misplaced = script(["attempt", "land", "pushback"], wordsPerBeatFor(target, 3));
+    expect(validateBeatStructure(misplaced, target).map((v) => [v.kind, v.severity])).toEqual([["pushback_out_of_position", "fatal"]]);
+
+    const long = script(["question", "attempt", "pushback", "land"], 200);
+    expect(validateBeatStructure(long, target).map((v) => [v.kind, v.severity])).toEqual([["too_long", "advisory"]]);
+
+    const short = script(["question", "attempt", "pushback", "land"], 5);
+    expect(validateBeatStructure(short, 180).map((v) => [v.kind, v.severity])).toEqual([["too_short", "advisory"]]);
+  });
+
+  it("tells a mislengthed draft the word count to aim at, not only the seconds it missed by", () => {
+    // The live 2026-09-03 run went under the floor, then over the ceiling,
+    // because neither rejection named the number. `wordCountRange` is that
+    // number, and both length messages now quote it.
+    const range = wordCountRange(90);
+    const long = script(["question", "attempt", "pushback", "land"], 100);
+    const message = validateBeatStructure(long, 90)[0].message;
+    expect(message).toContain(`aim for about ${range.target}`);
+    expect(message).toContain(`(${range.min}-${range.max})`);
+  });
+
   it("reports every violation at once, so one repair message can carry them all", () => {
     const s = script(["attempt", "reframe"], 4);
     const violations = validateBeatStructure(s, 180);
@@ -135,5 +166,19 @@ describe("beatWordRanges", () => {
     for (const range of beatWordRanges(s)) {
       expect(allWords.slice(range.startWord, range.endWord).join(" ")).toBe(s.beats[range.beatIndex].text);
     }
+  });
+});
+
+describe("wordCountRange", () => {
+  it("is the ruler AUDIT SUMMARY flags against, so the gate and the flag cannot disagree", () => {
+    // 90s at 165 wpm is 248 words, ±25%.
+    expect(wordCountRange(90)).toEqual({ target: 248, min: 186, max: 309 });
+  });
+
+  it("puts a script at the exact centre of its own range", () => {
+    const s = script(["question", "attempt", "pushback", "land"], wordsPerBeatFor(120, 4));
+    const range = wordCountRange(120);
+    expect(discourseWordCount(s)).toBeGreaterThanOrEqual(range.min);
+    expect(discourseWordCount(s)).toBeLessThanOrEqual(range.max);
   });
 });

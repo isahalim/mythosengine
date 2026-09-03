@@ -75,6 +75,40 @@ describe("getRunProgress", () => {
     expect(progress?.finishedAt).toBeNull();
   });
 
+  it("does not call a run failed because a stage degraded, but still shows what degraded", async () => {
+    // RESEARCH, PLAN, ALIGN, EDIT, HOST and CRITIC are each contractually
+    // allowed to fail without costing the video. They used to close their
+    // row as `failed`, so a render that degraded exactly as designed and
+    // then exported a video told the operator "The run failed".
+    await ctx.db
+      .insert(runs)
+      .values([
+        { id: "r1", startedAt: "2026-08-31T10:00:00.000Z", finishedAt: "2026-08-31T10:00:04.000Z", stage: "research", status: "degraded", errorClass: "provider_error", traceId: TRACE },
+        { id: "r2", startedAt: "2026-08-31T10:00:05.000Z", finishedAt: "2026-08-31T10:00:06.000Z", stage: "script", status: "succeeded", traceId: TRACE },
+        { id: "r3", startedAt: "2026-08-31T10:00:07.000Z", finishedAt: "2026-08-31T10:00:08.000Z", stage: "critic", status: "degraded", errorClass: "rate_limited", traceId: TRACE },
+        { id: "r4", startedAt: "2026-08-31T10:00:09.000Z", finishedAt: "2026-08-31T10:00:20.000Z", stage: "export", status: "succeeded", traceId: TRACE },
+      ])
+      .run();
+
+    const progress = await getRunProgress(ctx.db, TRACE);
+
+    expect(progress?.status).toBe("succeeded");
+    expect(progress?.stages.map((s) => s.status)).toEqual(["degraded", "succeeded", "degraded", "succeeded"]);
+    expect(progress?.stages[2].errorClass).toBe("rate_limited");
+  });
+
+  it("still reports a genuinely failed stage as a failed run, degraded siblings or not", async () => {
+    await ctx.db
+      .insert(runs)
+      .values([
+        { id: "r1", startedAt: "2026-08-31T10:00:00.000Z", finishedAt: "2026-08-31T10:00:04.000Z", stage: "research", status: "degraded", errorClass: "provider_error", traceId: TRACE },
+        { id: "r2", startedAt: "2026-08-31T10:00:05.000Z", finishedAt: "2026-08-31T10:00:06.000Z", stage: "tts", status: "failed", errorClass: "provider_error", traceId: TRACE },
+      ])
+      .run();
+
+    expect((await getRunProgress(ctx.db, TRACE))?.status).toBe("failed");
+  });
+
   it("reports a failed stage as a failed run and keeps its error class", async () => {
     await ctx.db
       .insert(runs)

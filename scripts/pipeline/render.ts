@@ -26,7 +26,7 @@ import { type ResearchBrief } from "../../src/lib/rag/research.ts";
 import { researchWithFallback, selectResearchProviders } from "../../src/lib/rag/research-provider.ts";
 import { saveResearchBrief } from "../../src/lib/rag/research-store.ts";
 import { SignalsBm25Retriever } from "../../src/lib/rag/retriever.ts";
-import { critiqueScript } from "../../src/lib/pipeline/critic.ts";
+import { critiqueScript, markCritiquedWithoutVerdict } from "../../src/lib/pipeline/critic.ts";
 import { buildCaptionCues } from "../../src/lib/pipeline/captions.ts";
 import { pickTtsRate } from "../../src/lib/pipeline/tts-rate.ts";
 import { computeAuditSummary, type FootagePart, type FootageProvenance, type ResearchProvenance } from "../../src/lib/pipeline/audit.ts";
@@ -248,7 +248,7 @@ async function main(): Promise<void> {
         `${research.toolResultsDropped > 0 ? `, ${research.toolResultsDropped} tool result(s) dropped to fit the request ceiling` : ""}.`,
     );
   } else {
-    await finishRun(env.db, researchRunId, "failed", `${researchResult.error.kind}: ${researchResult.error.message}`);
+    await finishRun(env.db, researchRunId, "degraded", `${researchResult.error.kind}: ${researchResult.error.message}`);
     console.warn(`RESEARCH failed (${researchResult.error.kind}: ${researchResult.error.message}) — continuing ungrounded.`);
   }
 
@@ -262,16 +262,34 @@ async function main(): Promise<void> {
   }
   await finishRun(env.db, scriptRunId, "succeeded");
   const script = scriptResult.value;
+  // Accepted, not hidden. The gate no longer fails a render over a length
+  // estimate (src/lib/pipeline/discourse.ts), so the miss has to be visible
+  // somewhere the operator will see it — the render log here, and AUDIT
+  // SUMMARY's word-count flag on the review surface.
+  for (const note of script.structureNotes) console.warn(`SCRIPT: accepted with an advisory gate note — ${note}`);
 
   // ---- CRITIC ----
+  //
+  // Advisory, and now actually treated that way. Its verdict gates nothing —
+  // it is carried into the audit package for a human to weigh (§5.4) — so a
+  // critic that cannot be reached costs the render its second opinion and
+  // nothing else. On 2026-09-03 a run with a finished script and a finished
+  // RESEARCH brief was thrown away by `CRITIC failed: HTTP 429`, which is
+  // the same contract RESEARCH, PLAN, EDIT and HOST already have, missing
+  // from the one stage every document calls advisory.
   const criticRunId = await startRun(env.db, "critic", traceId);
   const criticResult = await critiqueScript(env.rawClient, script, chosenSignal, llm);
-  if (!criticResult.ok) {
-    await finishRun(env.db, criticRunId, "failed", criticResult.error.kind);
-    throw new Error(`CRITIC failed: ${criticResult.error.message}`);
+  let criticDegradedReason: string | null = null;
+  if (criticResult.ok) {
+    await finishRun(env.db, criticRunId, "succeeded");
+  } else {
+    criticDegradedReason = `${criticResult.error.kind}: ${criticResult.error.message}`;
+    await finishRun(env.db, criticRunId, "degraded", criticResult.error.kind);
+    // The signal still has to leave `scripted`; only the verdict is missing.
+    await markCritiquedWithoutVerdict(env.rawClient, chosenSignal.id);
+    console.warn(`CRITIC failed (${criticDegradedReason}) — continuing with no originality score.`);
   }
-  await finishRun(env.db, criticRunId, "succeeded");
-  const critic = criticResult.value;
+  const critic = criticResult.ok ? criticResult.value : null;
 
   // ---- PLAN ----
   //
@@ -287,7 +305,7 @@ async function main(): Promise<void> {
   const planRunId = await startRun(env.db, "plan", traceId);
   const planInput = {
     hook: script.hook,
-    beats: script.beats ?? [],
+    beats: script.beats,
     body: script.body,
     debateQuestion: script.debateQuestion,
     topic: claimedPick?.topic ?? null,
@@ -295,7 +313,7 @@ async function main(): Promise<void> {
   const planResult = await planShots(llm, planInput, { model: GROQ_REASONING_MODEL });
   // planShots never returns an error — the worst case is the heuristic plan.
   const plan = planResult.ok ? planResult.value : heuristicPlan({ hook: script.hook, beats: script.beats ?? [], body: script.body, debateQuestion: script.debateQuestion, topic: null }, "PLAN returned an error");
-  await finishRun(env.db, planRunId, plan.degradedReason === null ? "succeeded" : "failed", plan.degradedReason ?? undefined);
+  await finishRun(env.db, planRunId, plan.degradedReason === null ? "succeeded" : "degraded", plan.degradedReason ?? undefined);
   console.warn(`PLAN (${plan.origin}): ${plan.shots.length} shot(s) — ${plan.shots.map((shot) => `${shot.source}:"${shot.query}"`).join(", ")}`);
   if (plan.degradedReason !== null) console.warn(`PLAN degraded: ${plan.degradedReason}`);
 
@@ -435,7 +453,7 @@ async function main(): Promise<void> {
     }
     const narrationDurationMs = Math.round(narrationDurationResult.value * 1000);
 
-    const beatRanges = script.beats ? beatWordRanges({ hook: script.hook, beats: script.beats, open_question: script.debateQuestion }) : [];
+    const beatRanges = beatWordRanges({ hook: script.hook, beats: script.beats, open_question: script.debateQuestion });
 
     // ---- ALIGN (Gemini path only) ----
     // Edge TTS emits WordBoundary natively, so its timings are exact and
@@ -468,7 +486,7 @@ async function main(): Promise<void> {
         await finishRun(env.db, alignRunId, "succeeded");
         console.warn(`ALIGN: matched ${((align.alignMatchRatio ?? 0) * 100).toFixed(0)}% of the script.`);
       } else {
-        await finishRun(env.db, alignRunId, "failed", align.failure.errorClass);
+        await finishRun(env.db, alignRunId, "degraded", align.failure.errorClass);
         console.warn(
           `ALIGN failed (${align.failure.errorClass}: ${align.failure.message}) — continuing with caption timings estimated across ${(narrationDurationMs / 1000).toFixed(1)}s of narration.`,
         );
@@ -513,7 +531,7 @@ async function main(): Promise<void> {
     // editClips never returns an error — the worst case is every clip unedited.
     const edits = editResult.ok ? editResult.value : { clips: editableClips.map((clip) => ({ position: clip.position, filePath: clip.filePath, edited: false, toolsRun: [], skippedReason: "EDIT returned an error" })), degradedReason: "EDIT returned an error", model: null };
     const editedCount = edits.clips.filter((clip) => clip.edited).length;
-    await finishRun(env.db, editRunId, edits.degradedReason === null ? "succeeded" : "failed", edits.degradedReason ?? undefined);
+    await finishRun(env.db, editRunId, edits.degradedReason === null ? "succeeded" : "degraded", edits.degradedReason ?? undefined);
     console.warn(`EDIT: ${editedCount}/${edits.clips.length} clip(s) edited${edits.degradedReason === null ? "" : ` — degraded: ${edits.degradedReason}`}`);
 
     const editedPathAt = (position: number): string => edits.clips.find((clip) => clip.position === position)?.filePath ?? shotAt(position).filePath;
@@ -633,7 +651,7 @@ async function main(): Promise<void> {
         console.warn(`HOST: ${characterTrack.clips.length} action(s), ${characterTrack.trackDurationS.toFixed(1)}s over a ${renderResult.value.durationS.toFixed(1)}s video.`);
       } else {
         hostAbsentReason = `the host overlay pass failed (${overlayResult.error.kind}: ${overlayResult.error.message}) — published as footage and captions only.`;
-        await finishRun(env.db, hostRunId, "failed", overlayResult.error.kind);
+        await finishRun(env.db, hostRunId, "degraded", overlayResult.error.kind);
         console.warn(`HOST: ${hostAbsentReason}`);
       }
     }
@@ -688,12 +706,12 @@ async function main(): Promise<void> {
         // model graded this" is not recoverable from the score. It is also
         // no longer the model that wrote the script, which is the whole
         // point of moving it (src/config/models.ts).
-        { stage: "CRITIC", provider: "groq" as const, model: GROQ_LIGHT_MODEL, fallbackReason: null },
+        { stage: "CRITIC", provider: "groq" as const, model: GROQ_LIGHT_MODEL, fallbackReason: criticDegradedReason },
         { stage: "PLAN", provider: "groq" as const, model: GROQ_REASONING_MODEL, fallbackReason: null },
       ],
-      originalityScore: critic.originalityScore,
+      originalityScore: critic?.originalityScore ?? null,
       minOriginalityScore: directive.minOriginalityScore,
-      policyFlags: critic.policyFlags,
+      policyFlags: critic?.policyFlags ?? [],
       footage,
       research: toResearchProvenance(research),
       voiceUsedToday: voicesUsedToday.includes(voice),
@@ -760,7 +778,7 @@ async function main(): Promise<void> {
       {
         renderId,
         script: { hook: script.hook, body: script.body, debateQuestion: script.debateQuestion },
-        critic: { originalityScore: critic.originalityScore, policyFlags: critic.policyFlags, verdict: critic.verdict, reason: critic.reason },
+        critic: critic === null ? null : { originalityScore: critic.originalityScore, policyFlags: critic.policyFlags, verdict: critic.verdict, reason: critic.reason },
         footage,
         // What actually spoke, not what was selected before the driver was
         // chosen — the same source `auditResult.narration` reads from.

@@ -19,7 +19,28 @@ export async function startRun(db: AppDb, stage: string, traceId: string, now: (
   return id;
 }
 
-export async function finishRun(db: AppDb, runId: string, status: "succeeded" | "failed" | "skipped", errorClass?: string, now: () => number = Date.now): Promise<void> {
+/**
+ * How a stage row is closed.
+ *
+ * `degraded` is the one worth explaining. Several stages are contractually
+ * allowed to fail without costing the video — RESEARCH, PLAN, ALIGN, EDIT,
+ * HOST and CRITIC each say so in their own file and in ARCHITECTURE.md — and
+ * every one of them closed its row as `failed`. `statusOf`
+ * (src/server/console/runs.ts) reports a run as failed if *any* stage row is,
+ * so a render that degraded exactly as designed, produced a video and
+ * exported it told the operator "The run failed" on stage 4. That is the
+ * fabricated-status failure this file's reaper exists to prevent, arriving
+ * from the other direction: not a run reported as alive when it is dead, but
+ * a finished video reported as a wreck.
+ *
+ * So `failed` now means what it says — the stage failed and took the render
+ * with it — and `degraded` means the stage did not do its job and the render
+ * carried on without it. Both still carry the reason in `error_class`, and
+ * both are still visible; only the aggregate verdict changes.
+ */
+export type RunStageStatus = "succeeded" | "failed" | "degraded" | "skipped";
+
+export async function finishRun(db: AppDb, runId: string, status: RunStageStatus, errorClass?: string, now: () => number = Date.now): Promise<void> {
   await db
     .update(runs)
     .set({ finishedAt: new Date(now()).toISOString(), status, errorClass: errorClass ?? null })

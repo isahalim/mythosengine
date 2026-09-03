@@ -67,3 +67,30 @@ export async function critiqueScript(
 
   return ok({ originalityScore, policyFlags, verdict, reason });
 }
+
+/**
+ * Advance the signal past CRITIC when the critic itself could not be
+ * reached.
+ *
+ * CRITIC is advisory in every document that describes it (CLAUDE.md,
+ * ARCHITECTURE.md §5.4, and this file's own contract above): its verdict
+ * never gates anything, it only reaches the audit package for a human to
+ * read. It follows that a provider which is down, rate-limited or out of
+ * daily budget must not cost the day's video — and until 2026-09-03 it did.
+ * A run that had already written its script and its RESEARCH brief was
+ * thrown away by `CRITIC failed: HTTP 429`, for want of a second opinion
+ * nothing was waiting on.
+ *
+ * The signal still has to leave `scripted`, though: `critiqued -> exported`
+ * is the only legal edge into EXPORT (src/lib/state.ts), and a signal
+ * stranded in `scripted` behind a shipped export is a lie the console would
+ * go on telling. What is missing is the verdict, not the progress, so the
+ * `originality_score` column is deliberately left null — AUDIT SUMMARY reads
+ * that null and flags "no originality score" (audit.ts), which is the true
+ * statement. Writing a placeholder score would be inventing the one number
+ * in the package a reviewer weighs against the script itself.
+ */
+export async function markCritiquedWithoutVerdict(rawClient: RawSqlClient, signalId: string): Promise<void> {
+  assertSignalTransition("scripted", "critiqued");
+  await execAtomic(rawClient, [{ sql: `UPDATE signals SET state = 'critiqued' WHERE id = ?`, params: [signalId] }]);
+}

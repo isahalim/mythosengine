@@ -25,7 +25,7 @@ import type { ExportStatus } from "./exports.ts";
 
 interface RunStage {
   stage: string;
-  /** As recorded: "running" | "succeeded" | "failed" | "skipped" | "queued". Not narrowed — `runs.status` is a free text column and a new stage writer must not break this read. */
+  /** As recorded: "running" | "succeeded" | "failed" | "degraded" | "skipped" | "queued". Not narrowed — `runs.status` is a free text column and a new stage writer must not break this read. */
   status: string;
   startedAt: string;
   finishedAt: string | null;
@@ -136,6 +136,11 @@ function statusOf(stageRows: RunStage[]): RunStatus {
   }
 
   if (pipeline.some((row) => row.status === "running")) return "running";
+  // `degraded` is deliberately not counted here: a stage allowed to fail
+  // without costing the video (RESEARCH, PLAN, ALIGN, EDIT, HOST, CRITIC)
+  // closes its row that way, and a run that shipped a video is not a failed
+  // run. The stage row keeps its `errorClass`, so stage 4 still shows what
+  // degraded and why — see `RunStageStatus` in db/runs.ts.
   if (pipeline.some((row) => row.status === "failed")) return "failed";
   if (pipeline.some((row) => row.status === "queued")) return "queued";
   return "succeeded";
