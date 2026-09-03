@@ -115,15 +115,25 @@ export function LandingDemo() {
 
   return (
     <section ref={trackRef} className="relative z-10 h-[560vh]" aria-label="How Mythos Engine builds a video">
-      <div ref={stageRef} className="sticky top-0 flex h-dvh flex-col items-center justify-center gap-5 overflow-hidden px-6 py-8">
+      <div ref={stageRef} className="sticky top-0 flex h-dvh flex-col items-center justify-center gap-4 overflow-hidden px-6 py-6">
         {/* `assembling`: the scroll owns each fragment's outer wrapper and
             writes its transform and opacity every frame, which is why they
             start at zero here and nowhere else. `armed` is what holds the
             glass shut until the reader has actually watched it assemble —
             a pane that can be clicked open on the first screen makes the
-            five below it pointless. */}
+            five below it pointless.
+
+            **The pane reaches the top of the screen** (operator sketch,
+            2026-09-03): it was landing a fifth of the way down, which left
+            the finished Short — the one thing this whole scroll is
+            travelling toward — smaller than the copy under it. The stack is
+            centred, so height is the only lever: every vh added lifts the
+            top by half of it, and 68vh puts it where the sketch drew the
+            line. Still `min()`ed against the viewport's width, because the
+            cut is 9:16 and a tall narrow screen would otherwise size the
+            pane wider than the phone holding it. */}
         <ShardPlayer
-          className="h-[min(46vh,58vw)] shrink-0"
+          className="h-[min(68vh,74vw)] shrink-0"
           src={DEMO_VIDEO}
           poster={DEMO_POSTER}
           revealUrl={frameUrl}
