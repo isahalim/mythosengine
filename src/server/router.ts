@@ -14,7 +14,7 @@ import { consumeReauthNonce, issueReauthNonce } from "./auth/reauth.ts";
 import { writeAuditLog } from "./audit.ts";
 import { DirectiveSchema } from "./console/directive-schema.ts";
 import { compileDirectiveFromRawText, dryRunSettings, getSettings, resetToDefaults, updateSettings } from "./console/settings.ts";
-import { discardExport, downloadExport, exportFileName, getExportMetadata, listExports, markExportReviewed, type ExportBlobStore, type ExportStatus } from "./console/exports.ts";
+import { discardExport, downloadExport, exportFileName, getExportMetadata, listExports, markExportReviewed, streamExport, type ExportBlobStore, type ExportStatus } from "./console/exports.ts";
 import type { ExportStores } from "./console/exports.ts";
 import { rotateProviderKey, ROTATABLE_KEY_NAMES, type RotatableKeyName } from "./console/keys.ts";
 import { DEFAULT_RENDER_REF, DEFAULT_RENDER_WORKFLOW, dispatchRun } from "./console/dispatch.ts";
@@ -133,6 +133,15 @@ function depsFromEnv(env: RouterEnv): RouterDeps {
  */
 const EXPORT_DOWNLOAD_PATTERN = /^\/console\/exports\/([^/]+)\/download$/;
 
+/**
+ * The same bytes, for watching. A `<video src>` is the second thing on this
+ * router a browser reaches without asking for JSON — its `Accept` is
+ * `video/*` or `*\/*` — so it has to be named in the same exception the
+ * download route is, or the Accept test below sends it to the static asset
+ * handler and the operator gets a 404 where the video should be.
+ */
+const EXPORT_STREAM_PATTERN = /^\/console\/exports\/([^/]+)\/stream$/;
+
 /** The guided run's two per-run reads (src/server/console/runs.ts, montage.ts). The montage pattern is tested first, since `/runs/:id` would otherwise swallow it. */
 const RUN_PROGRESS_PATTERN = /^\/console\/runs\/([^/]+)$/;
 const RUN_MONTAGE_PATTERN = /^\/console\/runs\/([^/]+)\/montage$/;
@@ -223,7 +232,13 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
   // path falling through to the static asset handler rather than being
   // answered with JSON, and the download route below has to be named as
   // an exception to it because a navigation asks for text/html.
-  if (method === "GET" && !EXPORT_DOWNLOAD_PATTERN.test(pathname) && !(request.headers.get("accept") ?? "").includes("application/json")) return null;
+  if (
+    method === "GET" &&
+    !EXPORT_DOWNLOAD_PATTERN.test(pathname) &&
+    !EXPORT_STREAM_PATTERN.test(pathname) &&
+    !(request.headers.get("accept") ?? "").includes("application/json")
+  )
+    return null;
 
   const ctx = deps;
   const rp = rpConfigFor(url);
@@ -443,6 +458,38 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
           "content-disposition": `attachment; filename="${exportFileName(result.export.suggestedTitle, result.export.id)}"`,
         },
       });
+    }
+
+    // Playback, not possession. Stage 6's card plays the finished Short in
+    // place, and that must not move a `ready_for_review` row to
+    // `downloaded` (streamExport leaves the row alone) or hand the browser
+    // a `Content-Disposition: attachment` it would save instead of play.
+    // No audit row either: the log records the operator taking the file,
+    // and a media element issues one request per play and another per seek
+    // — a row for each would bury the download that actually matters.
+    const streamMatch = pathname.match(EXPORT_STREAM_PATTERN);
+    if (streamMatch && method === "GET") {
+      const result = await streamExport(ctx.db, exportStores, streamMatch[1], request.headers.get("range"));
+      if (result.kind === "not_found") return json({ error: "not_found" }, 404);
+      if (result.kind === "blob_missing") return json({ error: "blob_missing" }, 410);
+      if (result.kind === "no_blob_store") return json({ error: "not_configured", detail: "this Worker has no EXPORTS R2 binding" }, 503);
+      if (result.kind === "unsatisfiable") {
+        return new Response(null, { status: 416, headers: { "content-range": `bytes */${result.size}` } });
+      }
+      const headers: Record<string, string> = {
+        "content-type": "video/mp4",
+        "accept-ranges": "bytes",
+        // Private: this is an operator's unpublished video behind a session
+        // cookie, and it must never be held by a shared cache.
+        "cache-control": "private, max-age=300",
+      };
+      if (result.range === null) {
+        headers["content-length"] = String(result.size);
+        return new Response(result.body, { headers });
+      }
+      headers["content-length"] = String(result.range.end - result.range.start + 1);
+      headers["content-range"] = `bytes ${result.range.start}-${result.range.end}/${result.size}`;
+      return new Response(result.body, { status: 206, headers });
     }
 
     const reviewMatch = pathname.match(/^\/console\/exports\/([^/]+)\/mark-reviewed$/);

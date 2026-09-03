@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createTestDb } from "../../../db/client.ts";
 import { applyMigrations } from "../../../db/apply-migrations.ts";
 import { exports as exportsTable, renders, scripts, signals, sources, footageSources, footageSegments } from "../../../db/schema.ts";
-import { discardExport, downloadExport, getExport, getExportMetadata, listExports, markExportReviewed, type ExportBlobStore, exportFileName } from "./exports.ts";
+import { discardExport, downloadExport, getExport, getExportMetadata, listExports, markExportReviewed, parseByteRange, streamExport, type ExportBlobStore, exportFileName } from "./exports.ts";
 
 class FakeBlobStore implements ExportBlobStore {
   readonly store = new Map<string, ArrayBuffer>();
@@ -108,10 +108,17 @@ describe("exports service", () => {
  */
 class FakeObjectStore {
   readonly store = new Map<string, string>();
-  async get(key: string): Promise<{ body: ReadableStream } | null> {
+  /** Every get, ranged or not, so a test can assert the probe-then-read shape. */
+  readonly reads: ({ offset: number; length: number } | null)[] = [];
+  async get(key: string, options?: { range: { offset: number; length: number } }): Promise<{ body: ReadableStream; size: number } | null> {
     const value = this.store.get(key);
     if (value === undefined) return null;
-    return { body: new Response(value).body as ReadableStream };
+    this.reads.push(options?.range ?? null);
+    const bytes = new TextEncoder().encode(value);
+    // R2 reports the FULL object size on a ranged read too, which is the
+    // half of the contract Content-Range depends on.
+    const slice = options === undefined ? bytes : bytes.slice(options.range.offset, options.range.offset + options.range.length);
+    return { body: new Response(slice).body as ReadableStream, size: bytes.byteLength };
   }
   async delete(key: string): Promise<void> {
     this.store.delete(key);
@@ -336,5 +343,129 @@ describe("getExportMetadata", () => {
 
   it("is null for an export that does not exist", async () => {
     expect(await getExportMetadata(ctx.db, "nope")).toBeNull();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Playback.                                                          */
+/*                                                                    */
+/*  Stage 6's card plays the finished Short in place (operator         */
+/*  direction 2026-09-03), which needs bytes that a browser will play  */
+/*  rather than save, and ranges that a scrubber can seek with.        */
+/* ------------------------------------------------------------------ */
+
+describe("parseByteRange", () => {
+  it("reads the three forms a media element actually sends", () => {
+    expect(parseByteRange("bytes=0-", 100)).toEqual({ start: 0, end: 99 });
+    expect(parseByteRange("bytes=10-19", 100)).toEqual({ start: 10, end: 19 });
+    expect(parseByteRange("bytes=-20", 100)).toEqual({ start: 80, end: 99 });
+  });
+
+  it("clamps an end past the object rather than asking R2 for bytes that are not there", () => {
+    expect(parseByteRange("bytes=90-500", 100)).toEqual({ start: 90, end: 99 });
+  });
+
+  it("serves the whole file for an absent or unsupported header instead of failing", () => {
+    // Multipart ranges are legal HTTP that no browser asks a video source
+    // for; answering 200 with everything is correct, just not partial.
+    expect(parseByteRange(null, 100)).toBeNull();
+    expect(parseByteRange("bytes=0-10,20-30", 100)).toBeNull();
+    expect(parseByteRange("items=0-10", 100)).toBeNull();
+    expect(parseByteRange("bytes=-", 100)).toBeNull();
+  });
+
+  it("is unsatisfiable only when the start is past the end of the object", () => {
+    expect(parseByteRange("bytes=100-", 100)).toBe("unsatisfiable");
+    expect(parseByteRange("bytes=-0", 100)).toBe("unsatisfiable");
+    expect(parseByteRange("bytes=50-40", 100)).toBe("unsatisfiable");
+    expect(parseByteRange("bytes=99-", 100)).toEqual({ start: 99, end: 99 });
+  });
+});
+
+describe("streamExport", () => {
+  let ctx: ReturnType<typeof createTestDb>;
+  let kv: FakeBlobStore;
+  let r2: FakeObjectStore;
+
+  beforeEach(() => {
+    ctx = createTestDb();
+    applyMigrations(ctx.client);
+    kv = new FakeBlobStore();
+    r2 = new FakeObjectStore();
+  });
+
+  it("does NOT mark a ready_for_review export downloaded — watching is not keeping", async () => {
+    await seedExport(ctx.db, "exp1", "ready_for_review", "exports/exp1.mp4");
+    r2.store.set("exports/exp1.mp4", "0123456789");
+
+    await streamExport(ctx.db, { kv, r2 }, "exp1", null);
+
+    expect((await getExport(ctx.db, "exp1"))?.status).toBe("ready_for_review");
+  });
+
+  it("still marks it downloaded when the operator actually downloads it", async () => {
+    await seedExport(ctx.db, "exp1", "ready_for_review", "exports/exp1.mp4");
+    r2.store.set("exports/exp1.mp4", "0123456789");
+
+    await downloadExport(ctx.db, { kv, r2 }, "exp1");
+
+    expect((await getExport(ctx.db, "exp1"))?.status).toBe("downloaded");
+  });
+
+  it("serves a range out of R2 without reading the whole object", async () => {
+    await seedExport(ctx.db, "exp1", "ready_for_review", "exports/exp1.mp4");
+    r2.store.set("exports/exp1.mp4", "0123456789");
+
+    const result = await streamExport(ctx.db, { kv, r2 }, "exp1", "bytes=3-6");
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(await new Response(result.body).text()).toBe("3456");
+    expect(result.range).toEqual({ start: 3, end: 6 });
+    // The full size, not the slice's — Content-Range reports the object.
+    expect(result.size).toBe(10);
+    // A one-byte probe to learn the size, then the range itself. Never the
+    // whole object, which is the point of not buffering 40 MB in a Worker.
+    expect(r2.reads).toEqual([{ offset: 0, length: 1 }, { offset: 3, length: 4 }]);
+  });
+
+  it("serves the whole object, unranged, when nothing asked for a range", async () => {
+    await seedExport(ctx.db, "exp1", "ready_for_review", "exports/exp1.mp4");
+    r2.store.set("exports/exp1.mp4", "0123456789");
+
+    const result = await streamExport(ctx.db, { kv, r2 }, "exp1", null);
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.range).toBeNull();
+    expect(await new Response(result.body).text()).toBe("0123456789");
+    expect(r2.reads).toEqual([null]);
+  });
+
+  it("ranges a legacy KV export by slicing it, since KV has no partial read", async () => {
+    await seedExport(ctx.db, "exp-kv", "ready_for_review", "export:legacy.mp4");
+    kv.store.set("export:legacy.mp4", new TextEncoder().encode("0123456789").buffer);
+
+    const result = await streamExport(ctx.db, { kv, r2 }, "exp-kv", "bytes=2-4");
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(await new Response(result.body).text()).toBe("234");
+    expect(result.size).toBe(10);
+  });
+
+  it("reports an out-of-bounds range with the size, so the caller can answer 416", async () => {
+    await seedExport(ctx.db, "exp1", "ready_for_review", "exports/exp1.mp4");
+    r2.store.set("exports/exp1.mp4", "0123456789");
+
+    expect(await streamExport(ctx.db, { kv, r2 }, "exp1", "bytes=99-")).toEqual({ kind: "unsatisfiable", size: 10 });
+  });
+
+  it("distinguishes a missing row, a missing blob and a Worker with no bucket", async () => {
+    expect((await streamExport(ctx.db, { kv, r2 }, "nope", null)).kind).toBe("not_found");
+
+    await seedExport(ctx.db, "exp1", "ready_for_review", "exports/exp1.mp4");
+    expect((await streamExport(ctx.db, { kv, r2 }, "exp1", null)).kind).toBe("blob_missing");
+    expect((await streamExport(ctx.db, { kv, r2: undefined }, "exp1", null)).kind).toBe("no_blob_store");
   });
 });

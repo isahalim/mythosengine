@@ -4,8 +4,15 @@
  * "final video is done rendering and downloadable with no cracks", then
  * "user can repeat the process and the stages happen again one by one."
  *
- * The pane for a finished video is whole: fracture 0, no cracks, which is
- * the visual promise the forge was making.
+ * The pane for a finished video is whole — no cracks, which is the visual
+ * promise the forge was making — and since 2026-09-03 (operator direction)
+ * it is the landing demo's `ShardPlayer`, so a finished video is presented
+ * the same way everywhere on this site: an unbroken window, then the
+ * fragments with the keyword stills behind them, then the Short playing in
+ * place. It streams from `/console/exports/:id/stream`, deliberately not
+ * the download route — watching a video in the console is not taking
+ * possession of it, and a queue that marks an export downloaded because
+ * someone watched ten seconds of it has stopped telling the truth.
  *
  * Operator direction (2026-08-31): no white cards. A finished video is the
  * same thing here it has been since stage 2 — its glass, floating — so the
@@ -34,7 +41,7 @@
  * context, and there is no publish path here — no upload button exists in
  * this system by design, and the copy says so.
  */
-import { useCallback, useEffect, useState, type CSSProperties } from "react";
+import { Fragment, useCallback, useEffect, useState, type CSSProperties } from "react";
 import {
   describeError,
   discardExport,
@@ -43,8 +50,9 @@ import {
   listExportPreviews,
   listExports,
   markExportReviewed,
+  streamExportUrl,
 } from "../api.ts";
-import { ForgePane } from "../glass/ForgePane.tsx";
+import { ShardPlayer } from "../glass/ShardPlayer.tsx";
 import { MetadataPanel } from "./MetadataPanel.tsx";
 import type { ExportListItem, MontageClip } from "../types.ts";
 import { Button } from "../ui/Button.tsx";
@@ -175,93 +183,129 @@ export function Stage6Review({ onRestart, onUnauthorized }: Stage6Props) {
           <p className="py-10 text-center font-mono text-xs text-bone">No exports are waiting. Run the pipeline and they will land here.</p>
         )}
 
-        <div className="grid grid-cols-1 gap-x-6 gap-y-8 sm:grid-cols-2 lg:grid-cols-3">
+        {/* `grid-flow-row-dense`: the open metadata sheet is a full-width
+            grid item, and a full-span item always starts a new row — so
+            without dense packing, opening it shoved the two cards beside it
+            down below the sheet. Dense backfills the holes it left, so the
+            row the operator is looking at stays exactly as it was and the
+            sheet opens underneath it. The cost is that DOM order and visual
+            order diverge for the cards after the sheet (they are read after
+            it, and drawn before it); the sheet belongs to the card above it
+            and carries its own Close, so that is the cheaper of the two. */}
+        <div className="grid grid-cols-1 gap-x-6 gap-y-8 grid-flow-row-dense sm:grid-cols-2 lg:grid-cols-3">
           {live.map((item, i) => (
             // No card. The fragments are the shape, and the only thing
             // defining this entry's edge is where its glass stops.
-            // The open sheet takes the whole row. Its footage table is wider
-            // than a third of the grid, and a table that has to be scrolled
-            // sideways to read a timestamp is not an answer.
-            <article
-              key={item.id}
-              className={`resolve-in flex flex-col gap-3${metadataFor === item.id ? " sm:col-span-2 lg:col-span-3" : ""}`}
-              style={{ animationDelay: `${100 + i * 80}ms` }}
-            >
-              {/* Whole glass. The fracture closed — and the fragments are
-                  masking this video's own keyword stills. */}
-              <div className="float-group float-group--inline mx-auto w-2/3" style={driftStyle(i)}>
-                {/* `variant={i}`: each card in the grid is broken along a
-                    different cut, so a row of finished videos reads as
-                    several panes rather than one pane printed three times. */}
-                <ForgePane fracture={0} glow="var(--oxide)" clips={clipsByExport[item.id] ?? []} working={false} variant={i} />
-              </div>
+            //
+            // **The sheet is its own grid item, spanning the row** (operator
+            // direction, 2026-09-03). It used to open by making this
+            // `<article>` span all three columns, which widened the entry —
+            // and the glass with it, since the pane is a fraction of its
+            // container. Clicking Metadata resized the video the operator
+            // was watching. The sheet still needs the full width (its
+            // footage table is wider than a third of the grid, and a table
+            // scrolled sideways to read a timestamp is not an answer), so it
+            // takes the row on its own, immediately below, and every card
+            // keeps exactly the size it had.
+            <Fragment key={item.id}>
+              <article className="resolve-in flex flex-col gap-3" style={{ animationDelay: `${100 + i * 80}ms` }}>
+                {/* Whole glass, with the finished video inside it. The same
+                    three states as the landing demo (operator direction,
+                    2026-09-03): an unbroken window, then the fragments with
+                    this video's own keyword stills behind them, then the
+                    Short playing in the middle with the rim still live.
 
-              <div>
-                <p className="font-mono text-[0.6rem] uppercase tracking-[0.2em] text-bone">
-                  {item.status.replace(/_/g, " ")} · {megabytes(item.sizeBytes)}
-                  {item.durationS !== null && ` · ${item.durationS.toFixed(0)}s`}
-                </p>
-                <h2 className="mt-1 font-display text-sm font-semibold leading-snug tracking-tight text-mercury">{item.suggestedTitle}</h2>
-              </div>
+                    No per-card `variant` any more. A different sparse cut
+                    per card was right when a card was a *card made of
+                    shards* and three side by side had to read as three
+                    panes. At rest these are unbroken windows now, and a
+                    window is a window; what tells them apart is the video
+                    in it, which is what the operator came for. */}
+                <div className="float-group float-group--inline mx-auto w-2/3" style={driftStyle(i)}>
+                  <ShardPlayer
+                    src={streamExportUrl(item.id)}
+                    revealUrl={(index) => {
+                      const clips = clipsByExport[item.id] ?? [];
+                      // Stable for the life of the card: fragment i always
+                      // holds the same still, so uncovering the same piece
+                      // twice shows the same thing.
+                      return clips.length === 0 ? null : clips[index % clips.length].thumbnailUrl;
+                    }}
+                    keepReveals
+                    hoverLift={46}
+                    missingLabel="This export's bytes are gone — it may have expired."
+                  />
+                </div>
 
-              {/* The audit context an export must never travel without
-                  (CLAUDE.md NEVER block). Each field is shown only when
-                  the API actually returned it — a missing value reads as
-                  missing, never as a plausible default. */}
-              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-hairline pt-3 font-mono text-[0.65rem] text-bone">
-                <dt>hook</dt>
-                <dd className="truncate text-mercury">{item.scriptHook ?? "— not reported"}</dd>
-                <dt>footage</dt>
-                <dd className="truncate text-mercury">{item.footageGame ?? "— not reported"}</dd>
-                <dt>voice</dt>
-                <dd className="truncate text-mercury">{item.ttsVoice ?? "— not reported"}</dd>
-                <dt>expires</dt>
-                <dd className="truncate text-mercury">{item.expiresAt}</dd>
-              </dl>
+                <div>
+                  <p className="font-mono text-[0.6rem] uppercase tracking-[0.2em] text-bone">
+                    {item.status.replace(/_/g, " ")} · {megabytes(item.sizeBytes)}
+                    {item.durationS !== null && ` · ${item.durationS.toFixed(0)}s`}
+                  </p>
+                  <h2 className="mt-1 font-display text-sm font-semibold leading-snug tracking-tight text-mercury">{item.suggestedTitle}</h2>
+                </div>
 
-              {item.containsSyntheticMedia && (
-                <p className="rounded-lg bg-sodium/8 px-2.5 py-1.5 font-mono text-[0.62rem] text-sodium">
-                  Contains synthetic media — disclose this when you upload.
-                </p>
-              )}
+                {/* The audit context an export must never travel without
+                    (CLAUDE.md NEVER block). Each field is shown only when
+                    the API actually returned it — a missing value reads as
+                    missing, never as a plausible default. */}
+                <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 border-t border-hairline pt-3 font-mono text-[0.65rem] text-bone">
+                  <dt>hook</dt>
+                  <dd className="truncate text-mercury">{item.scriptHook ?? "— not reported"}</dd>
+                  <dt>footage</dt>
+                  <dd className="truncate text-mercury">{item.footageGame ?? "— not reported"}</dd>
+                  <dt>voice</dt>
+                  <dd className="truncate text-mercury">{item.ttsVoice ?? "— not reported"}</dd>
+                  <dt>expires</dt>
+                  <dd className="truncate text-mercury">{item.expiresAt}</dd>
+                </dl>
 
-              <div className="mt-auto flex flex-wrap gap-2 pt-1">
-                {/* A plain link, never a fetch: the route answers video/mp4
-                    with a Content-Disposition attachment, and a fetch would
-                    buffer the whole file just to hand it back to the browser. */}
-                <a className="btn btn--primary px-4 py-2 text-xs" href={downloadExportUrl(item.id)}>
-                  Download
-                </a>
-                <Button
-                  className="!px-4 !py-2 !text-xs"
-                  disabled={busyId === item.id || item.status === "reviewed"}
-                  onClick={() => void act(item.id, markExportReviewed)}
-                >
-                  {item.status === "reviewed" ? "Reviewed" : "Mark reviewed"}
-                </Button>
-                {/* The audit package has always carried this; nothing put
-                    it on screen. Without it "which YouTube videos are in
-                    this video" was answerable only from a CI log. */}
-                <Button
-                  className="!px-4 !py-2 !text-xs"
-                  onClick={() => setMetadataFor((current) => (current === item.id ? null : item.id))}
-                >
-                  {metadataFor === item.id ? "Hide metadata" : "Metadata"}
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="!px-4 !py-2 !text-xs"
-                  disabled={busyId === item.id}
-                  onClick={() => void act(item.id, discardExport)}
-                >
-                  Discard
-                </Button>
-              </div>
+                {item.containsSyntheticMedia && (
+                  <p className="rounded-lg bg-sodium/8 px-2.5 py-1.5 font-mono text-[0.62rem] text-sodium">
+                    Contains synthetic media — disclose this when you upload.
+                  </p>
+                )}
+
+                <div className="mt-auto flex flex-wrap gap-2 pt-1">
+                  {/* A plain link, never a fetch: the route answers video/mp4
+                      with a Content-Disposition attachment, and a fetch would
+                      buffer the whole file just to hand it back to the browser. */}
+                  <a className="btn btn--primary px-4 py-2 text-xs" href={downloadExportUrl(item.id)}>
+                    Download
+                  </a>
+                  <Button
+                    className="!px-4 !py-2 !text-xs"
+                    disabled={busyId === item.id || item.status === "reviewed"}
+                    onClick={() => void act(item.id, markExportReviewed)}
+                  >
+                    {item.status === "reviewed" ? "Reviewed" : "Mark reviewed"}
+                  </Button>
+                  {/* The audit package has always carried this; nothing put
+                      it on screen. Without it "which YouTube videos are in
+                      this video" was answerable only from a CI log. */}
+                  <Button
+                    className="!px-4 !py-2 !text-xs"
+                    onClick={() => setMetadataFor((current) => (current === item.id ? null : item.id))}
+                  >
+                    {metadataFor === item.id ? "Hide metadata" : "Metadata"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="!px-4 !py-2 !text-xs"
+                    disabled={busyId === item.id}
+                    onClick={() => void act(item.id, discardExport)}
+                  >
+                    Discard
+                  </Button>
+                </div>
+              </article>
 
               {metadataFor === item.id && (
-                <MetadataPanel exportId={item.id} onClose={() => setMetadataFor(null)} onUnauthorized={onUnauthorized} />
+                <div className="col-span-full">
+                  <MetadataPanel exportId={item.id} onClose={() => setMetadataFor(null)} onUnauthorized={onUnauthorized} />
+                </div>
               )}
-            </article>
+            </Fragment>
           ))}
         </div>
 
@@ -272,8 +316,9 @@ export function Stage6Review({ onRestart, onUnauthorized }: Stage6Props) {
           // are a preview of the script's keywords, not the footage in the
           // video, and the UI has to keep saying so.
           <p className="mt-6 text-[0.65rem] leading-relaxed text-bone">
-            Hover a shard to reveal a preview still from Pexels for that script&apos;s keywords. They are not the rendered footage — that comes
-            from the maintained, provenance-tracked library and never from here.
+            Click a pane to crack it open, then hover a shard to reveal a preview still from Pexels for that script&apos;s keywords. They are not
+            the rendered footage — that comes from the maintained, provenance-tracked library and never from here. Click again to play the
+            finished Short in place; watching it here never marks it downloaded.
           </p>
         )}
       </div>

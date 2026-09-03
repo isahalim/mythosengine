@@ -104,6 +104,18 @@ centre, which moves rim pieces a long way and middle ones almost not at all
 an invisible fragment still swallows the click meant for the play button
 underneath it.
 
+**The pane is `src/app/glass/ShardPlayer.tsx`, and so is stage 6's card**
+(operator direction, 2026-09-03). The three states, the healed slab, the
+per-fragment reveal and the autoplay are one implementation; what this
+screen adds is the only thing that is the landing's alone — the scroll.
+`useScrollAssembly` writes each fragment's outer wrapper as the reader
+travels the track, and the pane stays un-clickable (`armed`) until that
+finishes, because a slab that can be cracked on the first screen makes the
+five below it pointless. Both surfaces gate on `useAtlasReady`, and the
+landing has to as well rather than trusting the pane's: `useScrollAssembly`
+reads its fragments out of the DOM once when its effect installs and gives
+up if there are none.
+
 **`sealed` is one drawn slab, not sixteen fragments at rest** (operator
 direction, 2026-09-03). The fragments tessellate, but tessellated glass
 still shows its edges, and "the glass has healed" printed under a pane you
@@ -314,6 +326,34 @@ says that rather than spinning forever.
 A finished video's pane has no cracks. That is the visual promise stage 5
 was making.
 
+**A card is the landing demo's pane, and plays the Short in place** (operator
+direction, 2026-09-03). Same component (`src/app/glass/ShardPlayer.tsx`),
+same three states, same clicks: an unbroken window, then the fragments with
+this video's keyword stills behind them, then the finished video playing in
+the middle with the rim fragments still live under the cursor. A reader who
+played with the pane on the landing page meets the same object here holding
+their own work.
+
+Three things follow from that.
+
+**It streams from `GET /console/exports/:id/stream`, not from
+`/download`.** The download route attaches a `Content-Disposition` a browser
+would save rather than play, and it moves a `ready_for_review` row to
+`downloaded` — so a card the operator merely watched would report as taken,
+and the queue would stop telling the truth about what has left the building.
+The stream route leaves the row alone and serves byte ranges, which is what
+a scrubber needs and what a single sequential download never did.
+
+**One video plays at a time.** Stage 6 is a grid of these, and three
+narrations over each other is not a review surface. Enforced across the page
+(`video[data-shard-player]`) rather than lifted into each caller's state,
+because the rule is a fact about a page.
+
+**No per-card `variant` any more.** A different sparse cut per card was
+right when a card was a *card made of shards* and three side by side had to
+read as three panes. At rest these are unbroken windows now, and a window is
+a window; what tells them apart is the video in it.
+
 Every card carries the audit context an export must never travel without
 (hook, footage, voice, expiry), and each field renders as *missing* when
 the API did not return it — never as a plausible default. There is no
@@ -324,7 +364,17 @@ upload credential by design, and the copy says so.
 video, under its card: the suggested title, description and hashtags with a
 copy button each, and the whole footage track as a table — every clip, the
 source it came from, **the span of that source it used**, and a link that
-opens the source at that second. The first line of it answers the question
+opens the source at that second.
+
+**Opening it does not resize the card** (operator direction, 2026-09-03).
+The sheet used to open by making the card's `<article>` span all three
+columns — which widened the entry, and the glass with it, since the pane is
+a fraction of its container. Clicking Metadata resized the video the
+operator was watching. The sheet is its own full-width grid item now,
+opening in the row beneath, and `grid-auto-flow: dense` backfills the holes
+so the cards beside it stay exactly where they were. The sheet still needs
+the full width: its footage table is wider than a third of the grid, and a
+table scrolled sideways to read a timestamp is not an answer. The first line of it answers the question
 that sent the operator to a CI log: whether any YouTube footage is in this
 video at all, and how many of the clips are.
 

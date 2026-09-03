@@ -857,7 +857,8 @@ Runs between SOURCE and RENDER — strictly, after the montage timeline exists, 
 | `GET /console/exports` | list export packages, filterable by status | session |
 | `GET /console/exports/previews` | Pexels **preview** stills for every live export's script keywords — stage 6's sneak peeks. Shares `/runs/:traceId/montage`'s per-keyword day-long KV cache. Never footage for the render | session |
 | `GET /console/exports/:id/metadata` | the upload sheet for one finished video, read out of `audit_json`: suggested title, description, hashtags, and every clip with its provider, the source it came from, **the span of that source it used**, and a link that opens the source at that second. Answers "did this run use any YouTube footage, and which" — the one §9 fact the product recorded and never displayed | session |
-| `GET /console/exports/:id/download` | stream the rendered MP4 from R2 (or from KV for rows written before 2026-08-31 — the storage key says which) | session |
+| `GET /console/exports/:id/download` | stream the rendered MP4 from R2 (or from KV for rows written before 2026-08-31 — the storage key says which) as a `Content-Disposition: attachment`, and move a `ready_for_review` row to `downloaded` | session |
+| `GET /console/exports/:id/stream` | the same bytes for stage 6's in-place player: `video/mp4` inline, byte ranges (206) so the scrubber works, and **no status change** — watching a video in the console is not taking possession of it | session |
 | `POST /console/exports/:id/mark-reviewed` | mark an export reviewed | session |
 | `POST /console/exports/:id/discard` | discard an export early (frees the KV blob before TTL) | session |
 | `GET /console/settings` | current pipeline settings (voice pool, rate, focus games, source weighting, diversity mode) | session |

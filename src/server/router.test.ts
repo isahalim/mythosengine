@@ -372,6 +372,56 @@ describe("router", () => {
     expect(res?.headers.get("content-disposition")).toBe('attachment; filename="Ever-watched-a-movie-so-insane-exp1.mp4"');
   });
 
+  it("streams the video for playback: no attachment header, and no JSON accept header needed", async () => {
+    // Stage 6's card plays the Short in place, so this is the second route
+    // a browser reaches without asking for JSON — a <video src> sends
+    // `Accept: video/*`. It must be exempt from the same rule the download
+    // is, or the media element is answered with the console's HTML.
+    const cookie = await completeRegistrationAndLogin();
+    await seedExport();
+
+    const res = await handleApiRequest(
+      apiRequest("/console/exports/exp1/stream", { cookie, headers: { accept: "video/webm,video/ogg,video/*;q=0.9,*/*;q=0.5" } }),
+      deps,
+    );
+    expect(res?.status).toBe(200);
+    expect(res?.headers.get("content-type")).toBe("video/mp4");
+    expect(res?.headers.get("accept-ranges")).toBe("bytes");
+    // The whole difference from /download: a browser must play these bytes,
+    // not save them.
+    expect(res?.headers.get("content-disposition")).toBeNull();
+    // An operator's unpublished video behind a session cookie is never a
+    // shared cache's business.
+    expect(res?.headers.get("cache-control")).toContain("private");
+    expect(new TextDecoder().decode(await res?.arrayBuffer())).toBe("mp4!");
+  });
+
+  it("answers a range request with 206 and a Content-Range, so the scrubber works", async () => {
+    const cookie = await completeRegistrationAndLogin();
+    await seedExport();
+
+    const res = await handleApiRequest(apiRequest("/console/exports/exp1/stream", { cookie, headers: { range: "bytes=1-2" } }), deps);
+    expect(res?.status).toBe(206);
+    expect(res?.headers.get("content-range")).toBe("bytes 1-2/4");
+    expect(res?.headers.get("content-length")).toBe("2");
+    expect(new TextDecoder().decode(await res?.arrayBuffer())).toBe("p4");
+  });
+
+  it("answers an out-of-bounds range with 416 rather than an empty 206", async () => {
+    const cookie = await completeRegistrationAndLogin();
+    await seedExport();
+
+    const res = await handleApiRequest(apiRequest("/console/exports/exp1/stream", { cookie, headers: { range: "bytes=99-" } }), deps);
+    expect(res?.status).toBe(416);
+    expect(res?.headers.get("content-range")).toBe("bytes */4");
+  });
+
+  it("refuses the stream to a caller without a session", async () => {
+    await seedExport();
+    const res = await handleApiRequest(apiRequest("/console/exports/exp1/stream"), deps);
+    expect(res?.status).toBe(401);
+  });
+
   it("still treats a non-JSON GET of an API path as a page request", async () => {
     // The download exemption must not become "every GET is an API call".
     // Nothing is served under /console/ any more (the six-stage overhaul

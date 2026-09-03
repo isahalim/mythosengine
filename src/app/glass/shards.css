@@ -176,12 +176,12 @@
 }
 
 /* ==================================================================== */
-/*  The healed slab — the landing demo's sealed state.                  */
+/*  The healed slab — a ShardPlayer's sealed state.                     */
 /*                                                                      */
-/*  Operator direction 2026-09-03: once the scroll has finished          */
-/*  assembling the pane, the mosaic fades into ONE unbroken window of    */
-/*  glass. No seams, no fracture, and live under the cursor exactly      */
-/*  like every individual fragment is.                                  */
+/*  Operator direction 2026-09-03: at rest the mosaic fades into ONE     */
+/*  unbroken window of glass. No seams, no fracture, and live under the  */
+/*  cursor exactly like every individual fragment is. The landing demo   */
+/*  and stage 6's review cards are both this.                            */
 /*                                                                      */
 /*  It is DRAWN, not cut. There is no atlas piece for "whole" — the      */
 /*  sprite's entire value is its break — so a slab cannot be a .shard    */
@@ -199,7 +199,7 @@
 /*  source order and the lift would silently have no glow.               */
 /* ==================================================================== */
 
-.demo-slab {
+.glass-slab {
   position: absolute;
   inset: 0;
   overflow: hidden;
@@ -228,11 +228,11 @@
    whole pane the same gradient is a milky wash over the spheres, and the
    slab stops reading as something you can see through — which is the only
    thing it has instead of a fracture. */
-.demo-slab .shard-sheen {
+.glass-slab .shard-sheen {
   opacity: 0.42;
 }
 
-.demo-slab.shard--hot {
+.glass-slab.shard--hot {
   filter: brightness(1.03) drop-shadow(0 26px 40px rgba(20, 20, 45, 0.2)) drop-shadow(0 0 34px rgba(140, 160, 255, 0.45));
 }
 
@@ -502,7 +502,7 @@
      itself, not decoration, and without it the mosaic would swap to a slab
      between two frames. Only the cursor tilt goes, and the handler that
      writes that transform bails on the same query. */
-  .demo-slab {
+  .glass-slab {
     transition: opacity 0.7s linear;
   }
   /* Not `none`, unlike its neighbours above: the reveal latches on this

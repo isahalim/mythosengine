@@ -152,6 +152,20 @@ export function downloadExportUrl(id: string): string {
   return `/console/exports/${encodeURIComponent(id)}/download`;
 }
 
+/**
+ * The same bytes for a `<video src>`, and deliberately NOT the download
+ * route. That one attaches a `Content-Disposition` a browser would save
+ * rather than play, and moves a `ready_for_review` row to `downloaded` —
+ * so a card the operator merely watched would report as taken. This one
+ * serves ranges (the scrubber needs them) and leaves the row alone.
+ *
+ * The session cookie rides along on its own: the element issues a
+ * same-origin request, and the cookie is `SameSite=Strict`.
+ */
+export function streamExportUrl(id: string): string {
+  return `/console/exports/${encodeURIComponent(id)}/stream`;
+}
+
 export function markExportReviewed(id: string): Promise<Result<{ ok: true }, DriverError>> {
   return send(`/console/exports/${encodeURIComponent(id)}/mark-reviewed`, "POST");
 }

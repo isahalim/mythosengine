@@ -297,9 +297,17 @@ export interface ExportBlobStore {
   delete(key: string): Promise<void>;
 }
 
-/** The slice of the R2 binding the export blob store needs. */
+/**
+ * The slice of the R2 binding the export blob store needs.
+ *
+ * `range` is here for playback, not for download: a `<video>` asks for
+ * bytes in pieces and cannot scrub without them, and R2 serves a partial
+ * read without the Worker ever holding the whole object. `size` is the
+ * FULL object size on a ranged read as well as an unranged one, which is
+ * what `Content-Range` has to report.
+ */
 interface ExportObjectStore {
-  get(key: string): Promise<{ body: ReadableStream } | null>;
+  get(key: string, options?: { range: { offset: number; length: number } }): Promise<{ body: ReadableStream; size: number } | null>;
   delete(key: string): Promise<void>;
 }
 
@@ -375,6 +383,116 @@ export function exportFileName(suggestedTitle: string, id: string): string {
     .slice(0, 60)
     .replace(/-+$/, "");
   return `${slug.length > 0 ? `${slug}-` : ""}${id}.mp4`;
+}
+
+/**
+ * One byte range a media element asked for, resolved against the object's
+ * real size — or `null` when the header is absent or is a form this route
+ * does not serve.
+ *
+ * Deliberately narrow. `bytes=N-`, `bytes=N-M` and `bytes=-N` are what a
+ * media element actually sends; multipart ranges are legal HTTP and no
+ * browser asks a video source for one, so answering the whole file for
+ * anything else is honest rather than lossy — the client re-reads what it
+ * needs and playback is correct either way. `null` means "serve the whole
+ * thing, 200", and only an out-of-bounds start is an error the caller has
+ * to report as 416.
+ */
+export function parseByteRange(header: string | null, size: number): { start: number; end: number } | null | "unsatisfiable" {
+  if (header === null) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (match === null) return null;
+  const [, rawStart, rawEnd] = match;
+  if (rawStart === "" && rawEnd === "") return null;
+
+  // `bytes=-N`: the LAST n bytes. A zero-length suffix has no answer.
+  if (rawStart === "") {
+    const suffix = Number(rawEnd);
+    if (suffix === 0) return "unsatisfiable";
+    return { start: Math.max(0, size - suffix), end: size - 1 };
+  }
+
+  const start = Number(rawStart);
+  if (start >= size) return "unsatisfiable";
+  const end = rawEnd === "" ? size - 1 : Math.min(Number(rawEnd), size - 1);
+  if (end < start) return "unsatisfiable";
+  return { start, end };
+}
+
+export type StreamResult =
+  | { kind: "ok"; body: ReadableStream; size: number; range: { start: number; end: number } | null; export: typeof exportsTable.$inferSelect }
+  | { kind: "not_found" }
+  | { kind: "blob_missing" }
+  | { kind: "no_blob_store" }
+  | { kind: "unsatisfiable"; size: number };
+
+/**
+ * The same bytes as `downloadExport`, for watching rather than for keeping.
+ *
+ * Two things separate them, and both are the point:
+ *
+ * - **It does not touch the row.** `downloadExport` moves a
+ *   `ready_for_review` export to `downloaded`, because the operator now
+ *   holds the file. Pressing play in the console is not that, and a queue
+ *   that marks a video downloaded because someone watched ten seconds of it
+ *   is a queue that has stopped telling the truth about what has left the
+ *   building.
+ * - **It serves ranges.** A `<video>` asks for bytes in pieces and its
+ *   scrubber does not work without them. `downloadExport` never needed to:
+ *   a download is one sequential read.
+ *
+ * It also never sends `Content-Disposition: attachment`, which is what
+ * would otherwise make a browser save the file instead of playing it.
+ */
+export async function streamExport(db: AppDb, stores: ExportStores, id: string, rangeHeader: string | null): Promise<StreamResult> {
+  const existing = await getExport(db, id);
+  if (!existing) return { kind: "not_found" };
+
+  if (isR2Key(existing.storageKey)) {
+    if (stores.r2 === undefined) return { kind: "no_blob_store" };
+    // Two reads on a ranged request: the first learns the size (a HEAD-like
+    // get of one byte), the second is the range itself. R2 charges class-B
+    // operations, not bytes read, and the alternative is holding a 40 MB
+    // object in a Worker with a 128 MB ceiling to measure it.
+    if (rangeHeader === null) {
+      const whole = await stores.r2.get(existing.storageKey);
+      if (whole === null) return { kind: "blob_missing" };
+      return { kind: "ok", body: whole.body, size: whole.size, range: null, export: existing };
+    }
+    const probe = await stores.r2.get(existing.storageKey, { range: { offset: 0, length: 1 } });
+    if (probe === null) return { kind: "blob_missing" };
+    // The probe's own single byte is never read; cancelling it releases the
+    // stream instead of leaving it dangling for the request's lifetime.
+    await probe.body.cancel();
+
+    const range = parseByteRange(rangeHeader, probe.size);
+    if (range === "unsatisfiable") return { kind: "unsatisfiable", size: probe.size };
+    if (range === null) {
+      const whole = await stores.r2.get(existing.storageKey);
+      if (whole === null) return { kind: "blob_missing" };
+      return { kind: "ok", body: whole.body, size: whole.size, range: null, export: existing };
+    }
+    const part = await stores.r2.get(existing.storageKey, { range: { offset: range.start, length: range.end - range.start + 1 } });
+    if (part === null) return { kind: "blob_missing" };
+    return { kind: "ok", body: part.body, size: probe.size, range, export: existing };
+  }
+
+  // The pre-2026-08-31 KV rows. KV has no partial read, so the value is
+  // already whole in memory and a range is a slice of it — which is
+  // affordable precisely because these are the rows from when the cap was
+  // 25 MiB. No new export is ever written here.
+  const bytes = await stores.kv.get(existing.storageKey, { type: "arrayBuffer" });
+  if (bytes === null) return { kind: "blob_missing" };
+  const range = parseByteRange(rangeHeader, bytes.byteLength);
+  if (range === "unsatisfiable") return { kind: "unsatisfiable", size: bytes.byteLength };
+  const slice = range === null ? bytes : bytes.slice(range.start, range.end + 1);
+  return {
+    kind: "ok",
+    body: new Response(slice).body as ReadableStream,
+    size: bytes.byteLength,
+    range,
+    export: existing,
+  };
 }
 
 /** Streams a ready-for-review export's real MP4 from wherever it lives, and marks it downloaded (CONSOLE_SPEC.md §4/§6). */
