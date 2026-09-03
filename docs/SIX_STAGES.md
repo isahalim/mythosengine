@@ -78,11 +78,11 @@ sketch, 2026-09-03):
 
 | State | What it is | What the reader does |
 |---|---|---|
-| `sealed` | The unbroken slab, 3D and lit under the cursor | Click to crack it |
+| `sealed` | One unbroken window — no seams, no fracture — 3D and lit under the cursor | Click to crack it |
 | `cracked` | The fragments spring apart; hovering one reveals the frame behind it | Click again to play |
-| `open` | The middle clears, the video plays, the rim fragments stay live | Watch it |
+| `open` | The middle clears, the video plays itself, the rim fragments stay live | Watch it |
 
-Three things are worth knowing about how that is built.
+Four things are worth knowing about how that is built.
 
 **The whole cut, not the review section's eight.** `forgeLayout` picks a
 deliberately sparse subset (37–48% coverage) because a review card should
@@ -103,6 +103,35 @@ centre, which moves rim pieces a long way and middle ones almost not at all
 `RIM_THRESHOLD` are now cleared *and* given `pointer-events: none`, because
 an invisible fragment still swallows the click meant for the play button
 underneath it.
+
+**`sealed` is one drawn slab, not sixteen fragments at rest** (operator
+direction, 2026-09-03). The fragments tessellate, but tessellated glass
+still shows its edges, and "the glass has healed" printed under a pane you
+can count the cracks in is a caption arguing with what is on screen. So the
+mosaic cross-fades into `.demo-slab` once the scroll finishes and back out
+when it breaks. The slab is *drawn*, not cut — there is no atlas piece for
+"whole", the sprite's entire value being its break — but it borrows the
+light rather than inventing it: `.shard-sheen`, `.shard-spec` and
+`.shard--hot`, the same layers and the same class as every fragment, over a
+real `backdrop-filter` so the spheres show through it. Its cursor pose is
+`useShardField`'s hover branch by the numbers (`rx = -ly · 14`,
+`ry = +lx · 17`, `scale 1.035`), without the spring: one element, one
+transform, and a 0.22s transition doing the smoothing.
+
+**Nothing may cover the field, ever.** Every hover on this page — the tilt,
+the specular, and the frame revealed behind a fragment — is `useShardField`
+binding `pointerenter`/`pointerleave` to each `[data-shard]`. Anything
+spanning the pane above them costs all three at once, and costs them
+silently. This demo had two such things and neither looked like a lid: the
+click target was a `<button>` stretched over the pane at `z-40`, and each
+fragment carries two `inset-0` transform wrappers which are invisible but
+are still hit targets across their whole box — sixteen of them, stacked. So
+no fragment ever received a pointer event, in any state, and in `open` the
+finished video could not be clicked either. The wrappers and the button are
+`pointer-events: none` now, `.shard` is the only live area, and the click
+lives on the pane container that every child bubbles to — including the
+button when a keyboard activates it, which is why one Enter still advances
+exactly one state.
 
 **Three transforms, one owner each.** The outer wrapper is the scroll
 assembly (written every frame by `useScrollAssembly`), the inner one is the
@@ -150,7 +179,16 @@ Nothing about the input device, and nothing the demo's own code could fix.
 **The video is pipeline output** (`public/demo/`, built by
 `scripts/make-demo-asset.mjs` from a real export), not a mock: a landing page
 that fakes the product is the one thing this surface cannot do, given §9 is
-an argument about audit trails.
+an argument about audit trails. It **plays itself** when the glass opens
+(operator direction, 2026-09-03) rather than sitting at 0:00 under a caption
+announcing it is ready. `play()` is called synchronously from the click that
+opened it, so the gesture is still live and the first attempt carries sound
+— the point of a narrated Short. A browser that refuses anyway gets one
+muted retry, and only if *that* is refused does the reader hear about it, in
+the caption, with the controls still there to press. `preload` follows the
+state (`none` until the glass cracks, then `auto`), so the reader who only
+scrolls past never fetches 40 MB and the one who breaks it is playing
+buffered frames a click later.
 
 ### Stage 2 — the shard is the input
 

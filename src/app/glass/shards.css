@@ -175,6 +175,67 @@
   pointer-events: none;
 }
 
+/* ==================================================================== */
+/*  The healed slab — the landing demo's sealed state.                  */
+/*                                                                      */
+/*  Operator direction 2026-09-03: once the scroll has finished          */
+/*  assembling the pane, the mosaic fades into ONE unbroken window of    */
+/*  glass. No seams, no fracture, and live under the cursor exactly      */
+/*  like every individual fragment is.                                  */
+/*                                                                      */
+/*  It is DRAWN, not cut. There is no atlas piece for "whole" — the      */
+/*  sprite's entire value is its break — so a slab cannot be a .shard    */
+/*  and cannot go through the spring loop. What it borrows instead is    */
+/*  the light: `.shard-sheen` for the room and `.shard-spec` for the     */
+/*  cursor, the same two layers, unchanged, over a real backdrop blur.   */
+/*  The blur is what makes it read as a pane with the spheres behind it  */
+/*  rather than a white rectangle painted on top of them, which is the   */
+/*  one thing sixteen tessellating fragments never needed to fake.       */
+/*                                                                      */
+/*  It reuses `.shard--hot`, so hovered glass looks like hovered glass   */
+/*  everywhere on this site. The hot filter is restated at (0,2,0)       */
+/*  rather than left to `.shard--hot`: this rule is further down the     */
+/*  file, so at equal specificity the resting filter below would win on  */
+/*  source order and the lift would silently have no glow.               */
+/* ==================================================================== */
+
+.demo-slab {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: 1.35rem;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  transform-origin: 50% 50%;
+  transform-style: preserve-3d;
+  will-change: transform, opacity;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.2), rgba(233, 239, 255, 0.07) 42%, rgba(255, 255, 255, 0.16));
+  backdrop-filter: blur(2px) saturate(1.06);
+  -webkit-backdrop-filter: blur(2px) saturate(1.06);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.32);
+  filter: drop-shadow(0 14px 26px rgba(20, 20, 45, 0.14));
+  /* Transform is the cursor's, written per pointermove; the transition is
+     what does the smoothing the spring loop does for a fragment, and it is
+     short enough to still read as tracking rather than as lag. */
+  transition:
+    opacity 0.7s var(--ease-out),
+    transform 0.22s var(--ease-out),
+    filter 0.22s var(--ease-out);
+}
+
+/* The sheen is written for a fragment a few centimetres across. Across a
+   whole pane the same gradient is a milky wash over the spheres, and the
+   slab stops reading as something you can see through — which is the only
+   thing it has instead of a fracture. */
+.demo-slab .shard-sheen {
+  opacity: 0.42;
+}
+
+.demo-slab.shard--hot {
+  filter: brightness(1.03) drop-shadow(0 26px 40px rgba(20, 20, 45, 0.2)) drop-shadow(0 0 34px rgba(140, 160, 255, 0.45));
+}
+
 /* ---- the hero pane ------------------------------------------------- */
 
 .pane {
@@ -436,6 +497,13 @@
   .shard-tint,
   .forge-crack {
     transition: none;
+  }
+  /* The cross-fade into the unbroken window stays — it is the state change
+     itself, not decoration, and without it the mosaic would swap to a slab
+     between two frames. Only the cursor tilt goes, and the handler that
+     writes that transform bails on the same query. */
+  .demo-slab {
+    transition: opacity 0.7s linear;
   }
   /* Not `none`, unlike its neighbours above: the reveal latches on this
      transition's own `transitionend`, and a transition that never runs
