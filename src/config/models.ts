@@ -15,6 +15,16 @@
  * | RESEARCH's first attempt | `GEMINI_RESEARCH_MODEL`, four turns, then the row above |
  * | CRITIC, EXPORT's listing | `GROQ_LIGHT_MODEL` alone — unchanged |
  *
+ * **RESEARCH's fallback is the general ladder as of 2026-09-04**, Gemini
+ * rung included — the operator's "use gemini-3.8-flash first, then fall back
+ * to the gemini 3.5 flash-lite and the groq api's gpt models". It is not the
+ * thing the 2026-09-02 decision ruled out. That rule was about splicing a
+ * second Gemini model into the *middle of one tool conversation*, where it
+ * would inherit the first model's signed `thought` steps. This is a whole
+ * second attempt from an empty transcript, on a different model id and so a
+ * different per-minute bucket, and it starts only after the first attempt
+ * has been abandoned entirely.
+ *
  * **Why a ladder rather than one model, after 2026-09-01 said the
  * opposite.** That day's failure was not "Gemini is unreliable", it was
  * "Gemini was a *dependency*": five stages went there with a fallback that
@@ -51,11 +61,26 @@
  * *Why Flash Lite and not the model RESEARCH uses.* Gemini's free tier
  * meters 5 requests/minute **per model**, so putting the general ladder on a
  * different model id from `GEMINI_RESEARCH_MODEL` gives it a bucket of its
- * own. The two never compete: RESEARCH spends at most four requests against
- * 3.7 Flash, and a render spends at most three or four here (rerank once,
- * SCRIPT once plus up to one repair, PLAN once). Sharing one model id would
- * have put a render's total at eight against a ceiling of five, which is
- * precisely the arithmetic that lost the 2026-09-01 render.
+ * own. RESEARCH's *first* attempt spends at most four requests against
+ * `GEMINI_RESEARCH_MODEL` and never touches this bucket, and a render spends
+ * at most three or four here (rerank once, SCRIPT once plus up to one
+ * repair, PLAN once). Sharing one model id would have put a render's total
+ * at eight against a ceiling of five, which is precisely the arithmetic that
+ * lost the 2026-09-01 render.
+ *
+ * *What RESEARCH's fallback adds to this bucket, on the days it runs.*
+ * Since 2026-09-04 this is also the top rung RESEARCH falls back to, and its
+ * loop is six turns rather than the four the first attempt is capped at — so
+ * a render whose Gemini research attempt failed can ask for more here than
+ * the five-per-minute meter allows. That is deliberately left to the ladder
+ * rather than capped: the turn that meets the 429 steps down to
+ * `GROQ_REASONING_MODEL` and the loop continues there, and any SCRIPT or
+ * PLAN call queued behind it does the same. Both cost a request and neither
+ * costs a render, which is the whole point of a ladder. The alternative —
+ * bounding the fallback to four turns as well — would shorten the Groq loop
+ * too, since the turn budget belongs to the stage and not to the rung, and
+ * that penalises the path that runs every day to protect one that runs
+ * rarely.
  *
  * *Why it is safe for it to be the weakest model of the three.* It is the
  * rung that is tried, not the rung that is trusted. Every stage on this
@@ -104,22 +129,33 @@ export const GROQ_REASONING_MODEL = "openai/gpt-oss-120b";
  * waits on a limiter and never meets a 429 — and four turns holding whole
  * articles do more work than six holding truncations.
  *
- * *Why no ladder within Gemini.* Descending to another Gemini model for the
- * remaining turns would buy a separate per-model bucket, and it was
- * considered and declined on 2026-09-02: Gemini's tool transcripts carry
- * signed `thought` steps, whether a second Gemini model accepts the first's
- * signatures is untested, and the failure is a bare `invalid_request` that
- * would only appear live. That is why this stays a single model and why
- * `GEMINI_REASONING_MODEL` — a *different* model on a different bucket — is
- * never spliced into RESEARCH's Gemini attempt. Below it RESEARCH descends
- * to Groq, statelessly, which is a transcript replay that is known to work.
+ * *Why no ladder within Gemini — still true, and it is a narrower rule than
+ * it looks.* Descending to another Gemini model *for the remaining turns of
+ * this loop* was considered and declined on 2026-09-02, and stays declined:
+ * Gemini's tool transcripts carry signed `thought` steps, whether a second
+ * Gemini model accepts the first's signatures is untested, and the failure
+ * is a bare `invalid_request` that would only appear live. So this attempt
+ * is one model from its first turn to its last, and `GEMINI_REASONING_MODEL`
+ * is never spliced into it.
+ *
+ * What the operator asked for on 2026-09-04 is a different thing, and it is
+ * why `GEMINI_REASONING_MODEL` now sits at the top of the *fallback*: when
+ * this attempt is abandoned, RESEARCH starts over from an empty transcript,
+ * on a different model id and so a different per-minute bucket, carrying no
+ * `thought` step from here. Nothing is handed across. Below that rung it
+ * descends to Groq, statelessly, which is the replay that is known to work.
  */
-export const GEMINI_RESEARCH_MODEL = "gemini-3.7-flash";
+export const GEMINI_RESEARCH_MODEL = "gemini-3.8-flash";
 
 /**
  * Turns the Gemini attempt may spend, against a 5 requests/minute ceiling.
- * See `GEMINI_RESEARCH_MODEL`. The Groq rungs keep RESEARCH's full six —
- * they are paced by a token bucket, not by a per-minute request count.
+ * See `GEMINI_RESEARCH_MODEL`. The fallback ladder keeps RESEARCH's full
+ * six — its Groq rungs are paced by a token bucket rather than a per-minute
+ * request count, and its Gemini rung steps down to them on a 429.
+ *
+ * Four also happens to be what makes the *daily* ceiling fit:
+ * `QUOTAS.gemini.researchRequestsPerDay` is 20 on this model, so four turns
+ * times three renders is 12 with headroom for a re-run.
  */
 export const GEMINI_RESEARCH_MAX_ITERATIONS = 4;
 

@@ -75,6 +75,29 @@ describe("generateUploadMetadata", () => {
     expect(asked).not.toContain(GROQ_REASONING_MODEL);
   });
 
+  /**
+   * The 2026-09-04 `json_validate_failed` (581 in / 1,024 out), pinned as a
+   * floor rather than an exact number.
+   *
+   * `GROQ_LIGHT_MODEL` spends reasoning tokens before it emits, so a real
+   * listing measured at 1,571 output tokens against a ceiling of 1,024.
+   * Groq's JSON mode validates server-side, so the truncation came back as a
+   * 400 rather than as short JSON, and this function's own fail-soft turned
+   * that into a heuristic listing with a plausible reason — the operator
+   * silently getting the mechanical title this file exists to replace.
+   */
+  it("asks for enough completion budget that the model's reasoning cannot truncate the JSON", async () => {
+    let maxTokens = 0;
+    const llm: LlmDriver = {
+      complete: (req) => {
+        maxTokens = req.maxTokens ?? 0;
+        return Promise.resolve(ok({ content: JSON.stringify({ title: "t", description: "d", hashtags: ["a"] }), finishReason: "ok", quotaRemaining: null, tokensUsed: 1 }));
+      },
+    };
+    await generateUploadMetadata(llm, SOURCE);
+    expect(maxTokens).toBeGreaterThan(1_571);
+  });
+
   it("takes the model's listing when it is well formed", async () => {
     const llm = answering(JSON.stringify({ title: "Airlines over war zones? Think again.", description: "A short argument.", hashtags: ["#aviation", "warZones"] }));
     const metadata = await generateUploadMetadata(llm, SOURCE);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LadderLlmDriver, type LadderRung } from "./llm-ladder.ts";
-import { createEditLadder, createGroqReasoningLadder, createReasoningLadders } from "./resolve-ladder.ts";
+import { createEditLadder, createReasoningLadders } from "./resolve-ladder.ts";
 import { EDIT_FALLBACK_MODEL, EDIT_MODEL, GEMINI_REASONING_MODEL, GROQ_LIGHT_MODEL, GROQ_REASONING_MODEL } from "../../config/models.ts";
 import type { DriverError, LlmDriver, LlmRequest } from "./types.ts";
 import { err, ok } from "../result.ts";
@@ -168,17 +168,16 @@ describe("createReasoningLadders", () => {
     const ladders = createReasoningLadders(groq, "a-key", () => {});
     expect(ladders.forStage("SCRIPT")).not.toBe(ladders.forStage("PLAN"));
   });
-});
 
-describe("createGroqReasoningLadder", () => {
-  // RESEARCH has already spent its Gemini attempt on its own model and its
-  // own four-turn budget before this is reached. Splicing the general
-  // ladder's Gemini rung in above these two would hand that one stage a
-  // second Gemini attempt — the thing ruled out on 2026-09-02.
-  it("is the general ladder with no Gemini rung", () => {
-    expect(createGroqReasoningLadder(recording([], () => null), "RESEARCH", () => {}).describe()).toBe(
-      `groq:${GROQ_REASONING_MODEL} -> groq:${GROQ_LIGHT_MODEL}`,
-    );
+  // At most one Gemini rung, and at the top. This is the invariant that
+  // survives the 2026-09-04 change: RESEARCH's *fallback* may now start on
+  // Gemini, but no single tool conversation may ever step from one Gemini
+  // model to another, because the second would inherit the first's signed
+  // `thought` steps.
+  it("never places two Gemini rungs on one ladder", () => {
+    const rungs = createReasoningLadders(groq, "a-key", () => {}).forStage("RESEARCH").describe().split(" -> ");
+    expect(rungs.filter((rung) => rung.startsWith("gemini:"))).toEqual([`gemini:${GEMINI_REASONING_MODEL}`]);
+    expect(rungs[0]).toBe(`gemini:${GEMINI_REASONING_MODEL}`);
   });
 });
 

@@ -46,7 +46,7 @@ import { FfmpegRenderDriver } from "../../src/lib/drivers/render-ffmpeg.ts";
 import { createGroqDriverFromEnv, createGroqLimiter } from "../../src/lib/drivers/resolve-groq-driver.ts";
 import { createEditLadder, createReasoningLadders } from "../../src/lib/drivers/resolve-ladder.ts";
 import type { LadderUse } from "../../src/lib/drivers/llm-ladder.ts";
-import { GEMINI_RESEARCH_MODEL, GROQ_LIGHT_MODEL, GROQ_REASONING_MODEL } from "../../src/config/models.ts";
+import { GROQ_LIGHT_MODEL, GROQ_REASONING_MODEL } from "../../src/config/models.ts";
 import { RerankingRetriever } from "../../src/lib/rag/rerank.ts";
 import { editClips, type EditableClip } from "../../src/lib/pipeline/edit.ts";
 import { generateUploadMetadata } from "../../src/lib/pipeline/upload-metadata.ts";
@@ -340,11 +340,15 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
   // requests per model, so this call never comes out of RESEARCH's four.
   const retriever = new RerankingRetriever(new SignalsBm25Retriever(env.db), rerankLadder);
 
-  // Gemini 3.7 Flash first, Groq on any failure (operator direction,
-  // 2026-09-02). Both attempts and their bounds are configured in
+  // GEMINI_RESEARCH_MODEL first for at most four turns, then the general
+  // ladder from the top — Flash Lite, gpt-oss-120b, gpt-oss-20b — on any
+  // failure (operator direction, 2026-09-02, extended 2026-09-04). Both
+  // attempts and their bounds are configured in
   // src/lib/rag/research-provider.ts; RENDER only decides that RESEARCH is
-  // the stage that gets one.
-  const researchProviders = selectResearchProviders(llm, env.geminiApiKey);
+  // the stage that gets a large-intake model of its own first, and hands it
+  // the shared ladders so its fallback's Gemini rung is the same driver and
+  // the same limiter SCRIPT, PLAN and reranking hold.
+  const researchProviders = selectResearchProviders(ladders, env.geminiApiKey);
   if (researchProviders.unavailableReason !== null) console.warn(`RESEARCH: ${researchProviders.unavailableReason}`);
   const researchOutcome = await researchWithFallback(researchProviders, retriever, chosenSignal);
   const researchResult = researchOutcome.result;
@@ -838,7 +842,13 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
         {
           stage: "RESEARCH",
           provider: researchOutcome.provider,
-          model: research?.model ?? (researchOutcome.provider === "gemini" ? GEMINI_RESEARCH_MODEL : GROQ_REASONING_MODEL),
+          // `researchOutcome.model` is the brief's own `modelUsed` when the
+          // first attempt landed and the fallback ladder's `lastUsed()` when
+          // it did not — in both cases the model that actually spoke. Since
+          // 2026-09-04 the fallback's top rung is a Gemini model, so this
+          // can no longer be inferred from `provider`, and a stage that fell
+          // through every rung has no model to name at all.
+          model: researchOutcome.model ?? GROQ_REASONING_MODEL,
           fallbackReason: researchOutcome.fallbackReason,
         },
         stageRan("RERANK", rerankLadder),

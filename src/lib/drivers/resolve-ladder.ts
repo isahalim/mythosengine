@@ -37,7 +37,21 @@ export interface ReasoningLadders {
 /**
  * The general reasoning ladder: **Gemini Flash Lite → gpt-oss-120b →
  * gpt-oss-20b**, for SCRIPT, PLAN, retrieval reranking and RESEARCH's
- * post-Gemini fallback (operator direction, 2026-09-04).
+ * post-`GEMINI_RESEARCH_MODEL` fallback (operator direction, 2026-09-04).
+ *
+ * *RESEARCH's fallback takes the Gemini rung too, since 2026-09-04.* It used
+ * to take a Groq-only variant of this ladder, so that a stage which had
+ * already spent a Gemini attempt could not get a second one. The operator's
+ * direction that day was explicit — 3.8 Flash first, "then fall back to the
+ * gemini 3.5 flash-lite and the groq api's gpt models" — and the rule it
+ * appears to cross is narrower than it reads. What 2026-09-02 ruled out is a
+ * Gemini→Gemini descent *inside one tool conversation*, where the second
+ * model inherits the first's signed `thought` steps. RESEARCH's fallback is
+ * not that: `researchWithFallback` abandons the first attempt completely and
+ * starts a new loop from an empty transcript, on a different model id and so
+ * a different per-minute bucket. `LadderLlmDriver`'s own invariant — at most
+ * one Gemini rung, at the top — is what still holds the line inside a single
+ * loop, and it is unchanged.
  *
  * Absent `GEMINI_API_KEY` the ladder is simply the two Groq rungs, which is
  * a strict improvement on what those stages had yesterday — SCRIPT used to
@@ -78,22 +92,6 @@ function groqReasoningRungs(groqLlm: LlmDriver): LadderRung[] {
     { provider: "groq", model: GROQ_REASONING_MODEL, llm: groqLlm },
     { provider: "groq", model: GROQ_LIGHT_MODEL, llm: groqLlm },
   ];
-}
-
-/**
- * The general ladder with its Gemini rung removed — **gpt-oss-120b →
- * gpt-oss-20b**, and nothing above them.
- *
- * This exists for exactly one caller: RESEARCH's fallback. RESEARCH already
- * spent its Gemini attempt, on its own model and its own four-turn budget,
- * before anything reaches here (src/lib/rag/research-provider.ts), and
- * splicing `GEMINI_REASONING_MODEL` in above these two would give that one
- * stage a second Gemini attempt — the thing the operator ruled out on
- * 2026-09-02 and CLAUDE.md's NEVER block records. Every other stage on the
- * general ladder gets the Gemini rung from `createReasoningLadders`.
- */
-export function createGroqReasoningLadder(groqLlm: LlmDriver, stage: string, onEvent: (event: string) => void = (event) => console.warn(event)): LadderLlmDriver {
-  return new LadderLlmDriver(groqReasoningRungs(groqLlm), (event) => onEvent(`${stage}: ${event}`));
 }
 
 /**

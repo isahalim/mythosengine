@@ -31,8 +31,34 @@ const MAX_TITLE_CHARS = 100;
 const MAX_DESCRIPTION_CHARS = 900;
 const MAX_HASHTAGS = 8;
 
-/** Small: a title, a paragraph and a word list. The budget is mostly reasoning headroom, priced the same way `request-json.ts` prices its own. */
-const METADATA_MAX_TOKENS = 1024;
+/**
+ * Completion budget for the listing call.
+ *
+ * **Raised from 1,024 on 2026-09-04, because 1,024 was silently costing the
+ * operator every listing this file was written to produce.** The output is a
+ * title, a paragraph and a word list — a few hundred tokens — so 1,024
+ * looked generous. It is not, for exactly the reason `JSON_MAX_TOKENS`
+ * records in `request-json.ts`: the gpt-oss models spend reasoning tokens
+ * before they emit anything, and those count against the same ceiling.
+ * Measured against `GROQ_LIGHT_MODEL` with a real 160-word narration on
+ * 2026-09-04, one draft came back at 1,571 output tokens.
+ *
+ * The failure is quiet by construction. Groq's JSON mode validates the
+ * generation server-side, so a completion truncated at the ceiling comes
+ * back as HTTP 400 `json_validate_failed` rather than as short JSON — and
+ * `generateUploadMetadata` has no repair retry, because it fails soft. So a
+ * request one token too small does not error: it returns
+ * `heuristicUploadMetadata` with a plausible `degradedReason`, and the
+ * operator gets the mechanical title this whole file exists to replace.
+ * That is what the 2026-09-04 run's `json_validate_failed` on 581 in /
+ * 1,024 out was.
+ *
+ * 3,072 for the same reason `request-json.ts` picks it, and not more: the
+ * Groq limiter prices a request at `maxTokens + promptChars / 4` against an
+ * 8,000-token/minute bucket, and a single call that can consume the whole
+ * bucket makes `acquire()` wait for a refill that never comes.
+ */
+const METADATA_MAX_TOKENS = 3072;
 
 const MetadataSchema = z.object({
   title: z.string().min(1),

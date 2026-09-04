@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { LadderUse } from "../drivers/llm-ladder.ts";
 import type { DriverError, LlmDriver, LlmRequest, LlmResponse } from "../drivers/types.ts";
 import { err, ok, type Result } from "../result.ts";
 import type { Retriever, RetrievedPassage } from "./retriever.ts";
@@ -11,6 +12,7 @@ import {
   type ResearchProviders,
 } from "./research-provider.ts";
 import { GEMINI_RESEARCH_MAX_ITERATIONS, GEMINI_RESEARCH_MODEL, GROQ_LIGHT_MODEL, GROQ_REASONING_MODEL } from "../../config/models.ts";
+import { createReasoningLadders } from "../drivers/resolve-ladder.ts";
 
 const PROMPT = "<role>test researcher</role><topic>{{signal_title}}</topic>";
 const SIGNAL = { id: "sig1", title: "GTA VI delayed to 2027" };
@@ -77,11 +79,14 @@ function scriptedLlm(turns: (Partial<LlmResponse> | DriverError)[]): LlmDriver &
  * so a test never needs an API key or a real Gemini driver. The bounds are
  * the real ones; only the transport is stubbed.
  */
-function providers(gemini: LlmDriver | null, groq: LlmDriver, unavailableReason: string | null = null): ResearchProviders {
+function providers(gemini: LlmDriver | null, groq: LlmDriver, unavailableReason: string | null = null, fallbackUsed: () => LadderUse | null = () => null): ResearchProviders {
   const common = { articles: stubArticles, options: { promptTemplate: PROMPT } };
   return {
     gemini: gemini === null ? null : { llm: gemini, ...common, options: { ...common.options, model: GEMINI_RESEARCH_MODEL, maxIterations: GEMINI_RESEARCH_MAX_ITERATIONS } },
     groq: { llm: groq, ...common, options: { ...common.options, model: GROQ_REASONING_MODEL } },
+    // A plain scripted driver is not a ladder and has no rung to report; the
+    // tests that care about which rung answered pass their own.
+    fallbackUsed,
     unavailableReason,
   };
 }
@@ -90,7 +95,7 @@ const silent = (): void => undefined;
 
 describe("selectResearchProviders", () => {
   it("gives Gemini the bounds its intake justifies, and leaves Groq's untouched", () => {
-    const selection = selectResearchProviders(scriptedLlm([]), "AIza0000000000000000000000000000000000");
+    const selection = selectResearchProviders(createReasoningLadders(scriptedLlm([]), undefined, silent), "AIza0000000000000000000000000000000000");
 
     expect(selection.gemini?.options.model).toBe(GEMINI_RESEARCH_MODEL);
     // Four turns against a 5 req/min ceiling: the cap is what keeps this
@@ -105,36 +110,83 @@ describe("selectResearchProviders", () => {
     expect(selection.unavailableReason).toBeNull();
   });
 
-  // The Groq side became a two-rung ladder on 2026-09-04. What it must not
-  // pick up is the general ladder's Gemini rung on top: RESEARCH has already
-  // had its Gemini attempt, on its own model and its own four-turn budget,
-  // and a second one would reverse the 2026-09-02 decision by accident.
-  it("steps the Groq attempt down to the light model, and never to a second Gemini one", async () => {
-    const asked: string[] = [];
-    const groq: LlmDriver = {
+  /** Records every model id a ladder actually asks for, refusing the ones named. */
+  function refusing(asked: string[], refuse: readonly string[]): LlmDriver {
+    return {
       complete(req) {
         asked.push(req.model);
         return Promise.resolve(
-          req.model === GROQ_REASONING_MODEL
+          refuse.includes(req.model)
             ? err({ kind: "rate_limited", message: "429", retryable: true } as DriverError)
             : ok({ content: "{}", finishReason: "stop", quotaRemaining: null, tokensUsed: null } as LlmResponse),
         );
       },
     };
+  }
 
-    const selection = selectResearchProviders(groq, undefined);
+  // Without a key the fallback is what it has always been: 120b, then 20b.
+  it("steps the fallback down to the light model when there is no Gemini rung", async () => {
+    const asked: string[] = [];
+    const selection = selectResearchProviders(createReasoningLadders(refusing(asked, [GROQ_REASONING_MODEL]), undefined, silent), undefined);
+
     await selection.groq.llm.complete({ model: GROQ_REASONING_MODEL, messages: [{ role: "system", content: "hi" }] });
 
     expect(asked).toEqual([GROQ_REASONING_MODEL, GROQ_LIGHT_MODEL]);
     expect(asked.some((model) => model.startsWith("gemini"))).toBe(false);
   });
 
+  // Operator direction, 2026-09-04: "then fall back to the gemini 3.5
+  // flash-lite and the groq api's gpt models" — in that order. What
+  // 2026-09-02 ruled out is a Gemini→Gemini step *inside one transcript*,
+  // and this is a second attempt from an empty one.
+  //
+  // What is asserted here is that the fallback takes the render's *own*
+  // ladder rather than building a Groq-only one of its own, which is the
+  // whole of this file's part in it: the rung order is
+  // `createReasoningLadders`' to decide and its own tests cover it, and
+  // sharing the instance is what keeps this stage's Gemini rung on the same
+  // limiter SCRIPT and PLAN hold. Deliberately not exercised through a real
+  // Gemini driver — that would put a network call in a unit test.
+  it("takes its fallback from the render's ladders rather than building one", () => {
+    const stages: string[] = [];
+    const ladder = createReasoningLadders(scriptedLlm([]), undefined, silent).forStage("RESEARCH");
+    const ladders = {
+      forStage: (stage: string) => {
+        stages.push(stage);
+        return ladder;
+      },
+      geminiUnavailableReason: null,
+    };
+
+    const selection = selectResearchProviders(ladders, "AIza0000000000000000000000000000000000");
+
+    expect(stages).toEqual(["RESEARCH"]);
+    expect(selection.groq.llm).toBe(ladder);
+  });
+
+  // The fallback stopped being all-Groq on 2026-09-04, so "the fallback ran"
+  // and "Groq answered" are no longer the same sentence. `fallbackUsed` is
+  // what stops the audit package printing one provider beside the other's
+  // model id.
+  it("reports which rung of the fallback answered, and nothing before one has", async () => {
+    const asked: string[] = [];
+    const selection = selectResearchProviders(createReasoningLadders(refusing(asked, [GROQ_REASONING_MODEL]), undefined, silent), undefined);
+
+    expect(selection.fallbackUsed()).toBeNull();
+
+    await selection.groq.llm.complete({ model: GROQ_REASONING_MODEL, messages: [{ role: "system", content: "hi" }] });
+
+    expect(selection.fallbackUsed()?.provider).toBe("groq");
+    expect(selection.fallbackUsed()?.model).toBe(GROQ_LIGHT_MODEL);
+    expect(selection.fallbackUsed()?.fallbackReason).toContain(GROQ_REASONING_MODEL);
+  });
+
   it("names the model each provider is asked for, rather than letting a stage inline one", () => {
     // CLAUDE.md: a stage that names its own model id inline fails in
     // production while every test passes. EDIT and rerank shipped
     // "gemini-ladder" that way.
-    const selection = selectResearchProviders(scriptedLlm([]), "AIza0000000000000000000000000000000000");
-    expect(selection.gemini?.options.model).toBe("gemini-3.7-flash");
+    const selection = selectResearchProviders(createReasoningLadders(scriptedLlm([]), undefined, silent), "AIza0000000000000000000000000000000000");
+    expect(selection.gemini?.options.model).toBe("gemini-3.8-flash");
     expect(selection.groq.options.model).toBe("openai/gpt-oss-120b");
   });
 
@@ -145,7 +197,7 @@ describe("selectResearchProviders", () => {
   });
 
   it("offers no Gemini attempt at all without a key, and says so", () => {
-    const selection = selectResearchProviders(scriptedLlm([]), undefined);
+    const selection = selectResearchProviders(createReasoningLadders(scriptedLlm([]), undefined, silent), undefined);
     expect(selection.gemini).toBeNull();
     expect(selection.unavailableReason).toContain("GEMINI_API_KEY is not set");
   });

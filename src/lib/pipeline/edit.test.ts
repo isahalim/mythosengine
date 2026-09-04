@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EDIT_TOOLS, editClips, type EditableClip } from "./edit.ts";
 import { EDIT_MODEL } from "../../config/models.ts";
+import { QUOTAS } from "../../config/quotas.ts";
 import type { DriverError, LlmDriver, LlmRequest, ToolDefinition } from "../drivers/types.ts";
 import { err, ok } from "../result.ts";
 
@@ -55,6 +56,20 @@ function scripted(turns: ({ tool: string; args?: unknown } | { text: string })[]
             tokensUsed: 1,
           }),
         );
+      },
+    },
+  };
+}
+
+/** Wraps a driver and keeps every request it was handed, for assertions about the wire shape. */
+function spying(inner: LlmDriver): { llm: LlmDriver; requests: LlmRequest[] } {
+  const requests: LlmRequest[] = [];
+  return {
+    requests,
+    llm: {
+      complete: (req) => {
+        requests.push(req);
+        return inner.complete(req);
       },
     },
   };
@@ -244,16 +259,40 @@ describe("editClips", () => {
   });
 
   it("tells the model the minimum length, so an edit cannot leave a gap in the video", async () => {
-    const { llm } = scripted([{ text: "FINAL: /tmp/sourced-0.mp4" }]);
-    let prompt = "";
-    const spy: LlmDriver = {
-      complete: (req) => {
-        prompt = req.messages[0].content;
-        return llm.complete(req);
-      },
-    };
-    await editClips([clip({ durationS: 7.25 })], deps(spy));
+    const { llm, requests } = spying(scripted([{ text: "FINAL: /tmp/sourced-0.mp4" }]).llm);
+
+    await editClips([clip({ durationS: 7.25 })], deps(llm));
+
+    const prompt = requests[0].messages.map((message) => message.content).join("\n");
     expect(prompt).toContain("7.25");
     expect(prompt).toContain("the claim looks obvious here");
+  });
+
+  /**
+   * Both halves of the 2026-09-04 EDIT outage, pinned.
+   *
+   * The stage had been sending a single `system` message and asking for
+   * `max_tokens: 1024`. Neither was visible in any test, because a stub
+   * driver accepts any shape and has no rate limit — and both are refused
+   * outright by the qwen3 models the stage moved to that morning:
+   *
+   *   400 invalid_request_error "No user query found in messages."
+   *   400 invalid_request_error "... output tokens per minute (OTPM):
+   *       Limit 1000, Requested 1024"
+   *
+   * Every turn of every clip, on both rungs, in about five milliseconds. The
+   * render still exported — that contract held — but it exported with every
+   * clip as sourced.
+   */
+  it("sends a user turn and stays under the qwen3 output ceiling", async () => {
+    const { llm, requests } = spying(scripted([{ text: "FINAL: /tmp/sourced-0.mp4" }]).llm);
+
+    await editClips([clip()], deps(llm));
+
+    // A system-only conversation is what qwen3's chat template refuses.
+    expect(requests[0].messages.map((message) => message.role)).toEqual(["system", "user"]);
+    // And the per-request output ceiling is a wall, not a pace: a request
+    // above it is rejected before it runs, so the limiter cannot save it.
+    expect(requests[0].maxTokens).toBeLessThan(QUOTAS.groq.outputTokensPerMinuteQwen3);
   });
 });

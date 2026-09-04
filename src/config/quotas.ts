@@ -40,6 +40,35 @@ export const QUOTAS = {
      */
     tokensPerDayGptOss: 200_000,
     tokensPerDayQwen3: 2_000_000,
+    /**
+     * **Output** tokens per minute on the qwen3 models — a second, separate
+     * meter from `tokensPerMinute`, which counts input.
+     *
+     * Measured against the live API on 2026-09-04, not read off a pricing
+     * page. It behaves the way Groq's 8,000-token input ceiling does and the
+     * way CLAUDE.md's NEVER block describes: **it applies per request as
+     * well as per minute**, and a single request whose expected output
+     * exceeds it is refused outright, before anything runs —
+     *
+     *     HTTP 400 "Request too large for model `qwen/qwen3.8-27b` ... on
+     *     output tokens per minute (OTPM): Limit 1000, Requested 1024"
+     *
+     * — with `type: "invalid_request_error"`, not `rate_limited`. So
+     * `fetchWithRetry` will not retry it and the rate limiter cannot help:
+     * `acquire()` clamps an oversized demand and lets it through by design.
+     * The only defence is asking for less, which is why EDIT derives its
+     * `max_tokens` from this number (src/lib/pipeline/edit.ts).
+     *
+     * This is what took EDIT's whole ladder down on the 2026-09-04 run:
+     * `max_tokens: 1024` against a limit of 1000 meant both qwen rungs
+     * refused every request in 5ms with 0 tokens billed, and the stage
+     * degraded to "every clip as sourced" for the entire render.
+     *
+     * The gpt-oss models have no comparable ceiling — 8,192 is accepted
+     * there — so this lives beside `tokensPerDayQwen3` as a qwen3 fact
+     * rather than a Groq-wide one.
+     */
+    outputTokensPerMinuteQwen3: 1000,
   },
   /**
    * Gemini free tier, from the operator's own AI Studio rate-limit export
@@ -88,6 +117,30 @@ export const QUOTAS = {
      */
     textRequestsPerMinute: 5,
     textTokensPerDay: 250_000,
+    /**
+     * Requests per day against `GEMINI_RESEARCH_MODEL`, read off the
+     * provider's own 429 on 2026-09-04 rather than a pricing page:
+     *
+     *     Quota exceeded for metric:
+     *     generativelanguage.googleapis.com/generate_content_free_tier_requests,
+     *     limit: 20, model: gemini-3.8-flash
+     *
+     * It is a *daily* request count, not the per-minute one above, and it is
+     * the tighter of the two for this stage: RESEARCH's four turns times
+     * three renders is 12, which fits, but a day of re-runs does not. What
+     * happens when it does not fit is already correct and was observed the
+     * same day — the 429 is a failure like any other, so RESEARCH abandons
+     * the attempt and the general ladder writes the brief on
+     * `GEMINI_REASONING_MODEL` instead, grounded, with its citations intact
+     * and `fallbackReason` naming the quota.
+     *
+     * Nothing budgets against this number yet, and deliberately so: unlike
+     * TTS's ten a day, exhausting it costs a *rung*, not the day's video, so
+     * a ledger would be machinery guarding an outcome the ladder already
+     * handles. It is recorded because "why did RESEARCH stop using the model
+     * we chose?" is otherwise a question with no answer in the repo.
+     */
+    researchRequestsPerDay: 20,
     ttsRequestsPerMinute: 3,
     ttsTokensPerMinute: 10_000,
     ttsRequestsPerDay: 10,

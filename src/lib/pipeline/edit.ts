@@ -1,6 +1,7 @@
 import { access } from "node:fs/promises";
 import type { DriverError, LlmDriver, LlmMessage, ToolDefinition } from "../drivers/types.ts";
 import { EDIT_MODEL } from "../../config/models.ts";
+import { QUOTAS } from "../../config/quotas.ts";
 import { McpStdioClient } from "../drivers/mcp-stdio.ts";
 import { ok, type Result } from "../result.ts";
 
@@ -78,6 +79,32 @@ export const EDIT_TOOLS: readonly string[] = [
  */
 const MAX_TOOL_ITERATIONS = 6;
 
+/**
+ * Completion budget for one turn, and the number that has to stay under
+ * `QUOTAS.groq.outputTokensPerMinuteQwen3`.
+ *
+ * The qwen3 models meter **output** tokens per minute at 1,000, and that
+ * ceiling applies per request as well as per minute: a request whose
+ * expected output exceeds it is refused with an HTTP 400
+ * `invalid_request_error` in about five milliseconds, having billed nothing
+ * and run nothing. `max_tokens: 1024` — inherited from the gpt-oss era, when
+ * this stage was on a model with no such ceiling — was therefore *one token
+ * over a hard wall*, and it took both rungs of the EDIT ladder down on every
+ * single turn of the 2026-09-04 run. The stage did exactly what it is built
+ * to do (every clip as sourced, render exported) and that is the only reason
+ * it was a Groq dashboard line rather than a page.
+ *
+ * 768 is three quarters of the ceiling, not the whole of it, because the
+ * limit is a *leaky bucket* as well as a per-request wall: a request
+ * reserves its `max_tokens` on admission and reconciles to the real figure
+ * afterwards, so sitting at 1,000 would mean the first turn of every minute
+ * consumed the entire allowance. Measured against both rungs with the real
+ * three-tool menu on 2026-09-04, a turn emits 33-208 output tokens — a tool
+ * call and its reasoning — so this is roughly four times the worst observed
+ * turn and was never the binding constraint on what the model could say.
+ */
+const EDIT_MAX_TOKENS = Math.floor(QUOTAS.groq.outputTokensPerMinuteQwen3 * 0.75);
+
 export interface EditableClip {
   /** Composited position, so a reported result maps back to the montage slot. */
   position: number;
@@ -131,27 +158,29 @@ export interface EditDeps {
 const DEFAULT_COMMAND = "uvx";
 const DEFAULT_ARGS = ["--from", "kinocut", "kino", "--mcp"];
 
-function buildPrompt(clip: EditableClip, workDir: string): string {
+/**
+ * The stage's standing instructions — everything true of every clip.
+ *
+ * Split out of the per-clip prompt on 2026-09-04 so this stage sends a
+ * `system` turn *and* a `user` turn. That is not tidiness. The whole prompt
+ * used to go out as a single `system` message with no user turn at all, and
+ * the qwen3 models' chat template refuses that outright:
+ *
+ *     HTTP 400 "failed to template request: ... minijinja: rendering
+ *     failed: raise_exception: No user query found in messages."
+ *
+ * with `type: "invalid_request_error"` — 0 tokens billed, 5ms, no retry,
+ * and the ladder's second rung refused the identical shape a moment later.
+ * gpt-oss tolerated a system-only conversation, so the arrangement worked
+ * for as long as EDIT was on gpt-oss and broke silently the day the stage
+ * moved. Which is the general lesson: a prompt shape is part of a model's
+ * contract, and it does not travel across a model change for free.
+ */
+function editSystemPrompt(workDir: string): string {
   return `You are editing ONE background clip for a vertical short-form video.
 
-<clip>
-  file: ${clip.filePath}
-  source: ${clip.provider}
-  found by searching: "${clip.query}"
-  it must end up AT LEAST ${clip.durationS.toFixed(2)} seconds long
-  what this shot is doing in the argument: ${clip.intent}
-</clip>
-
 The narrator is arguing over this footage. Your job is to find the most
-watchable ${clip.durationS.toFixed(2)} seconds in it, and nothing more.
-
-Do this:
-1. Call video_info to learn the clip's real duration and resolution.
-2. If it is comfortably longer than ${clip.durationS.toFixed(2)}s, call
-   video_detect_scenes and trim to the most visually interesting continuous
-   window that is still at least ${clip.durationS.toFixed(2)}s long. Prefer
-   movement and a clear subject; avoid title cards, logos, letterboxed
-   intros and near-static frames.
+watchable window of it that fills the clip's slot, and nothing more.
 
 You have exactly three tools: video_info, video_detect_scenes and video_trim.
 There are no others. Do not try to grade, colour, filter or stylise the clip —
@@ -160,8 +189,8 @@ and will cost you a turn.
 
 Rules:
 - Write every output to a NEW file inside ${workDir}. Never overwrite an input.
-- NEVER make the clip shorter than ${clip.durationS.toFixed(2)} seconds. A clip
-  short of its slot leaves a gap in the finished video.
+- NEVER make the clip shorter than the length the brief asks for. A clip short
+  of its slot leaves a gap in the finished video.
 - Do not add text, subtitles, watermarks or audio. Those are handled elsewhere
   and would be duplicated.
 - At most ${MAX_TOOL_ITERATIONS} tool calls. Doing nothing is a valid outcome:
@@ -170,9 +199,29 @@ Rules:
 When you are finished, reply with the FINAL absolute file path on a line of
 its own, in exactly this form and nothing else:
 
-FINAL: /absolute/path/to/clip.mp4
+FINAL: /absolute/path/to/clip.mp4`;
+}
 
-If you made no change at all, reply:
+/** The one clip's brief — the `user` turn every provider's chat template expects to find. */
+function buildClipBrief(clip: EditableClip): string {
+  const seconds = clip.durationS.toFixed(2);
+  return `<clip>
+  file: ${clip.filePath}
+  source: ${clip.provider}
+  found by searching: "${clip.query}"
+  it must end up AT LEAST ${seconds} seconds long
+  what this shot is doing in the argument: ${clip.intent}
+</clip>
+
+Find the most watchable ${seconds} seconds in this clip.
+
+1. Call video_info to learn its real duration and resolution.
+2. If it is comfortably longer than ${seconds}s, call video_detect_scenes and
+   trim to the most visually interesting continuous window that is still at
+   least ${seconds}s long. Prefer movement and a clear subject; avoid title
+   cards, logos, letterboxed intros and near-static frames.
+
+If you make no change at all, reply:
 
 FINAL: ${clip.filePath}`;
 }
@@ -208,7 +257,11 @@ async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdi
     modelUsed,
   });
 
-  const messages: LlmMessage[] = [{ role: "system", content: buildPrompt(clip, deps.workDir) }];
+  const messages: LlmMessage[] = [
+    { role: "system", content: editSystemPrompt(deps.workDir) },
+    // The `user` turn is required, not stylistic — see `editSystemPrompt`.
+    { role: "user", content: buildClipBrief(clip) },
+  ];
 
   for (let iteration = 0; iteration < maxIterations; iteration++) {
     const isLast = iteration === maxIterations - 1;
@@ -227,16 +280,13 @@ async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdi
       messages,
       tools,
       toolChoice: "auto",
-      // 1024, not 2048. A turn here emits either one tool call or the line
-      // `FINAL: /path`, so the larger budget was never spent — but it was
-      // *reserved*: the Groq limiter paces on `maxTokens + prompt`, and on
-      // the free tier's 8K tokens/minute that reservation is what sets the
-      // pace of the whole stage. Measured on the 2026-09-02 render: nine
-      // Kinocut schemas re-sent per turn (~2.1K tokens) plus 2048 reserved
-      // put every turn over 4.5K, which is 1.6 turns a minute, which is why
-      // eight clips took nineteen minutes. Halving the reservation is the
-      // part that costs nothing — the model was never using it.
-      maxTokens: 1024,
+      // Derived from the qwen3 output-per-minute ceiling, never a literal —
+      // see `EDIT_MAX_TOKENS`. A turn here emits either one tool call or the
+      // line `FINAL: /path`, so a larger budget was never spent, but it was
+      // *reserved* twice over: by Groq's OTPM meter, which refuses the whole
+      // request above 1,000, and by our own limiter, which paces on
+      // `maxTokens + prompt` against 8K input tokens a minute.
+      maxTokens: EDIT_MAX_TOKENS,
       temperature: 0.3,
     });
     if (!completion.ok) return unedited(`${completion.error.kind}: ${completion.error.message}`);

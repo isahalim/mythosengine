@@ -61,6 +61,35 @@ export function createGeminiTextLimiter(): TokenBucketLimiter {
 }
 
 /**
+ * How long one turn of RESEARCH's Gemini attempt may take.
+ *
+ * **Not the driver's 60s default, because `GEMINI_RESEARCH_MODEL` does not
+ * answer inside it.** Measured against the live Interactions endpoint on
+ * 2026-09-04, on a request the size RESEARCH actually sends (a tool
+ * definition and ~16K characters of source text): **28.8s, 54.4s and
+ * 144.9s**, all three HTTP 200. A trivial "reply OK" against the same model
+ * measured 12s, 30.5s and 61.2s. The spread, not the median, is the number
+ * that matters — at 60s the majority of real turns are aborted mid-answer,
+ * which is exactly what the first live run of this arrangement did: the
+ * attempt timed out and the render was researched by the fallback's Flash
+ * Lite rung instead. A model the operator chose that structurally never
+ * answers is the direction implemented in name only.
+ *
+ * This is the Gemini TTS lesson of 2026-09-02 in a second place: a flat
+ * timeout below the measured cost of an ordinary request does not degrade,
+ * it *deletes* the path it guards, quietly, while every test passes.
+ *
+ * 180s is above the worst observed turn with room, and the attempt is capped
+ * at four turns (`GEMINI_RESEARCH_MAX_ITERATIONS`), so the worst case this
+ * can cost a render is about twelve minutes before it gives up and the
+ * fallback — which measured 6.5s a turn on Flash Lite — takes over. Against
+ * `render.yml`'s 180-minute job that is affordable; against a 60s timeout
+ * that never lets the model finish, it is the only way this stage runs on
+ * the model it is configured to run on.
+ */
+const GEMINI_RESEARCH_TIMEOUT_MS = 180_000;
+
+/**
  * RESEARCH's Gemini driver: **one attempt, no retries**.
  *
  * `maxAttempts: 1` is the operator's "once", enforced at the only place it
@@ -77,7 +106,7 @@ export function createGeminiResearchDriverFromEnv(
   apiKey: string,
   testOverrides?: { baseUrl?: string; fetchImpl?: typeof fetch },
 ): LlmDriver {
-  return new GeminiLlmDriver({ apiKey, limiter: createGeminiTextLimiter(), maxAttempts: 1, ...testOverrides });
+  return new GeminiLlmDriver({ apiKey, limiter: createGeminiTextLimiter(), maxAttempts: 1, timeoutMs: GEMINI_RESEARCH_TIMEOUT_MS, ...testOverrides });
 }
 
 /**
@@ -97,6 +126,12 @@ export function createGeminiResearchDriverFromEnv(
  * here is charged against a per-minute window it cannot outrun, and Groq is
  * one rung down and is not rate limited on this axis. The cheapest response
  * to any failure is to stop asking Gemini.
+ *
+ * *And the 60s default timeout, unlike RESEARCH's.* `GEMINI_REASONING_MODEL`
+ * measured 6.5s on a comparable request on 2026-09-04, an order of magnitude
+ * under the ceiling, so there is nothing here to raise — and this rung sits
+ * under SCRIPT and PLAN, which have two Groq rungs beneath them and no
+ * reason to wait three minutes before using one.
  */
 export function createGeminiReasoningDriverFromEnv(
   apiKey: string,
