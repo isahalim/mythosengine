@@ -593,11 +593,11 @@ Prerequisites and their failure modes:
 
 | Needs | If missing |
 |---|---|
-| `GROQ_API_KEY` | Nothing that reasons can run — reranking, SCRIPT, PLAN and EDIT are on `gpt-oss-120b`, CRITIC and EXPORT's listing on `gpt-oss-20b`, and RESEARCH falls back to the first — so the pipeline stops and names the variable. The Worker needs no Groq key at all since 2026-09-03 |
+| `GROQ_API_KEY` | Nothing that reasons can run — Groq is the floor under every reasoning ladder (`gpt-oss-120b` then `gpt-oss-20b` for reranking, SCRIPT, PLAN and RESEARCH's fallback; `qwen/qwen3.8-27b` then `qwen/qwen3.6-27b` for EDIT; `gpt-oss-20b` outright for CRITIC and EXPORT's listing) — so the pipeline stops and names the variable. The Worker needs no Groq key at all since 2026-09-03 |
 | **ffmpeg built with libass** | RENDER fails with `No such filter: 'ass'`. Homebrew's plain `ffmpeg` 9.0.1 bottle has no libass; `ffmpeg-full` does |
 | `edge_tts` (Python) | TTS fails. `pip install edge-tts` |
 | `assets-library` branch | No footage to draw from in `gameplay` mode; `local-seed` refuses rather than inventing a clip |
-| `GEMINI_API_KEY` | Optional, and it buys exactly two things. **Narration:** absent, narration runs on Edge TTS and the audit package records that it did. **RESEARCH's first attempt** (since 2026-09-02): four turns on `gemini-3.7-flash`, falling back to Groq on any failure, because RESEARCH is the one stage bounded by how much source text it can hold. No other reasoning stage reads it — an upgrade must never become a dependency, and this one briefly was |
+| `GEMINI_API_KEY` | Optional, and it buys three things. **Narration:** absent, narration runs on Edge TTS and the audit package records that it did. **RESEARCH's first attempt** (since 2026-09-02): four turns on `gemini-3.7-flash`, falling back to Groq on any failure, because RESEARCH is the one stage bounded by how much source text it can hold. **The top rung of the general reasoning ladder** (since 2026-09-04): `gemini-3.5-flash-lite` for SCRIPT, PLAN and reranking, stepping down to `gpt-oss-120b` and then `gpt-oss-20b` on any error. A different model id from RESEARCH's on purpose — the free tier meters 5 requests/minute per model, so the two never share a bucket. Absent the key, all three run their Groq or Edge path unslowed: an upgrade must never become a dependency, and this one briefly was on 2026-09-01 |
 | `uv` / `uvx` + Kinocut | Optional. EDIT is skipped and every clip is used as sourced, flagged in the audit package. `brew install uv` enables it |
 | `PEXELS_API_KEY` | Optional in `gameplay` mode — stage 5 then shows no preview stills and says so. **Required** in `stock_montage` mode, where FOOTAGE fails naming this variable |
 

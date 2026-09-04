@@ -1,60 +1,102 @@
 /**
  * Which model answers a reasoning stage. One file, one answer.
  *
- * **Groq `openai/gpt-oss-120b` answers SCRIPT, PLAN, EDIT and RESEARCH's
- * fallback** (operator direction, 2026-09-01, reverting the Gemini split
- * made earlier the same day). Two stages have since moved off it —
- * see `GROQ_LIGHT_MODEL` — and one has stopped calling a model at all:
- * stage 4's Ideas list went back to plain BM25 on 2026-09-03 by operator
- * direction, so the Worker again makes no model call anywhere.
- * `rerankPassages` still reorders RESEARCH's retrieval inside the pipeline,
- * and that one is here.
+ * **Every reasoning stage is a ladder now** (operator direction,
+ * 2026-09-04). A stage no longer names one model; it names an ordered list
+ * and takes the first rung that answers. `LadderLlmDriver`
+ * (src/lib/drivers/llm-ladder.ts) is the mechanism, and it is deliberately
+ * dumb: try, and on *any* driver error step down and try the next. Three
+ * ladders exist and there are no others:
  *
- * **The single exception is RESEARCH's first attempt**, which goes to
- * `GEMINI_RESEARCH_MODEL` (operator direction, 2026-09-02) and falls back
- * here on any failure. The narrowness is the point: see that constant for
- * why one intake-bound stage is worth a second provider and the other five
- * stages are not.
+ * | Stage | Ladder |
+ * |---|---|
+ * | SCRIPT, PLAN, reranking, RESEARCH's fallback | `GEMINI_REASONING_MODEL` → `GROQ_REASONING_MODEL` → `GROQ_LIGHT_MODEL` |
+ * | EDIT (Kinocut) | `EDIT_MODEL` → `EDIT_FALLBACK_MODEL` |
+ * | RESEARCH's first attempt | `GEMINI_RESEARCH_MODEL`, four turns, then the row above |
+ * | CRITIC, EXPORT's listing | `GROQ_LIGHT_MODEL` alone — unchanged |
  *
- * *Why the revert.* The Gemini free tier meters 5 requests/minute per text
- * model, and a single render spends six on RESEARCH's tool loop alone. The
- * first live run peaked at 6/5 RPM on `gemini-3.7-flash` and the render
- * failed at SCRIPT: the Groq fallback only fired on quota exhaustion, and
- * the run also drew two `500 InternalServerError`s, which is not
- * exhaustion. A per-minute ceiling a normal render cannot stay under is a
- * dependency, not an upgrade.
+ * **Why a ladder rather than one model, after 2026-09-01 said the
+ * opposite.** That day's failure was not "Gemini is unreliable", it was
+ * "Gemini was a *dependency*": five stages went there with a fallback that
+ * only fired on quota exhaustion, so the two `500 InternalServerError`s the
+ * live run drew fell straight through it and killed the render at SCRIPT.
+ * `LadderLlmDriver` fixes exactly that — it falls through on a 500, a 429, a
+ * timeout, a malformed body, anything — and it keeps two known-good Groq
+ * rungs underneath. A stage can only fail now if all three rungs fail.
  *
- * *Why 120b and not the 20b model, for the stages still here.* Groq meters
- * tokens per model per day, so every stage left on this model competes for
- * one 200K allowance (`QUOTAS.groq.tokensPerDayGptOss`). Measured on the
- * 2026-09-02 render, what remains costs ~130K a render: EDIT ~90-110K
- * across ~34 tool turns, RESEARCH ~15-25K when it falls back here, and a
- * few thousand each for SCRIPT and PLAN. **That is two renders a day, not
- * three**, and EDIT is the whole reason. The fix is fewer tool turns or a
- * shorter `EDIT_TOOLS`, not a smaller model — moving EDIT was offered on
- * 2026-09-03 and declined, because a weaker model's tool-calling degrades
- * into "every clip as sourced" quietly. `scripts/verify-quotas.mjs` and the
- * per-day figure in ARCHITECTURE.md §0 are what watch this.
+ * **Why the descent is sticky.** Once a rung fails inside a stage, that
+ * stage does not climb back up for its later calls. A 429 is a statement
+ * about the next minute, not about the last request, and re-offering a rung
+ * that just refused spends a request to learn the same thing twice — the
+ * lesson the Gemini TTS path learned on 2026-09-01 and RESEARCH's driver
+ * encodes as `maxAttempts: 1`.
  *
- * CRITIC used to share this model with SCRIPT, which was a known compromise
- * rather than an oversight: a critic on the writer's own model is grading
- * its own work. It no longer does — see `GROQ_LIGHT_MODEL`.
+ * **What this does to the token budget, which is the real reason it is
+ * safe.** Groq meters tokens per model per day, and until now essentially
+ * the whole reasoning path shared gpt-oss-120b's single 200K allowance at
+ * ~130K a render — two renders a day, with EDIT's ~90-110K being almost all
+ * of it. EDIT is on the qwen3 models now, which have their own **2M a day**
+ * allowance (`QUOTAS.groq.tokensPerDayQwen3`), so the largest consumer has
+ * left the smallest bucket. What remains on 120b is a few thousand tokens
+ * each for SCRIPT, PLAN and reranking plus RESEARCH's ~15-25K *when Gemini
+ * does not answer first* — and the daily ceiling stops being the thing that
+ * decides how many videos a day this system can make.
+ */
+
+/**
+ * The **top rung** of the general reasoning ladder: SCRIPT, PLAN, retrieval
+ * reranking, and RESEARCH's post-Gemini fallback (operator direction,
+ * 2026-09-04).
+ *
+ * *Why Flash Lite and not the model RESEARCH uses.* Gemini's free tier
+ * meters 5 requests/minute **per model**, so putting the general ladder on a
+ * different model id from `GEMINI_RESEARCH_MODEL` gives it a bucket of its
+ * own. The two never compete: RESEARCH spends at most four requests against
+ * 3.7 Flash, and a render spends at most three or four here (rerank once,
+ * SCRIPT once plus up to one repair, PLAN once). Sharing one model id would
+ * have put a render's total at eight against a ceiling of five, which is
+ * precisely the arithmetic that lost the 2026-09-01 render.
+ *
+ * *Why it is safe for it to be the weakest model of the three.* It is the
+ * rung that is tried, not the rung that is trusted. Every stage on this
+ * ladder already validates what comes back — SCRIPT and PLAN through
+ * `requestValidatedJson`'s schema check, reranking through three checks that
+ * a position was actually offered — and a rung whose answer does not
+ * validate has cost a request, not a render. Underneath it sit the two
+ * models that have been running this pipeline all week.
+ */
+export const GEMINI_REASONING_MODEL = "gemini-3.5-flash-lite";
+
+/**
+ * The **middle rung**: the model that answered SCRIPT, PLAN, reranking and
+ * RESEARCH's fallback outright from 2026-09-01 until 2026-09-04, and still
+ * answers all four whenever `GEMINI_REASONING_MODEL` does not.
+ *
+ * *Why it stays in the middle rather than at the top.* Nothing about it has
+ * got worse. It is here because it is the known-good floor of a ladder whose
+ * top rung is a free-tier model on a 5-requests-per-minute meter — the rung
+ * that makes an outage cost a request instead of a render.
+ *
+ * *What it no longer carries.* EDIT, which was ~90-110K tokens a render
+ * across ~34 tool turns and the reason 200K/day meant two renders a day, is
+ * on `EDIT_MODEL` since 2026-09-04. CRITIC and EXPORT's listing left for
+ * `GROQ_LIGHT_MODEL` on 2026-09-03. What is left here is small and mostly
+ * pre-empted by the rung above, so `QUOTAS.groq.tokensPerDayGptOss` has
+ * stopped being the constraint that decides the day's output.
  */
 export const GROQ_REASONING_MODEL = "openai/gpt-oss-120b";
 
 /**
- * RESEARCH's **first** attempt, and the only Gemini text model this system
- * names (operator direction, 2026-09-02).
+ * RESEARCH's **first** attempt, on its own Gemini model id and its own
+ * per-minute bucket (operator direction, 2026-09-02).
  *
- * *Why RESEARCH and nothing else.* RESEARCH is the one reasoning stage
- * whose output quality is bounded by how much source material it can hold
- * at once. On Groq it must fit an entire growing tool conversation inside a
- * 7,200-token per-request ceiling, and `fitToRequestBudget` gets there by
- * throwing away tool results the model already went and fetched — a
- * measurably weaker brief, recorded as `toolResultsDropped`. Gemini's
- * intake is large enough that nothing has to be dropped, which is the whole
- * of the operator's stated reason. SCRIPT, CRITIC, PLAN, EDIT and reranking
- * are not intake-bound and stay on `GROQ_REASONING_MODEL`.
+ * *Why RESEARCH gets a rung nothing else gets.* RESEARCH is the one
+ * reasoning stage whose output quality is bounded by how much source
+ * material it can hold at once. On Groq the whole tool conversation has to
+ * fit inside a 7,200-token per-request ceiling, and `fitToRequestBudget`
+ * gets there by throwing away tool results the model already went and
+ * fetched — a measurably weaker brief, recorded as `toolResultsDropped`.
+ * Gemini's intake is large enough that nothing has to be dropped.
  *
  * *Why exactly four turns.* The free tier meters 5 requests/minute per
  * model. RESEARCH's full loop is six, which is what took the render down on
@@ -62,67 +104,90 @@ export const GROQ_REASONING_MODEL = "openai/gpt-oss-120b";
  * waits on a limiter and never meets a 429 — and four turns holding whole
  * articles do more work than six holding truncations.
  *
- * *Why no ladder.* Descending to 3.6 Flash for the remaining turns would
- * buy a separate per-model bucket, and the operator considered it on
- * 2026-09-02. It was declined: Gemini's tool transcripts carry signed
- * `thought` steps, whether a second model accepts the first's signatures is
- * untested, and the failure is a bare `invalid_request` that would only
- * appear live. Groq is the fallback instead, because Groq is known to work.
- *
- * The fallback fires on **any** failure, which is the correction to the
- * deleted `withGroqFallback`: it fell back only on quota exhaustion, so the
- * two `500 InternalServerError`s the 2026-09-01 run drew went straight to
- * the floor. See `src/lib/rag/research-provider.ts`.
+ * *Why no ladder within Gemini.* Descending to another Gemini model for the
+ * remaining turns would buy a separate per-model bucket, and it was
+ * considered and declined on 2026-09-02: Gemini's tool transcripts carry
+ * signed `thought` steps, whether a second Gemini model accepts the first's
+ * signatures is untested, and the failure is a bare `invalid_request` that
+ * would only appear live. That is why this stays a single model and why
+ * `GEMINI_REASONING_MODEL` — a *different* model on a different bucket — is
+ * never spliced into RESEARCH's Gemini attempt. Below it RESEARCH descends
+ * to Groq, statelessly, which is a transcript replay that is known to work.
  */
 export const GEMINI_RESEARCH_MODEL = "gemini-3.7-flash";
 
 /**
  * Turns the Gemini attempt may spend, against a 5 requests/minute ceiling.
- * See `GEMINI_RESEARCH_MODEL`. The Groq fallback keeps RESEARCH's full
- * six — it is paced by a token bucket, not by a per-minute request count.
+ * See `GEMINI_RESEARCH_MODEL`. The Groq rungs keep RESEARCH's full six —
+ * they are paced by a token bucket, not by a per-minute request count.
  */
 export const GEMINI_RESEARCH_MAX_ITERATIONS = 4;
 
 /**
- * The lighter half of the reasoning path — **CRITIC and EXPORT's listing
- * only** (operator direction, 2026-09-03).
+ * The **bottom rung** of the general ladder, and the only model CRITIC and
+ * EXPORT's listing ever use (operator direction, 2026-09-03 for those two,
+ * 2026-09-04 for the rung).
  *
- * *Why this model exists again.* It was deleted on 2026-09-01, when every
- * reasoning stage was consolidated onto `GROQ_REASONING_MODEL`, and
- * CLAUDE.md's NEVER block recorded that as permanent. The operator's
- * direction of 2026-09-03 reverses it for exactly two stages, and a CLI
- * prompt outranks a written ADR by that document's own rule.
- *
- * *Why these two and not the others.* Groq meters tokens **per model per
- * day**, so a stage moved here stops competing with SCRIPT and RESEARCH for
- * the same 200K. That argument applies to every stage, so it cannot be the
- * whole test — the second test is what a weaker answer costs:
+ * *Why these two stages sit here alone.* Groq meters tokens per model per
+ * day, so a stage moved here stops competing for gpt-oss-120b's 200K. That
+ * argument applies to every stage, so it cannot be the whole test — the
+ * second test is what a weaker answer costs:
  *
  * - **EXPORT's listing** turns a script that is already written into a
  *   title, a description and hashtags. There is no judgement in it that a
  *   larger model resolves better, it is ~1.5K tokens a render, and it
  *   already falls back to `heuristicUploadMetadata` on any failure. Nothing
- *   downstream reads it; the operator pastes it into YouTube Studio and
- *   edits it if it is wrong.
+ *   downstream reads it; the operator pastes it into YouTube Studio.
  * - **CRITIC** is advisory by construction (ARCHITECTURE.md §5.4): its
  *   verdict never stops a signal, it only reaches the audit package. Moving
- *   it also *fixes* something. `src/config/models.ts` used to note that a
- *   critic sharing SCRIPT's model is grading its own work and that the
- *   second opinion had become a second prompt rather than a second model.
- *   It is a second model again.
+ *   it also ended the compromise where the critic graded its own writer's
+ *   work on the writer's own model.
  *
- * *What deliberately did not move.* EDIT and PLAN were both considered on
- * 2026-09-03 and both declined by the operator. EDIT is the largest consumer
- * in the system (~90-110K tokens a render, ~34 tool turns), so moving it
- * would have been the biggest budget win available — and it is precisely
- * the stage where a weaker model's tool-calling degrades quietly into "every
- * clip as sourced". PLAN's queries are the difference between footage that
- * illustrates the argument and a crystal mobile. Both stay on
- * `GROQ_REASONING_MODEL`, which keeps that model at ~130K tokens a render
- * and two renders a day as the practical ceiling.
- *
- * SCRIPT and RESEARCH are not candidates and never were: one is the product,
- * and the other is already reading sources truncated by
- * `fitToRequestBudget`.
+ * *Why it is also the floor under SCRIPT, PLAN and reranking.* Those three
+ * would previously fail outright when 120b was rate-limited or out of daily
+ * tokens, and SCRIPT failing outright means no video. A third rung on a
+ * separate daily bucket turns "no video" into "today's script was written by
+ * the small model, and the audit package says so" — which is a trade the
+ * operator can see and re-run, unlike a dead render.
  */
 export const GROQ_LIGHT_MODEL = "openai/gpt-oss-20b";
+
+/**
+ * EDIT's model — the Kinocut tool loop, and nothing else (operator
+ * direction, 2026-09-04).
+ *
+ * *Why EDIT left gpt-oss-120b.* Not because 120b was doing it badly. EDIT is
+ * by far the largest consumer in the system — ~90-110K tokens a render
+ * across ~34 tool turns — and on the shared gpt-oss daily allowance of 200K
+ * that single stage was what made two renders a day the ceiling. The qwen3
+ * models carry a **2M** token-per-day allowance
+ * (`QUOTAS.groq.tokensPerDayQwen3`, the same reason the deleted footage
+ * browser agent ran here), so moving EDIT does not shrink a budget, it
+ * changes which budget the stage spends and empties the one that binds.
+ *
+ * *What makes the move safe now, when moving EDIT to a smaller model was
+ * offered and declined on 2026-09-03.* Two things changed on 2026-09-04.
+ * `EDIT_TOOLS` is three tools rather than nine — measure, detect scenes,
+ * trim — so the tool-calling judgement being asked of the model is much
+ * narrower than "pick one of five grades as well". And the failure mode that
+ * made a weaker model frightening here is the one this stage was built
+ * around from the start: EDIT is not allowed to fail a render at any
+ * granularity, so a model that loses the thread costs a clip its trim and is
+ * recorded as "left as sourced" in the audit package.
+ */
+export const EDIT_MODEL = "qwen/qwen3.8-27b";
+
+/**
+ * EDIT's second rung, and where the stage **finishes the run** once the
+ * first rung has failed once (operator direction, 2026-09-04: "fallback and
+ * continue with the rest of the work").
+ *
+ * The descent is sticky for the whole stage rather than per clip, and that
+ * is the operator's wording made literal. A tool loop that has just been
+ * refused mid-clip will be refused again on the next clip a few seconds
+ * later — the thing that refused it is a per-minute or per-day meter, and
+ * neither has moved. Re-offering the top rung once per clip would spend
+ * eight failures to learn one fact and stretch the stage out by the
+ * limiter's wait each time.
+ */
+export const EDIT_FALLBACK_MODEL = "qwen/qwen3.6-27b";

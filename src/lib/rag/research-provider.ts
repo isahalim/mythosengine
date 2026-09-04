@@ -1,5 +1,6 @@
 import { ArticleFetchDriver } from "../drivers/article-fetch.ts";
 import { createGeminiResearchDriverFromEnv } from "../drivers/resolve-gemini-driver.ts";
+import { createGroqReasoningLadder } from "../drivers/resolve-ladder.ts";
 import type { DriverError, LlmDriver } from "../drivers/types.ts";
 import type { Result } from "../result.ts";
 import { GEMINI_RESEARCH_MAX_ITERATIONS, GEMINI_RESEARCH_MODEL, GROQ_REASONING_MODEL } from "../../config/models.ts";
@@ -34,13 +35,23 @@ import type { Retriever } from "./retriever.ts";
  *    429, a timeout, malformed JSON, a brief that fails schema validation
  *    and a loop that never stops calling tools are all the same event here:
  *    stop asking Gemini, ask Groq.
- * 3. *No ladder.* Descending to 3.6 Flash for the remaining turns would buy
- *    a separate per-model bucket, and it was considered and declined on
- *    2026-09-02: Gemini tool transcripts carry signed `thought` steps, and
- *    whether a second model accepts the first's signatures is untested. The
- *    fallback is Groq, which is known to work.
+ * 3. *No second Gemini attempt.* Descending to another Gemini model for the
+ *    remaining turns would buy a separate per-model bucket, and it was
+ *    considered and declined on 2026-09-02: Gemini tool transcripts carry
+ *    signed `thought` steps, and whether a second model accepts the first's
+ *    signatures is untested. The fallback is Groq, which is known to work.
  *
- * Absent `GEMINI_API_KEY` this is simply today's Groq path, unchanged and
+ * **The Groq side is a two-rung ladder since 2026-09-04** —
+ * `gpt-oss-120b` and then `gpt-oss-20b`, on separate daily token
+ * allowances (`createGroqReasoningLadder`). That is the operator's
+ * "then fall back to gpt-oss-20b" applied here as it is everywhere else the
+ * 120b model is used. What it deliberately does *not* pick up is the
+ * `GEMINI_REASONING_MODEL` rung the other stages get on top: this stage has
+ * already had its Gemini attempt, on the model and the intake budget chosen
+ * for it, and giving RESEARCH a second one would be the 2026-09-02 decision
+ * reversed by accident rather than by direction.
+ *
+ * Absent `GEMINI_API_KEY` this is simply the Groq ladder, unchanged and
  * unslowed — the same rule that governs the Gemini TTS upgrade. An upgrade
  * must not become a dependency.
  */
@@ -119,10 +130,16 @@ export interface ResearchOutcome {
  */
 export function selectResearchProviders(groqLlm: LlmDriver, geminiApiKey: string | undefined): ResearchProviders {
   const groq: ResearchAttempt = {
-    llm: groqLlm,
+    // gpt-oss-120b, then gpt-oss-20b on any failure. The bounds below are
+    // sized for Groq's 7,200-token per-request ceiling and apply to both
+    // rungs, so a mid-loop step down cannot hand the next model a request
+    // it will refuse with a 413.
+    llm: createGroqReasoningLadder(groqLlm, "RESEARCH"),
     // Default 6,000 characters per source, default 8 results, default six
     // turns, default 7,200-token ceiling: this is today's path, untouched.
     articles: new ArticleFetchDriver(),
+    // The rung asked for first. `researchSignal` records the model that
+    // actually answered (`modelUsed`), not this one.
     options: { model: GROQ_REASONING_MODEL },
   };
 

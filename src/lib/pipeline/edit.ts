@@ -1,13 +1,14 @@
 import { access } from "node:fs/promises";
 import type { DriverError, LlmDriver, LlmMessage, ToolDefinition } from "../drivers/types.ts";
-import { GROQ_REASONING_MODEL } from "../../config/models.ts";
+import { EDIT_MODEL } from "../../config/models.ts";
 import { McpStdioClient } from "../drivers/mcp-stdio.ts";
 import { ok, type Result } from "../result.ts";
 
 /**
- * EDIT — Gemini driving Kinocut over MCP to find the moment in each sourced
- * clip that is actually worth showing, and to grade it (operator direction,
- * 2026-09-01).
+ * EDIT — a model driving Kinocut over MCP to find the moment in each sourced
+ * clip that is actually worth showing, and cut to it (operator direction,
+ * 2026-09-01; narrowed from "and grade it" to "and cut to it" on
+ * 2026-09-04).
  *
  * **Where this sits, and what it is explicitly not.** It runs between
  * SOURCE and RENDER, and it edits clips *in place in the work directory* —
@@ -27,13 +28,24 @@ import { ok, type Result } from "../result.ts";
  * (ARCHITECTURE.md §5.2.5), and it is the only contract under which adding
  * a stage to a working pipeline is a safe thing to do.
  *
- * **Why a curated tool subset.** Kinocut exposes 196 MCP tools. Their
- * schemas serialize to well over a hundred kilobytes, and a tool-calling
- * loop re-sends every schema on every turn — so offering all of them would
- * spend a large share of a 250K-token daily budget on the *menu*, before
- * the model looked at a single frame. `EDIT_TOOLS` is the shortlist that
- * matches what this stage is for: measure the clip, find its scenes, cut to
- * the best one, and grade it.
+ * **Why a curated tool subset, and why it is now three tools.** Kinocut
+ * exposes 196 MCP tools. Their schemas serialize to well over a hundred
+ * kilobytes, and a tool-calling loop re-sends every schema on every turn —
+ * so offering all of them would spend a large share of the daily token
+ * budget on the *menu*, before the model looked at a single frame. Nine
+ * tools measured at ~2.1K tokens of menu on every one of ~34 turns in the
+ * 2026-09-02 render; the operator cut the list to three on 2026-09-04, which
+ * removes the six grading tools and roughly two thirds of that overhead.
+ * What is left is exactly the sentence this stage is for: measure the clip,
+ * find its scenes, cut to the best one.
+ *
+ * **What that gives up, said plainly.** Grading and stylising are gone from
+ * this stage — no vignette, glow, chromatic aberration, scanlines, noise or
+ * `video_filter`. Nothing else in the pipeline picks them up, so a clip is
+ * composited with the colour it was sourced with. That is a deliberate
+ * trade: the grade was one optional subtle call the prompt already told the
+ * model to skip unless it suited the shot, and it was carried by six of the
+ * nine schemas being re-sent on every turn of every clip.
  */
 
 /**
@@ -50,18 +62,20 @@ export const EDIT_TOOLS: readonly string[] = [
   "video_info",
   // The actual "find key moments" tool — scene-change detection.
   "video_detect_scenes",
-  // Cut to the moment worth showing.
+  // Cut to the moment worth showing. The last thing this stage does.
   "video_trim",
-  // Grade and stylise.
-  "video_filter",
-  "effect_vignette",
-  "effect_glow",
-  "effect_chromatic_aberration",
-  "effect_scanlines",
-  "effect_noise",
 ];
 
-/** How many tool calls one clip may spend. Six is enough to probe, detect scenes, trim and apply two effects; more is a model that has lost the thread. */
+/**
+ * How many tool calls one clip may spend.
+ *
+ * The work is three calls — probe, detect scenes, trim — so six leaves room
+ * for a re-detect at a different threshold or a second trim that corrects a
+ * window, and no more. Deliberately not cut to four alongside the tool list
+ * on 2026-09-04: the ceiling is not what the stage normally spends, it is
+ * what stops a model that has lost the thread, and a loop that ends early
+ * because it ran out of turns leaves the clip as sourced.
+ */
 const MAX_TOOL_ITERATIONS = 6;
 
 export interface EditableClip {
@@ -92,7 +106,15 @@ export interface EditResult {
   clips: EditedClip[];
   /** Null when EDIT ran. Set when the whole stage was unavailable, in which case every clip is unedited. */
   degradedReason: string | null;
-  /** Which model actually drove the edit, for the audit package. */
+  /**
+   * Which model actually drove the edit, for the audit package — every
+   * distinct one that answered, comma-joined, in the order it first did.
+   *
+   * Normally one. Two when the EDIT ladder stepped down partway through the
+   * clips, which is a thing a reviewer has to be able to see: "half this
+   * video's clips were trimmed by the smaller model" is not recoverable from
+   * the video. Null when no model answered at all.
+   */
   model: string | null;
 }
 
@@ -120,8 +142,8 @@ function buildPrompt(clip: EditableClip, workDir: string): string {
   what this shot is doing in the argument: ${clip.intent}
 </clip>
 
-The narrator is arguing over this footage. Your job is to make this clip the
-most watchable ${clip.durationS.toFixed(2)} seconds it can be, and nothing more.
+The narrator is arguing over this footage. Your job is to find the most
+watchable ${clip.durationS.toFixed(2)} seconds in it, and nothing more.
 
 Do this:
 1. Call video_info to learn the clip's real duration and resolution.
@@ -130,10 +152,11 @@ Do this:
    window that is still at least ${clip.durationS.toFixed(2)}s long. Prefer
    movement and a clear subject; avoid title cards, logos, letterboxed
    intros and near-static frames.
-3. Optionally apply ONE subtle grade or effect if it genuinely suits the
-   shot's intent above. Subtle. This is a background behind burned-in
-   captions and an animated host, so anything strong makes the text
-   unreadable and the host hard to see.
+
+You have exactly three tools: video_info, video_detect_scenes and video_trim.
+There are no others. Do not try to grade, colour, filter or stylise the clip —
+this stage no longer does that, and a call to any other tool will be refused
+and will cost you a turn.
 
 Rules:
 - Write every output to a NEW file inside ${workDir}. Never overwrite an input.
@@ -167,13 +190,23 @@ function readFinalPath(content: string): string | null {
  * improved is still a clip, and the montage slot it fills is more valuable
  * than the improvement.
  */
-async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdioClient, deps: EditDeps): Promise<EditedClip> {
+async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdioClient, deps: EditDeps): Promise<{ clip: EditedClip; modelUsed: string | null }> {
   const onEvent = deps.onEvent ?? ((event: string) => console.warn(event));
   const maxIterations = deps.maxIterations ?? MAX_TOOL_ITERATIONS;
   const toolsRun: string[] = [];
   const allowed = new Set(tools.map((tool) => tool.name));
 
-  const unedited = (reason: string): EditedClip => ({ position: clip.position, filePath: clip.filePath, edited: false, toolsRun, skippedReason: reason });
+  // The model that actually answered, which on the EDIT ladder is not
+  // necessarily the one that was asked for: a failure on `EDIT_MODEL` moves
+  // this clip and every clip after it to `EDIT_FALLBACK_MODEL`. Null until a
+  // request has come back at all, so a clip skipped before any completion
+  // does not claim a model spoke for it.
+  let modelUsed: string | null = null;
+
+  const unedited = (reason: string): { clip: EditedClip; modelUsed: string | null } => ({
+    clip: { position: clip.position, filePath: clip.filePath, edited: false, toolsRun, skippedReason: reason },
+    modelUsed,
+  });
 
   const messages: LlmMessage[] = [{ role: "system", content: buildPrompt(clip, deps.workDir) }];
 
@@ -188,7 +221,9 @@ async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdi
     }
 
     const completion = await deps.llm.complete({
-      model: GROQ_REASONING_MODEL,
+      // The ladder overrides this; a plain driver honours it. Either way the
+      // model that actually answered is read back off the response below.
+      model: EDIT_MODEL,
       messages,
       tools,
       toolChoice: "auto",
@@ -205,6 +240,7 @@ async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdi
       temperature: 0.3,
     });
     if (!completion.ok) return unedited(`${completion.error.kind}: ${completion.error.message}`);
+    modelUsed = completion.value.modelUsed ?? EDIT_MODEL;
 
     const call = completion.value.toolCalls?.[0];
     if (call === undefined) {
@@ -220,7 +256,7 @@ async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdi
       } catch {
         return unedited(`the model named an output file that does not exist: ${finalPath}`);
       }
-      return { position: clip.position, filePath: finalPath, edited: true, toolsRun, skippedReason: null };
+      return { clip: { position: clip.position, filePath: finalPath, edited: true, toolsRun, skippedReason: null }, modelUsed };
     }
 
     if (isLast) return unedited(`the model kept calling tools through all ${maxIterations} turns without producing a clip`);
@@ -298,17 +334,22 @@ export async function editClips(clips: EditableClip[], deps: EditDeps): Promise<
     if (tools.length === 0) return unedited("this Kinocut build exposes none of the tools EDIT uses — every clip used unedited");
 
     const edited: EditedClip[] = [];
-    let model: string | null = null;
+    // Every distinct model that answered, in the order it first did. Normally
+    // one; two when the ladder stepped down partway through the clips, and
+    // the audit package has to say so rather than name only the model the
+    // stage started on.
+    const modelsUsed: string[] = [];
     for (const clip of clips) {
-      const result = await editOne(clip, tools, mcp, deps);
+      const { clip: result, modelUsed } = await editOne(clip, tools, mcp, deps);
       edited.push(result);
-      model ??= GROQ_REASONING_MODEL;
+      if (modelUsed !== null && !modelsUsed.includes(modelUsed)) modelsUsed.push(modelUsed);
       onEvent(
         result.edited
           ? `EDIT: shot ${clip.position} edited via ${result.toolsRun.join(" -> ") || "no tools"}.`
           : `EDIT: shot ${clip.position} left as sourced — ${result.skippedReason ?? "no reason given"}.`,
       );
     }
+    const model = modelsUsed.length === 0 ? null : modelsUsed.join(", ");
 
     return ok({ clips: edited, degradedReason: null, model });
   } finally {

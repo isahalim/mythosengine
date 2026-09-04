@@ -179,7 +179,7 @@ interface CharacterProvenance {
  * is a clip whose footage provenance window is no longer the whole story.
  */
 interface EditProvenance {
-  /** The model that drove the edit, or null when EDIT did not run. */
+  /** The model that drove the edit — both, comma-joined, when the EDIT ladder stepped down partway through the clips. Null when EDIT did not run. */
   model: string | null;
   /** Why EDIT did not run, or null when it did. */
   degradedReason: string | null;
@@ -193,25 +193,30 @@ interface EditProvenance {
  * from the export alone, months later, without knowing which build produced
  * it — and this repo has changed that answer three times in a week.
  *
- * As of 2026-09-02 the answer genuinely varies between exports rather than
- * being the same pair repeated: RESEARCH tries Gemini first and falls back
- * to Groq on any failure (src/lib/rag/research-provider.ts), so two videos
- * rendered an hour apart can have briefs from different providers, built
- * from different amounts of source text. `fallbackReason` is what makes
- * that legible instead of merely visible.
+ * Since 2026-09-04 the answer genuinely varies between exports rather than
+ * being the same pair repeated, and it varies per *stage*: every reasoning
+ * stage but CRITIC is a ladder that steps down on any failure
+ * (src/lib/drivers/llm-ladder.ts), so two videos rendered an hour apart can
+ * have been written, planned and edited by different models. RESEARCH also
+ * varies by provider, and by how much source text its provider could hold.
+ * `fallbackReason` is what makes all of that legible instead of merely
+ * visible, and RENDER reads every line off the ladder that made the calls
+ * rather than writing model ids down by hand.
  */
 interface StageProvenance {
   stage: string;
   provider: "groq" | "gemini";
   model: string;
   /**
-   * Why this stage is not on the provider it would have preferred, or null
-   * when nothing was downgraded.
+   * Why this stage is not on the model it would have preferred, or null when
+   * nothing was downgraded.
    *
-   * Only RESEARCH can be non-null today; every other stage has one provider
-   * and no fallback to explain. A reviewer reading "groq" here without a
-   * reason would have no way to tell a deliberate configuration from a
-   * quota failure.
+   * Non-null on **any** stage since 2026-09-04: every reasoning stage but
+   * CRITIC is a ladder now, and each one steps down on its own. A reviewer
+   * reading "groq / gpt-oss-20b" here without a reason would have no way to
+   * tell a deliberate configuration from a quota failure — and with three
+   * rungs, "the small model wrote today's script because the other two were
+   * rate-limited" is a thing that can actually happen.
    */
   fallbackReason: string | null;
 }
@@ -243,7 +248,7 @@ export interface AuditSummaryInput {
   character: CharacterProvenance | null;
   /** What EDIT did to each clip. Null only for callers that predate the stage. */
   edit: EditProvenance | null;
-  /** Which provider and model answered RESEARCH, SCRIPT and PLAN. */
+  /** Which provider and model answered each reasoning stage — RESEARCH, RERANK, SCRIPT, CRITIC, PLAN and EDIT. */
   stages: StageProvenance[];
   originalityScore: number | null;
   minOriginalityScore: number;

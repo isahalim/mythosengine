@@ -44,6 +44,8 @@ import { PexelsDriver } from "../../src/lib/drivers/pexels.ts";
 import { GroqWhisperDriver } from "../../src/lib/drivers/groq-whisper.ts";
 import { FfmpegRenderDriver } from "../../src/lib/drivers/render-ffmpeg.ts";
 import { createGroqDriverFromEnv, createGroqLimiter } from "../../src/lib/drivers/resolve-groq-driver.ts";
+import { createEditLadder, createReasoningLadders } from "../../src/lib/drivers/resolve-ladder.ts";
+import type { LadderUse } from "../../src/lib/drivers/llm-ladder.ts";
 import { GEMINI_RESEARCH_MODEL, GROQ_LIGHT_MODEL, GROQ_REASONING_MODEL } from "../../src/config/models.ts";
 import { RerankingRetriever } from "../../src/lib/rag/rerank.ts";
 import { editClips, type EditableClip } from "../../src/lib/pipeline/edit.ts";
@@ -279,6 +281,49 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
   // other into a 429.
   const llm = createGroqDriverFromEnv(env.groqApiKey, createGroqLimiter());
 
+  // Every reasoning stage is a ladder since 2026-09-04 (operator direction):
+  // Gemini Flash Lite, then gpt-oss-120b, then gpt-oss-20b, each rung tried
+  // only when the one above it errored. One ladder per stage, over one set
+  // of drivers — the stickiness has to be per stage so a rate-limited rerank
+  // does not decide where SCRIPT starts, and the drivers have to be shared
+  // because the rate limits are per account and per model. CRITIC and
+  // EXPORT's listing are the two stages with no ladder at all: they are on
+  // gpt-oss-20b outright and both already fail soft.
+  const ladders = createReasoningLadders(llm, env.geminiApiKey);
+  if (ladders.geminiUnavailableReason !== null) console.warn(`REASONING: ${ladders.geminiUnavailableReason}`);
+  const rerankLadder = ladders.forStage("RERANK");
+  const scriptLadder = ladders.forStage("SCRIPT");
+  const planLadder = ladders.forStage("PLAN");
+  // EDIT's ladder is its own pair of models on their own daily allowance —
+  // qwen3.8-27b, then qwen3.6-27b for the rest of the run. No Gemini rung: a
+  // tool loop of ~34 turns cannot live inside 5 requests a minute.
+  const editLadder = createEditLadder(llm);
+
+  /**
+   * What a stage actually ran on, for the audit package.
+   *
+   * Read from the ladder immediately after the stage, never assumed: the
+   * whole point of the arrangement is that the answer differs between
+   * renders, and a hard-coded model id here would be the same silent drift
+   * CRITIC had until 2026-09-03.
+   *
+   * A null `lastUsed()` means no rung ever returned a completion — either
+   * the stage made no model call at all (reranking skips one under three
+   * candidates) or every rung failed and the stage took its degrade path.
+   * Both are recorded as exactly that rather than as a model that spoke.
+   */
+  const stageRan = (stage: string, ladder: { lastUsed(): LadderUse | null }, fallbackReason: string | null = null) => {
+    const used = ladder.lastUsed();
+    return used === null
+      ? {
+          stage,
+          provider: "groq" as const,
+          model: GROQ_REASONING_MODEL,
+          fallbackReason: fallbackReason ?? "no model answered — the stage either made no call or fell through every rung to its degrade path",
+        }
+      : { stage, provider: used.provider, model: used.model, fallbackReason: fallbackReason ?? used.fallbackReason };
+  };
+
   // ---- RESEARCH (RAG: BM25 retrieval + live source reads, driven by tool-calling) ----
   // Deliberately not fatal. A retrieval outage, a rate limit, or a model
   // that cannot produce a citable brief costs this render its grounding and
@@ -289,11 +334,11 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
   const researchRunId = await startRun(env.db, "research", traceId);
   // BM25 finds the candidates; the model orders them (src/lib/rag/rerank.ts).
   // Reranking is wrapped around the retriever rather than built into it, so
-  // a reranker outage leaves plain BM25 retrieval in place. Reranking stays
-  // on Groq even when RESEARCH itself is on Gemini: it is a short,
-  // fixed-size call with nothing to gain from a larger intake, and every
-  // Gemini request it made would come out of the four RESEARCH has.
-  const retriever = new RerankingRetriever(new SignalsBm25Retriever(env.db), llm);
+  // a reranker outage leaves plain BM25 retrieval in place. It is on the
+  // general ladder like SCRIPT and PLAN, and its Gemini rung costs RESEARCH
+  // nothing: the ladder's model id is not RESEARCH's, and Gemini meters
+  // requests per model, so this call never comes out of RESEARCH's four.
+  const retriever = new RerankingRetriever(new SignalsBm25Retriever(env.db), rerankLadder);
 
   // Gemini 3.7 Flash first, Groq on any failure (operator direction,
   // 2026-09-02). Both attempts and their bounds are configured in
@@ -320,7 +365,7 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
   // ---- SCRIPT (v2 discourse format: beats with a `move`, plan v2 §4) ----
   const targetDurationS = directive.targetDurationS ?? DEFAULT_TARGET_DURATION_S;
   const scriptRunId = await startRun(env.db, "script", traceId);
-  const scriptResult = await generateDiscourseScript(env.rawClient, chosenSignal, llm, targetDurationS, research, Date.now, undefined, traceId, GROQ_REASONING_MODEL);
+  const scriptResult = await generateDiscourseScript(env.rawClient, chosenSignal, scriptLadder, targetDurationS, research, Date.now, undefined, traceId, GROQ_REASONING_MODEL);
   if (!scriptResult.ok) {
     await finishRun(env.db, scriptRunId, "failed", scriptResult.error.kind);
     throw new Error(`SCRIPT failed: ${scriptResult.error.message}`);
@@ -381,7 +426,7 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
     debateQuestion: script.debateQuestion,
     topic: claimedPick?.topic ?? null,
   };
-  const planResult = await planShots(llm, planInput, { model: GROQ_REASONING_MODEL });
+  const planResult = await planShots(planLadder, planInput, { model: GROQ_REASONING_MODEL });
   // planShots never returns an error — the worst case is the heuristic plan.
   const plan = planResult.ok ? planResult.value : heuristicPlan({ hook: script.hook, beats: script.beats ?? [], body: script.body, debateQuestion: script.debateQuestion, topic: null }, "PLAN returned an error");
   await finishRun(env.db, planRunId, plan.degradedReason === null ? "succeeded" : "degraded", plan.degradedReason ?? undefined);
@@ -600,7 +645,7 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
       const shot = shotAt(slot.position);
       return { position: slot.position, filePath: shot.filePath, durationS: slot.durationS, intent: shot.intent, query: shot.query, provider: shot.provider };
     });
-    const editResult = await editClips(editableClips, { llm, workDir });
+    const editResult = await editClips(editableClips, { llm: editLadder, workDir });
     // editClips never returns an error — the worst case is every clip unedited.
     const edits = editResult.ok ? editResult.value : { clips: editableClips.map((clip) => ({ position: clip.position, filePath: clip.filePath, edited: false, toolsRun: [], skippedReason: "EDIT returned an error" })), degradedReason: "EDIT returned an error", model: null };
     const editedCount = edits.clips.filter((clip) => clip.edited).length;
@@ -777,8 +822,15 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
           : null,
       edit: { model: edits.model, degradedReason: edits.degradedReason, clips: edits.clips.map(({ position, edited, toolsRun, skippedReason }) => ({ position, edited, toolsRun, skippedReason })) },
       // Which provider and model actually answered each reasoning stage, and
-      // why it was not the preferred one. Only RESEARCH can report a
-      // fallback: it is the only stage with two providers.
+      // why it was not the preferred one.
+      //
+      // Every line but CRITIC's is now read back off the thing that made the
+      // call rather than written down here. Since 2026-09-04 each of these
+      // stages is a ladder that steps down on any failure, so two renders an
+      // hour apart can legitimately have been written by different models —
+      // which makes this block the only place a reviewer can find out that
+      // today's script came from the small model because the other two were
+      // rate-limited.
       stages: [
         // The model its brief recorded, not the one it was handed — that is
         // the one whose citations a reviewer is checking. A failed stage has
@@ -789,15 +841,21 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
           model: research?.model ?? (researchOutcome.provider === "gemini" ? GEMINI_RESEARCH_MODEL : GROQ_REASONING_MODEL),
           fallbackReason: researchOutcome.fallbackReason,
         },
-        { stage: "SCRIPT", provider: "groq" as const, model: GROQ_REASONING_MODEL, fallbackReason: null },
-        // On the lighter model since 2026-09-03, and recorded here for that
-        // reason: CRITIC's originality score is the one number in the audit
-        // package a reviewer weighs against the script itself, and "which
-        // model graded this" is not recoverable from the score. It is also
-        // no longer the model that wrote the script, which is the whole
-        // point of moving it (src/config/models.ts).
+        stageRan("RERANK", rerankLadder),
+        stageRan("SCRIPT", scriptLadder),
+        // The one stage with no ladder to read, and the one line still
+        // written by hand. On the lighter model since 2026-09-03, and
+        // recorded for that reason: CRITIC's originality score is the one
+        // number in the audit package a reviewer weighs against the script
+        // itself, and "which model graded this" is not recoverable from the
+        // score. It is also no longer the model that wrote the script, which
+        // is the whole point of moving it (src/config/models.ts).
         { stage: "CRITIC", provider: "groq" as const, model: GROQ_LIGHT_MODEL, fallbackReason: criticDegradedReason },
-        { stage: "PLAN", provider: "groq" as const, model: GROQ_REASONING_MODEL, fallbackReason: null },
+        stageRan("PLAN", planLadder),
+        // EDIT names its models in `edit.model` as well, because that is the
+        // field the Metadata sheet reads; this line is what makes it
+        // answerable in the same place as the others.
+        stageRan("EDIT", editLadder, edits.degradedReason),
       ],
       originalityScore: critic?.originalityScore ?? null,
       minOriginalityScore: directive.minOriginalityScore,

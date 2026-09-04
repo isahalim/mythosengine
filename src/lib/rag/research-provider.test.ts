@@ -10,7 +10,7 @@ import {
   selectResearchProviders,
   type ResearchProviders,
 } from "./research-provider.ts";
-import { GEMINI_RESEARCH_MAX_ITERATIONS, GEMINI_RESEARCH_MODEL, GROQ_REASONING_MODEL } from "../../config/models.ts";
+import { GEMINI_RESEARCH_MAX_ITERATIONS, GEMINI_RESEARCH_MODEL, GROQ_LIGHT_MODEL, GROQ_REASONING_MODEL } from "../../config/models.ts";
 
 const PROMPT = "<role>test researcher</role><topic>{{signal_title}}</topic>";
 const SIGNAL = { id: "sig1", title: "GTA VI delayed to 2027" };
@@ -103,6 +103,30 @@ describe("selectResearchProviders", () => {
     // from its real 413, and 8 search results.
     expect(selection.groq.options).toEqual({ model: GROQ_REASONING_MODEL });
     expect(selection.unavailableReason).toBeNull();
+  });
+
+  // The Groq side became a two-rung ladder on 2026-09-04. What it must not
+  // pick up is the general ladder's Gemini rung on top: RESEARCH has already
+  // had its Gemini attempt, on its own model and its own four-turn budget,
+  // and a second one would reverse the 2026-09-02 decision by accident.
+  it("steps the Groq attempt down to the light model, and never to a second Gemini one", async () => {
+    const asked: string[] = [];
+    const groq: LlmDriver = {
+      complete(req) {
+        asked.push(req.model);
+        return Promise.resolve(
+          req.model === GROQ_REASONING_MODEL
+            ? err({ kind: "rate_limited", message: "429", retryable: true } as DriverError)
+            : ok({ content: "{}", finishReason: "stop", quotaRemaining: null, tokensUsed: null } as LlmResponse),
+        );
+      },
+    };
+
+    const selection = selectResearchProviders(groq, undefined);
+    await selection.groq.llm.complete({ model: GROQ_REASONING_MODEL, messages: [{ role: "system", content: "hi" }] });
+
+    expect(asked).toEqual([GROQ_REASONING_MODEL, GROQ_LIGHT_MODEL]);
+    expect(asked.some((model) => model.startsWith("gemini"))).toBe(false);
   });
 
   it("names the model each provider is asked for, rather than letting a stage inline one", () => {

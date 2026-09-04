@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EDIT_TOOLS, editClips, type EditableClip } from "./edit.ts";
-import { GROQ_REASONING_MODEL } from "../../config/models.ts";
+import { EDIT_MODEL } from "../../config/models.ts";
 import type { DriverError, LlmDriver, LlmRequest, ToolDefinition } from "../drivers/types.ts";
 import { err, ok } from "../result.ts";
 
@@ -73,6 +73,9 @@ describe("editClips", () => {
   // Same reason as rerank's: EDIT names its own model, and a wrong one
   // fails soft to "every clip as sourced" — a degradation that looks
   // exactly like Kinocut being unavailable and is easy to misread as one.
+  // Since 2026-09-04 that model is EDIT's own, not the general reasoning
+  // one: a plain driver is asked for `EDIT_MODEL`, and the ladder RENDER
+  // hands it overrides that with the same id and then qwen3.6-27b beneath.
   it("asks the reasoning model the pipeline actually runs on", async () => {
     writeFileSync(editedPath, "video");
     const asked: string[] = [];
@@ -84,7 +87,7 @@ describe("editClips", () => {
       },
     };
     await editClips([clip()], deps(llm));
-    expect(asked).toEqual([GROQ_REASONING_MODEL]);
+    expect(asked).toEqual([EDIT_MODEL]);
   });
 
   it("returns the edited file when the model produces one", async () => {
@@ -101,7 +104,7 @@ describe("editClips", () => {
 
   it("offers only the curated shortlist, never all 196 of Kinocut's tools", async () => {
     // Every schema is re-sent on every turn, so offering the whole surface
-    // would spend a large share of a 250K/day budget on the menu alone.
+    // would spend a large share of the daily budget on the menu alone.
     const { llm, offered } = scripted([{ text: `FINAL: /tmp/sourced-0.mp4` }]);
     await editClips([clip()], deps(llm));
 
@@ -109,6 +112,38 @@ describe("editClips", () => {
     expect(names.sort()).toEqual([...EDIT_TOOLS].sort());
     expect(names).not.toContain("video_publish_gate");
     expect(names).not.toContain("hyperframes_render");
+  });
+
+  // Spelled out rather than left to `EDIT_TOOLS`, because the list is the
+  // operator's instruction of 2026-09-04 and not an implementation detail:
+  // three tools, and the six grading tools gone. A tenth tool added back
+  // costs every turn of every clip its schema, and nothing else would notice.
+  it("offers exactly three tools — measure, detect scenes, trim", () => {
+    expect([...EDIT_TOOLS]).toEqual(["video_info", "video_detect_scenes", "video_trim"]);
+  });
+
+  // "Fallback and continue with the rest of the work." The ladder is sticky,
+  // so the second clip is already on the second model — and the audit
+  // package has to name both rather than only the one the stage started on.
+  it("records every model that answered when the ladder steps down mid-run", async () => {
+    writeFileSync(editedPath, "video");
+    let turn = 0;
+    const llm: LlmDriver = {
+      complete: () => {
+        turn += 1;
+        // The ladder's own rung is what a real EDIT sees here; this stands
+        // in for one by reporting a different model than it was asked for.
+        return Promise.resolve(
+          ok({ content: `FINAL: ${editedPath}`, finishReason: "completed", quotaRemaining: null, tokensUsed: 1, modelUsed: turn === 1 ? EDIT_MODEL : "qwen/qwen3.6-27b" }),
+        );
+      },
+    };
+
+    const result = await editClips([clip(), clip({ position: 1 })], deps(llm));
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.model).toBe(`${EDIT_MODEL}, qwen/qwen3.6-27b`);
   });
 
   it("keeps the sourced clip when the model decides nothing needs changing", async () => {

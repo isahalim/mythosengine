@@ -10,8 +10,8 @@
 
 | Service | Permanent free? | Card-free? | Role |
 |---|---|---|---|
-| **Google Gemini**, text models | Yes — **5 requests/minute and 250K tokens/day _per model_** (read off the operator's own AI Studio rate-limit page, 2026-09-01) | **Yes — RESEARCH's first attempt only, since 2026-09-02** | **One stage, four requests.** Gemini drove RESEARCH, reranking, SCRIPT, PLAN and EDIT for a few hours on 2026-09-01 and the operator reverted it the same day: 5 req/min is below what a whole render needs, and the first live run peaked at 6/5 on `gemini-3.7-flash`, drew 429s and two 500s, and lost the render at SCRIPT. It returned on 2026-09-02 for **RESEARCH alone**, capped at four turns so the per-minute ceiling is never approached, with Groq as the fallback on any failure (§5.2.5). `GeminiLadderDriver` and `withGroqFallback` stay deleted — there is no ladder, and the fallback is Groq. Everything else on the reasoning path is Groq |
-| **Groq Cloud** (`openai/gpt-oss-120b`) | Yes — rate-limited, no credit system. ~30 req/min, ~8k tokens/min, ~14.4k req/day, enforced per organization. **Limits are per-model, and the one that binds is tokens-per-day:** 200K for gpt-oss | **Yes** | **Every reasoning stage and every tool loop**, named once in `src/config/models.ts`. On `gpt-oss-120b`: retrieval reranking (§5.2.4), SCRIPT, PLAN (§5.4.5), EDIT's Kinocut loop (§5.5), and RESEARCH (§5.2.5) whenever its Gemini attempt does not land — the one and only place a second reasoning provider is tried first. On **`openai/gpt-oss-20b`, since 2026-09-03 (operator direction): CRITIC and EXPORT's title/description/hashtag listing.** Limits are per model per day, so those two stop competing for the 120b model's 200K; both are advisory or already fail soft to a heuristic, and CRITIC gains a second opinion from a model that is not SCRIPT's. EDIT and PLAN were offered and declined — EDIT is ~90-110K tokens a render across ~34 tool turns, which is where weak tool-calling degrades quietly into "every clip as sourced". **What remains on 120b costs ~130K a render, so two renders a day is the real ceiling**, and the fix is fewer EDIT turns rather than a smaller model. **Not footage acquisition** — that ran a browser agent on `qwen/qwen3.8-27b` (2M TPD) until 2026-08-29 and now makes no model calls at all (§5.0). Groq deprecated `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` on 2026-06-17; the OpenAI open-weight models replaced them everywhere in `src/**` |
+| **Google Gemini**, text models | Yes — **5 requests/minute and 250K tokens/day _per model_** (read off the operator's own AI Studio rate-limit page, 2026-09-01) | **Yes — the top rung of every reasoning ladder, since 2026-09-04** | **Two model ids, ~7 requests a render, and never load-bearing.** `gemini-3.7-flash` takes RESEARCH's first attempt in at most four turns (§5.2.5, since 2026-09-02); `gemini-3.5-flash-lite` is the top rung under SCRIPT, PLAN and reranking (since 2026-09-04). Two model ids because the meter is **per model** — that is what keeps each stage's spend under 5 req/min without the two competing. Gemini drove those same stages for a few hours on 2026-09-01 and the operator reverted it the same day: the run peaked at 6/5 on one model, drew 429s and two 500s, and lost the render at SCRIPT. What makes the return safe is not a smaller cap, it is that nothing *depends* on Gemini now: `LadderLlmDriver` steps down to `gpt-oss-120b` and then `gpt-oss-20b` on **any** error, so an outage costs a request, not a render. `withGroqFallback` stays deleted — it fired only on quota exhaustion, which is exactly how the 500s got through. There is still no ladder *within* Gemini and none inside a tool loop |
+| **Groq Cloud** (`openai/gpt-oss-120b`, `openai/gpt-oss-20b`, `qwen/qwen3.8-27b`, `qwen/qwen3.6-27b`) | Yes — rate-limited, no credit system. ~30 req/min, ~8k tokens/min, ~14.4k req/day, enforced per organization. **Limits are per-model, and the one that binds is tokens-per-day:** 200K for gpt-oss, 2M for qwen3 | **Yes** | **The floor under every reasoning stage**, named once in `src/config/models.ts` and ordered once in `src/lib/drivers/resolve-ladder.ts`. Since 2026-09-04 no stage names a single model: the general ladder is `gemini-3.5-flash-lite` → **`gpt-oss-120b`** → **`gpt-oss-20b`** and answers retrieval reranking (§5.2.4), SCRIPT (§3), PLAN (§4.5) and RESEARCH's post-Gemini fallback (§5.2.5); **EDIT's Kinocut loop (§5.5) is `qwen/qwen3.8-27b` → `qwen/qwen3.6-27b`**; CRITIC and EXPORT's listing are **`gpt-oss-20b`** outright, with no ladder (operator direction 2026-09-03). Descent is on **any** driver error and is sticky for the rest of the stage. **This is what unbound the daily budget.** EDIT was ~90-110K tokens a render of the ~130K that made two renders a day the ceiling, and it now spends against qwen3's 2M rather than gpt-oss's 200K — the same reason the deleted footage browser agent ran there. `EDIT_TOOLS` also dropped from 9 tools to 3 on 2026-09-04, cutting the re-sent schema menu by roughly two thirds. **Not footage acquisition** — that ran a browser agent on `qwen/qwen3.8-27b` until 2026-08-29 and now makes no model calls at all (§5.0). Groq deprecated `llama-3.3-70b-versatile`/`llama-3.1-8b-instant` on 2026-06-17; the OpenAI open-weight models replaced them everywhere in `src/**` |
 | **Microsoft Edge "Read Aloud" TTS**, via the `edge_tts` Python library (LGPL-3.0, `rany2/edge-tts`), invoked as a subprocess | Yes, but **not an official product** — no SLA, can break without notice | **Yes** | Narration voice synthesis + word-level timestamps for captions |
 | **Google Gemini** (`gemini-3.1-flash-tts-preview`, TTS only) | Yes — and **the binding limit is 10 TTS req/day**, per day rather than per run. Also 3 TTS req/min and 10K TTS tokens/min; Pro TTS is not on the free tier at all. Measured from the operator's own AI Studio rate-limit export, 2026-08-31 | **Yes** | The expressive narration *upgrade* over Edge TTS, and **nothing else** — the text models were removed from the reasoning path on 2026-09-01 (row above). One TTS call per video, forced by that daily ceiling. **Edge TTS remains the default path** — Gemini returns no word timings, so it also costs an ALIGN call that Edge does not (plan v2 §4). Added 2026-08-31 on explicit operator instruction |
 | **Cloudflare Workers static assets** | Yes | **Yes** | Hosts the operator console and its API |
@@ -76,7 +76,7 @@
                                      ▼                   ▼                  ▼
                            ┌──────────────┐    ┌──────────────────┐  ┌──────────────┐
                            │  GROQ API    │    │  EDGE TTS         │  │ FFmpeg (local │
-                           │ gpt-oss-120b │    │ (unofficial, free)│  │  to the runner)│
+                           │ model ladder │    │ (unofficial, free)│  │  to the runner)│
                            └──────────────┘    └───────────────────┘  └──────┬────────┘
                                                                               │ finished .mp4
                                                                               ▼
@@ -625,23 +625,33 @@ change, unaffected by which acquisition mechanism runs inside that job.
 ### 2. SCORE
 - Engagement-velocity scoring (upvote/comment growth rate, freshness decay), simhash dedupe against the trailing 7-day window.
 
-### 2.5. RESEARCH (Gemini `gemini-3.7-flash` first, Groq `gpt-oss-120b` on any failure — tool-calling RAG)
+### 2.5. RESEARCH (Gemini `gemini-3.7-flash` first, then the Groq ladder `gpt-oss-120b` → `gpt-oss-20b` — tool-calling RAG)
 
 Added 2026-08-30 by operator directive. Between SCORE and SCRIPT, the picked
 signal becomes a **grounded brief**: what is actually being said about the
 topic, and which retrieved source supports each claim.
 
-**Two providers, one stage** (operator direction, 2026-09-02). RESEARCH is
-the only reasoning stage that is *intake*-bound rather than reasoning-bound:
-on Groq the whole growing tool conversation must fit inside a 7,200-token
-per-request ceiling, and `fitToRequestBudget` gets there by discarding tool
-results the model already fetched. Gemini's intake does not require that, so
-it gets the first attempt. Everything else — reranking, SCRIPT, CRITIC, PLAN,
-EDIT, EXPORT's listing — stays on Groq permanently.
+**Its own Gemini model, and its own reason for one** (operator direction,
+2026-09-02). RESEARCH is the only reasoning stage that is *intake*-bound
+rather than reasoning-bound: on Groq the whole growing tool conversation must
+fit inside a 7,200-token per-request ceiling, and `fitToRequestBudget` gets
+there by discarding tool results the model already fetched. Gemini's intake
+does not require that, so it gets the first attempt — on `gemini-3.7-flash`,
+which is deliberately a *different model id* from the `gemini-3.5-flash-lite`
+the other stages ladder onto, because the free tier meters 5 requests/minute
+per model and the two must not share a bucket.
+
+**Below Gemini it is the Groq ladder, minus the Gemini rung** (operator
+direction, 2026-09-04). `createGroqReasoningLadder` gives it `gpt-oss-120b`
+and then `gpt-oss-20b`, on separate daily token allowances. It deliberately
+does **not** use `createReasoningLadders`: that one puts
+`gemini-3.5-flash-lite` on top, which for this stage would be a second Gemini
+attempt — the thing the 2026-09-02 decision ruled out, arrived at by
+accident.
 
 | | Gemini attempt | Groq fallback |
 |---|---|---|
-| Model | `gemini-3.7-flash` | `openai/gpt-oss-120b` |
+| Model | `gemini-3.7-flash` | `openai/gpt-oss-120b`, then `openai/gpt-oss-20b` |
 | Tool-loop turns | **4** | 6 |
 | Per-request ceiling | 60,000 tok (self-imposed) | 7,200 tok (a real 413) |
 | `read_source` returns | 24,000 chars | 6,000 chars |
@@ -676,14 +686,16 @@ carrying a signed `signature`, and a turn rebuilt from `content` +
 loop carries both replay shapes on each assistant turn, and each driver
 reads the half it understands.
 
-Without `GEMINI_API_KEY` this is exactly the Groq path, unchanged and
-unslowed — the same rule that governs the TTS upgrade. **It also moved off
-`gpt-oss-20b`** on 2026-09-01 and onto the same 120b model as every other
-stage, so the token budgeting below shares one 200K/day rather than borrowing
-a second model's.
+Without `GEMINI_API_KEY` this is exactly the Groq ladder, unchanged and
+unslowed — the same rule that governs the TTS upgrade.
 
-Which provider actually answered, and why the other did not, is recorded in
-the audit package as `stages[].provider` / `stages[].fallbackReason` (§9).
+Which rung actually answered, and why the ones above it did not, is recorded
+in the audit package as `stages[].provider` / `stages[].model` /
+`stages[].fallbackReason` (§9). Since 2026-09-04 those lines are **read back
+off each stage's ladder** (`LadderLlmDriver.lastUsed()`) rather than written
+down in RENDER: two renders an hour apart can legitimately have been written
+by different models, and a hard-coded model id there would be the same silent
+drift CRITIC had until 2026-09-03.
 
 **Retrieval is reranked before the agent sees it** (`src/lib/rag/rerank.ts`,
 added the same day — "for RAG calling and for ranking too"). BM25
@@ -740,7 +752,7 @@ same way scraped video ids are (§5.0).
 Output is persisted to `research_briefs` (§4) and travels into the export's
 `audit_json`.
 
-### 3. SCRIPT (Groq, `openai/gpt-oss-120b` — `llama-3.3-70b-versatile` deprecated by Groq 2026-06-17)
+### 3. SCRIPT (the general ladder: `gemini-3.5-flash-lite` → `openai/gpt-oss-120b` → `openai/gpt-oss-20b`)
 - **Beats, written to a duration** (built 2026-08-31, reshaped 2026-09-03). Emits `{hook, beats: [{move, text}], open_question}`, written to a requested duration (`directives.compiled_json.target_duration_s`, 60–180s) rather than a word count. Word count becomes derived.
 - `move` is what replaced the second speaker when the format was cut to one host, and every downstream stage varies on it: TTS delivery direction, caption emphasis, and where the footage cuts. The vocabulary is `question · attempt · pushback · reframe · land · open` (the discourse arc) plus `setup · turn · escalation · evidence · verdict · confession · aside · punchline`, which is what the other formats actually do.
 
@@ -778,7 +790,7 @@ Gemini TTS performs **inline delivery tags**: bracketed notes that change how th
 - Flags anything resembling defamation of a named real person, medical/legal claims stated as fact, or content that reads as a verbatim repost of the source discussion.
 - **Advisory only** — and, since 2026-09-03, actually implemented that way. A low score or a flag does not stop the script from proceeding, and neither does a critic that cannot be reached: `render.ts` marks the stage `degraded`, calls `markCritiquedWithoutVerdict` so the signal still leaves `scripted` (`critiqued -> exported` is the only legal edge into EXPORT), and exports with `critic: null` and AUDIT SUMMARY's "no originality score" flag. Until then RENDER threw on a CRITIC driver error, and a run with a finished script and a finished RESEARCH brief was thrown away by `CRITIC failed: HTTP 429` — for want of a second opinion nothing was waiting on. The score is left null rather than defaulted: it is the one number in the package a reviewer weighs against the script itself, and a placeholder would read as a real verdict.
 
-### 4.5. PLAN (Groq `gpt-oss-120b`) — what the audience sees
+### 4.5. PLAN (the general ladder: `gemini-3.5-flash-lite` → `gpt-oss-120b` → `gpt-oss-20b`) — what the audience sees
 *Added 2026-09-01 by operator direction. `src/lib/pipeline/shot-plan.ts`, prompt `prompts/shot-plan.v2.md`. It also chose the host's action per shot between 2026-09-01 and 2026-09-03; the host is deterministic now (§7.5) and PLAN chooses nothing about it.*
 
 - Turns the script into an ordered shot list: `{ beatIndex, intent, query, source: "youtube" | "pexels" }`, one shot per beat plus an opening image over the hook, capped at 8.
@@ -798,16 +810,17 @@ Gemini TTS performs **inline delivery tags**: bracketed notes that change how th
 - **Provenance is now the only record.** Since no bytes survive, every clip's `footage_segments` row — provider, source video, exact window, and the query that found it — is written *before* the clip reaches the encoder, and `render_footage_parts` records which second of the finished video it occupies.
 - Shot status (`planned → searching → downloading → clipped → composited | failed`) is written to `shot_plans` as each thing actually happens, which is what stage 5 displays.
 
-### 5.5. EDIT (Groq `gpt-oss-120b` + Kinocut over MCP)
+### 5.5. EDIT (Groq `qwen/qwen3.8-27b` → `qwen/qwen3.6-27b` + Kinocut over MCP)
 *Added 2026-09-01 by operator direction. `src/lib/pipeline/edit.ts`, `src/lib/drivers/mcp-stdio.ts`.*
 
-Runs between SOURCE and RENDER — strictly, after the montage timeline exists, because a clip's edit depends on how long it will be on screen and that is not known until the narration is timed. For each clip, the model probes it, detects its scenes, trims to the window worth showing, and optionally applies one subtle grade.
+Runs between SOURCE and RENDER — strictly, after the montage timeline exists, because a clip's edit depends on how long it will be on screen and that is not known until the narration is timed. For each clip, the model probes it, detects its scenes, and trims to the window worth showing. It graded and stylised too until 2026-09-04, when the operator cut the tool list to three.
 
 - **It edits clips; it does not make videos.** No stitching, no host compositing, no captions, no final encode — those stay in `render-ffmpeg.ts`, which is the path the operator has verified end to end. Putting a model-driven tool loop on the critical path of the final encode would trade a working pipeline for a more capable one that sometimes produces nothing.
-- **It fails soft at two levels.** A clip whose edit fails keeps its sourced bytes and stays in the montage; a stage that cannot start at all (no `uvx`, no Kinocut, a rate-limited model) returns every clip untouched. Either way the render continues and produces exactly the video it would have produced before this stage existed, and the reason reaches the audit package. This is the same contract §5.2.5 gives RESEARCH, and it is the only contract under which adding a stage to a working pipeline is safe.
-- **Only ~9 of Kinocut's 196 tools are offered** (`EDIT_TOOLS`). A tool loop re-sends every schema on every turn, so the full surface would spend a large share of the 200K-token daily budget on the menu before the model looked at a frame. The allowlist is enforced on the *call*, not merely by what was offered.
+- **It fails soft at two levels, over a two-rung ladder.** `qwen/qwen3.8-27b` first; a failure moves this clip *and every clip after it* to `qwen/qwen3.6-27b` (sticky — the thing that refused a tool loop mid-clip will refuse the next clip seconds later). A clip whose edit fails on both keeps its sourced bytes and stays in the montage; a stage that cannot start at all (no `uvx`, no Kinocut, both rungs rate-limited) returns every clip untouched. Either way the render continues and produces exactly the video it would have produced before this stage existed, and the reason reaches the audit package. This is the same contract §5.2.5 gives RESEARCH, and it is the only contract under which adding a stage to a working pipeline is safe.
+- **Exactly 3 of Kinocut's 196 tools are offered** (`EDIT_TOOLS`: `video_info`, `video_detect_scenes`, `video_trim` — operator direction 2026-09-04, down from 9). A tool loop re-sends every schema on every turn, so the full surface would spend a large share of the daily budget on the menu before the model looked at a frame; nine measured at ~2.1K tokens of menu per turn across ~34 turns. The allowlist is enforced on the *call*, not merely by what was offered. **The consequence, stated:** the six grading tools are gone, EDIT no longer grades or stylises, and nothing downstream picks that up — a clip is composited with the colour it was sourced with.
 - **Schemas are fetched, never hard-coded.** `tools/list` at run time, filtered by name — a pasted schema silently drifts from the server on its next release, and the failure would be a model confidently passing an argument that no longer exists.
 - **The model's output path is checked to exist** before the encoder is told to read it. A hallucinated path would otherwise fail the whole render at encode time, long after the stage that invented it.
+- **Why the qwen3 models, and why that is not a downgrade in disguise.** EDIT is the largest consumer in the system — ~90-110K tokens a render across ~34 tool turns — and on gpt-oss's shared 200K/day it alone was what made two renders a day the ceiling. qwen3 carries 2M/day (`QUOTAS.groq.tokensPerDayQwen3`), the same allowance the deleted footage browser agent used. Moving a weaker model into a tool loop was offered and declined on 2026-09-03 for good reason; what changed on 2026-09-04 is that the judgement being asked here is now three tools wide rather than nine, and the failure mode was always "this clip stays as sourced, and the audit package says so".
 - Kinocut is local-first, Apache-2.0, and needs no key or account; it wraps FFmpeg and Whisper on the same machine. The MCP client is ~150 lines of newline-delimited JSON-RPC rather than `@modelcontextprotocol/sdk`, for the same reason retrieval is not a framework (§5.2.5): three methods are used, over one transport, against one server.
 
 ### 6. TTS + CAPTION SYNC (Edge TTS by default, Gemini TTS as the upgrade)
@@ -992,7 +1005,7 @@ system spends on its own.
 
 | Resource | Per-day consumption | Free ceiling | Headroom |
 |---|---|---|---|
-| Groq requests | ~24 score-passes + 3 research turns × up to 6 iterations + 3 scripts + 3 critics + 3 metadata-gens ≈ 51/day. **Browsing stage 4 costs nothing** — its reranker was deleted 2026-09-03 and the Worker makes no model call at all. RESEARCH usually costs Groq nothing either: it tries Gemini first (§5.2.5). FOOTAGE REFRESH contributes nothing — it makes no model calls (§5.0). The binding constraint is tokens-per-day on `gpt-oss-120b`, not requests: EDIT alone is ~90-110K of it per render | ~14,400/day | requests huge; 120b tokens are the real ceiling at ~2 renders/day |
+| Groq requests | ~24 score-passes + 3 research turns × up to 6 iterations + 3 scripts + 3 critics + 3 metadata-gens ≈ 51/day. **Browsing stage 4 costs nothing** — its reranker was deleted 2026-09-03 and the Worker makes no model call at all. RESEARCH, SCRIPT, PLAN and reranking usually cost Groq nothing either: since 2026-09-04 all four try Gemini first and only descend on an error (§5.2.5). FOOTAGE REFRESH contributes nothing — it makes no model calls (§5.0). **Tokens-per-day on `gpt-oss-120b` stopped being the binding constraint on 2026-09-04**: EDIT, which was ~90-110K of it per render, moved to `qwen/qwen3.8-27b` and its 2M/day | ~14,400/day | requests huge; gpt-oss tokens no longer cap the day at ~2 renders |
 | GitHub Actions minutes | hourly WATCH × 24 (~1 min each) + up to 6 dispatched render jobs × ~5 min (FFmpeg is the expensive part) + weekly footage job (~15–20 min — a headless Chromium launch per candidate adds a little over the old yt-dlp job) ≈ ~55 min/day amortized at the ceiling | 2,000 min/mo private | fine — public repo removes the ceiling entirely, and RENDER runs on the self-hosted runner, which bills no minutes at all |
 | KV writes | batch manifest + rate-limit counters + 3 export blobs ≈ well under 50 | 1,000/day | fine |
 | KV storage | 3 exports/day × 3-day TTL ≈ ~9 exports resident at once × (MP4 size, TBD — see §3's `ExportDriver` note) | 1GB total | needs the real render-size check before this is a settled "fine," not before |
