@@ -74,6 +74,10 @@ export interface ExportMetadata {
   researchCitations: { title: string; url: string }[];
   clips: ExportClipUse[];
   usedYoutube: boolean;
+  /** Which model drove EDIT's Kinocut loop; comma-joined if the ladder stepped down mid-stage, null if none answered. */
+  editModel: string | null;
+  /** Why EDIT did not run at all, or null when it ran. */
+  editDegradedReason: string | null;
   incomplete: string[];
 }
 

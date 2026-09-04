@@ -39,6 +39,21 @@ function sourceSpan(clip: ExportClipUse): string {
   return `${timecode(clip.sourceStartS)}–${timecode(clip.sourceEndS)}`;
 }
 
+/**
+ * What EDIT did to one clip, in a table cell.
+ *
+ * Three distinct outcomes and they must not collapse into two. `cut` means a
+ * model drove Kinocut over MCP and the clip in the video is its output.
+ * `as sourced` means EDIT ran and this clip came through untouched, and the
+ * reason travels with it. `—` means this export has no record either way,
+ * which is what an export written before EDIT existed looks like.
+ */
+function editCell(clip: ExportClipUse): { label: string; tone: string; detail: string | null } {
+  if (clip.edited === null) return { label: "—", tone: "text-bone", detail: null };
+  if (clip.edited) return { label: `cut · ${clip.editToolsRun.join(" → ") || "no tools recorded"}`, tone: "text-mercury", detail: null };
+  return { label: "as sourced", tone: "text-bone", detail: clip.editSkippedReason };
+}
+
 function CopyButton({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -91,6 +106,9 @@ export function MetadataPanel({ exportId, onClose, onUnauthorized }: MetadataPan
   }, [exportId, onUnauthorized]);
 
   const youtubeClips = (data?.clips ?? []).filter((clip) => clip.provider === "youtube");
+  // `edited === true` only. `null` is "this export has no record", which is a
+  // different fact from "EDIT left it alone" and must not be counted as either.
+  const editedClips = (data?.clips ?? []).filter((clip) => clip.edited === true);
 
   return (
     <div className="resolve-in mt-1 rounded-xl border border-mercury/15 bg-white/40 p-3">
@@ -158,6 +176,7 @@ export function MetadataPanel({ exportId, onClose, onUnauthorized }: MetadataPan
                       <th className="border-b border-hairline py-1 pr-3 font-normal">in video</th>
                       <th className="border-b border-hairline py-1 pr-3 font-normal">source</th>
                       <th className="border-b border-hairline py-1 pr-3 font-normal">span of source</th>
+                      <th className="border-b border-hairline py-1 pr-3 font-normal">edit</th>
                       <th className="border-b border-hairline py-1 font-normal">found by</th>
                     </tr>
                   </thead>
@@ -179,6 +198,10 @@ export function MetadataPanel({ exportId, onClose, onUnauthorized }: MetadataPan
                           {clip.photographer !== null && <span className="text-bone"> · {clip.photographer}</span>}
                         </td>
                         <td className="border-b border-hairline/50 py-1.5 pr-3 whitespace-nowrap">{sourceSpan(clip)}</td>
+                        <td className={`border-b border-hairline/50 py-1.5 pr-3 ${editCell(clip).tone}`}>
+                          {editCell(clip).label}
+                          {editCell(clip).detail !== null && <span className="block text-bone"> {editCell(clip).detail}</span>}
+                        </td>
                         <td className="border-b border-hairline/50 py-1.5 text-bone">{clip.searchQuery ?? "— not recorded"}</td>
                       </tr>
                     ))}
@@ -187,13 +210,31 @@ export function MetadataPanel({ exportId, onClose, onUnauthorized }: MetadataPan
               </div>
             )}
 
+            {/* The straight answer about EDIT, in the same shape as the
+                YouTube line above it: how many, by which model. EDIT is a
+                ladder whose descent is sticky for the rest of the stage, so
+                "half these clips were cut by the smaller model" is a real
+                outcome and is not recoverable from the video. */}
+            {data.clips.length > 0 && data.clips.some((clip) => clip.edited !== null) && (
+              <p className={`font-mono text-[0.65rem] ${editedClips.length > 0 ? "text-mercury" : "text-sodium"}`}>
+                {editedClips.length > 0
+                  ? `${editedClips.length} of ${data.clips.length} clip${data.clips.length === 1 ? "" : "s"} cut by the model through Kinocut MCP` +
+                    `${data.editModel === null ? "" : ` on ${data.editModel}`}: ${editedClips.map((c) => c.position).join(", ")}.`
+                  : "No clip was cut by the model — every clip is exactly as SOURCE found it."}
+              </p>
+            )}
+
+            {/* Distinct from "every clip came through untouched": this is the
+                stage never running at all, which is one reason rather than
+                one per clip. */}
+            {data.editDegradedReason !== null && <p className="font-mono text-[0.62rem] text-sodium">EDIT did not run — {data.editDegradedReason}</p>}
+
             {/* EDIT trims inside the sourced window, so the span above is
                 where the clip was cut FROM, not necessarily the exact
                 frames that survived. Said rather than left to be inferred. */}
-            {data.clips.some((clip) => clip.edited === true) && (
+            {editedClips.length > 0 && (
               <p className="text-[0.62rem] leading-relaxed text-bone">
-                Clips {data.clips.filter((c) => c.edited === true).map((c) => c.position).join(", ")} were trimmed or graded by EDIT inside the span shown,
-                so the source window is where the clip was taken from rather than the exact surviving frames.
+                For those clips the source window is where the clip was taken from rather than the exact surviving frames.
               </p>
             )}
           </section>

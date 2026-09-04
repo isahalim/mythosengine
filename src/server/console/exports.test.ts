@@ -276,7 +276,14 @@ describe("getExportMetadata", () => {
       narration: { driver: "gemini-tts", voice: "Kore", fallbackReason: null, captionTiming: "aligned" },
       ungrounded: false,
       research: { model: "openai/gpt-oss-120b", citations: [{ title: "A source", url: "https://example.com/a" }] },
-      edit: { model: "openai/gpt-oss-120b", degradedReason: null, clips: [{ position: 0, edited: true, toolsRun: ["video_info", "video_trim"], skippedReason: null }] },
+      edit: {
+        model: "qwen/qwen3.8-27b",
+        degradedReason: null,
+        clips: [
+          { position: 0, edited: true, toolsRun: ["video_info", "video_detect_scenes", "video_trim"], skippedReason: null },
+          { position: 1, edited: false, toolsRun: [], skippedReason: "the model judged the clip already right and changed nothing" },
+        ],
+      },
     },
   });
 
@@ -298,11 +305,63 @@ describe("getExportMetadata", () => {
     // And a link that opens the source at that second.
     expect(youtube.linkUrl).toBe("https://www.youtube.com/watch?v=abc&t=2470");
     expect(youtube.edited).toBe(true);
-    expect(youtube.editToolsRun).toEqual(["video_info", "video_trim"]);
+    expect(youtube.editToolsRun).toEqual(["video_info", "video_detect_scenes", "video_trim"]);
 
     // A stock page has no time index, so none is invented for it.
     expect(stock.linkUrl).toBe("https://www.pexels.com/video/99/");
     expect(stock.photographer).toBe("A Photographer");
+  });
+
+  // Operator direction, 2026-09-04: the sheet has to say which clips the
+  // model actually cut through Kinocut MCP. The audit package has carried it
+  // since EDIT was added; only the one-line footnote rendered it, and it did
+  // not name the model or say why an untouched clip was untouched.
+  it("says which clips the model cut through Kinocut, and which model cut them", async () => {
+    await seedExport(ctx.db, "exp1", "ready_for_review", "exports/exp1.mp4", { auditJson: AUDIT });
+    const metadata = await getExportMetadata(ctx.db, "exp1");
+
+    expect(metadata?.editModel).toBe("qwen/qwen3.8-27b");
+    expect(metadata?.editDegradedReason).toBeNull();
+    // Cut, and left alone, are separate outcomes and each carries its own
+    // evidence: the tools that ran, or the reason nothing did.
+    expect(metadata?.clips[0].edited).toBe(true);
+    expect(metadata?.clips[1].edited).toBe(false);
+    expect(metadata?.clips[1].editSkippedReason).toContain("already right");
+  });
+
+  // The 2026-09-04 outage: both rungs refused every request, so the export
+  // was a finished video with nothing trimmed. That is one stage-level fact,
+  // not eight per-clip ones, and it was legible only in a Groq dashboard.
+  it("reports a whole EDIT stage that never ran, separately from a clip left alone", async () => {
+    const degraded = JSON.parse(AUDIT) as { auditResult: { edit: Record<string, unknown> } };
+    degraded.auditResult.edit = {
+      model: null,
+      degradedReason: "Kinocut MCP server would not start (spawn uvx ENOENT) — every clip used unedited",
+      clips: [
+        { position: 0, edited: false, toolsRun: [], skippedReason: "Kinocut MCP server would not start" },
+        { position: 1, edited: false, toolsRun: [], skippedReason: "Kinocut MCP server would not start" },
+      ],
+    };
+    await seedExport(ctx.db, "exp1", "ready_for_review", "exports/exp1.mp4", { auditJson: JSON.stringify(degraded) });
+
+    const metadata = await getExportMetadata(ctx.db, "exp1");
+    expect(metadata?.editDegradedReason).toContain("would not start");
+    expect(metadata?.editModel).toBeNull();
+    expect(metadata?.clips.every((clip) => clip.edited === false)).toBe(true);
+  });
+
+  // An export from before EDIT existed carries no `edit` block at all, which
+  // is not the same fact as "EDIT ran and changed nothing" — and a column
+  // that rendered both as a dash would merge them.
+  it("says an export predates EDIT rather than showing every clip as untouched", async () => {
+    const old = JSON.parse(AUDIT) as { auditResult: Record<string, unknown> };
+    delete old.auditResult.edit;
+    await seedExport(ctx.db, "exp1", "ready_for_review", "exports/exp1.mp4", { auditJson: JSON.stringify(old) });
+
+    const metadata = await getExportMetadata(ctx.db, "exp1");
+    expect(metadata?.clips[0].edited).toBeNull();
+    expect(metadata?.editModel).toBeNull();
+    expect(metadata?.incomplete.join(" ")).toContain("predates the EDIT stage");
   });
 
   it("says plainly when nothing came from YouTube", async () => {

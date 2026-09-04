@@ -397,6 +397,20 @@ about the source, and only the second one lets a reviewer open the original
 and check. Both were in `audit_json` from the day §9 was written; only the
 first had ever been derivable on screen.
 
+**And which clips the model actually cut** (operator direction,
+2026-09-04). Every clip's row carries an `edit` cell with one of three
+outcomes, never two: `cut` plus the Kinocut tools that ran, `as sourced`
+plus the reason nothing did, or `—` for an export written before EDIT
+existed. Above the table, the same shape as the YouTube line: how many
+clips the model cut through Kinocut MCP, and **on which model** — EDIT is a
+two-rung ladder whose descent is sticky for the rest of the stage, so "half
+these clips were cut by the smaller model" is a real outcome and is not
+recoverable from the video. A stage that never ran at all (no `uvx`, no
+Kinocut, every rung refusing) is reported as one line rather than as eight
+identical per-clip reasons; that is the 2026-09-04 case, where both rungs
+refused every request, the export was correctly a finished video with
+nothing trimmed, and the only evidence was a Groq dashboard.
+
 `GET /console/exports/:id/metadata` reads the export's own `audit_json` and
 nothing else — never the live footage tables, which by design no longer
 hold this video's clips. An export written before a field existed says so

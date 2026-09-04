@@ -139,6 +139,28 @@ export interface ExportMetadata {
   clips: ExportClipUse[];
   /** Straight answer to "did it use YouTube?" — false means every frame came from stock. */
   usedYoutube: boolean;
+  /**
+   * Which model drove EDIT's Kinocut tool loop, comma-joined when the ladder
+   * stepped down partway through the clips, and null when no model answered
+   * at all.
+   *
+   * On screen because "which clips did the model actually cut?" is only half
+   * an answer without "and which model was it". EDIT is a two-rung ladder
+   * (`qwen/qwen3.8-27b` → `qwen/qwen3.6-27b`) whose descent is sticky for the
+   * rest of the stage, so an export where half the clips were trimmed by the
+   * second model is a real and invisible outcome.
+   */
+  editModel: string | null;
+  /**
+   * Why EDIT did not run at all, or null when it ran.
+   *
+   * Set when the whole stage was unavailable — no `uvx`, no Kinocut, every
+   * rung refused — in which case every clip is unedited for one reason
+   * rather than eight. The 2026-09-04 run is the case this exists for: both
+   * rungs refused every request and the export was, correctly, a finished
+   * video with nothing trimmed. That was legible only in a Groq dashboard.
+   */
+  editDegradedReason: string | null;
   /** Present when the export was written before a field existed, so the UI can say so instead of showing blanks. */
   incomplete: string[];
 }
@@ -207,7 +229,8 @@ export async function getExportMetadata(db: AppDb, id: string): Promise<ExportMe
 
   const narration = asRecord(audit?.auditResult?.narration);
   const research = asRecord(audit?.auditResult?.research);
-  const editClips = asRecord(audit?.auditResult?.edit)?.clips;
+  const edit = asRecord(audit?.auditResult?.edit);
+  const editClips = edit?.clips;
   const editByPosition = new Map<number, Record<string, unknown>>();
   if (Array.isArray(editClips)) {
     for (const entry of editClips) {
@@ -251,6 +274,12 @@ export async function getExportMetadata(db: AppDb, id: string): Promise<ExportMe
   if (clips.length > 0 && clips.every((clip) => clip.sourceStartS === null)) {
     incomplete.push("this export predates per-clip source timestamps, so only the source video is named, not the span used");
   }
+  // An export written before EDIT existed has no `edit` block, which is not
+  // the same fact as "EDIT ran and changed nothing" — and a column that
+  // renders both as a dash would merge them.
+  if (clips.length > 0 && edit === null) {
+    incomplete.push("this export predates the EDIT stage, so no clip records whether a model cut it");
+  }
 
   const citations = Array.isArray(research?.citations) ? research.citations : [];
 
@@ -278,6 +307,8 @@ export async function getExportMetadata(db: AppDb, id: string): Promise<ExportMe
     }),
     clips,
     usedYoutube: clips.some((clip) => clip.provider === "youtube"),
+    editModel: asString(edit?.model),
+    editDegradedReason: asString(edit?.degradedReason),
     incomplete,
   };
 }
