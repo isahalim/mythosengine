@@ -1,6 +1,6 @@
 import { fetchWithRetry } from "./http.ts";
 import type { TokenBucketLimiter } from "./rate-limiter.ts";
-import type { DriverError, LlmDriver, LlmMessage, LlmRequest, LlmResponse, ToolCall } from "./types.ts";
+import { TOOL_USE_FAILED_RECOVERED, type DriverError, type LlmDriver, type LlmMessage, type LlmRequest, type LlmResponse, type ToolCall } from "./types.ts";
 import { err, ok, type Result } from "../result.ts";
 
 const GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions";
@@ -85,6 +85,18 @@ export interface GroqDriverOptions {
   timeoutMs?: number;
   maxAttempts?: number;
   baseDelayMs?: number;
+  /**
+   * Longest this driver will wait out a 429 before giving up on it, passed
+   * straight through to `fetchWithRetry`.
+   *
+   * The default there is 5s, chosen for a caller inside a Cloudflare Workers
+   * request. Groq's per-minute meters routinely ask for longer than that —
+   * measured 2026-09-04 on the qwen3 output meter: 1.4s, 10s, 15s, 41.8s,
+   * 44.8s — so a batch caller that leaves it at 5s converts every one of
+   * those into a `rate_limited` error for a wait it could easily have
+   * afforded. See `PIPELINE_MAX_RETRY_DELAY_MS` in resolve-groq-driver.ts.
+   */
+  maxRetryDelayMs?: number;
 }
 
 function toWireMessage(message: LlmMessage): Record<string, unknown> {
@@ -119,6 +131,7 @@ export class GroqLlmDriver implements LlmDriver {
   private readonly timeoutMs: number;
   private readonly maxAttempts: number;
   private readonly baseDelayMs: number;
+  private readonly maxRetryDelayMs: number | undefined;
 
   constructor(private readonly options: GroqDriverOptions) {
     this.baseUrl = options.baseUrl ?? GROQ_BASE_URL;
@@ -126,6 +139,7 @@ export class GroqLlmDriver implements LlmDriver {
     this.timeoutMs = options.timeoutMs ?? 10_000;
     this.maxAttempts = options.maxAttempts ?? 3;
     this.baseDelayMs = options.baseDelayMs ?? 500;
+    this.maxRetryDelayMs = options.maxRetryDelayMs;
   }
 
   async complete(req: LlmRequest): Promise<Result<LlmResponse, DriverError>> {
@@ -145,6 +159,7 @@ export class GroqLlmDriver implements LlmDriver {
           messages: req.messages.map(toWireMessage),
           max_tokens: req.maxTokens,
           temperature: req.temperature,
+          ...(req.reasoningEffort ? { reasoning_effort: req.reasoningEffort } : {}),
           ...(req.jsonSchema ? { response_format: { type: "json_object" } } : {}),
           ...(req.tools
             ? { tools: req.tools.map((t) => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })) }
@@ -157,6 +172,7 @@ export class GroqLlmDriver implements LlmDriver {
         maxAttempts: this.maxAttempts,
         baseDelayMs: this.baseDelayMs,
         fetchImpl: this.fetchImpl,
+        ...(this.maxRetryDelayMs === undefined ? {} : { maxRetryDelayMs: this.maxRetryDelayMs }),
       },
     );
 
@@ -166,7 +182,7 @@ export class GroqLlmDriver implements LlmDriver {
       console.warn(`Groq rejected its own generation (${result.error.message.slice(0, 200)}) — recovered the model's structured output from failed_generation.`);
       return ok({
         content: recovered,
-        finishReason: "tool_use_failed_recovered",
+        finishReason: TOOL_USE_FAILED_RECOVERED,
         toolCalls: undefined,
         quotaRemaining: null,
         tokensUsed: null,

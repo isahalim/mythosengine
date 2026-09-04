@@ -77,6 +77,22 @@ describe("GroqLlmDriver tool calling", () => {
     }
   });
 
+  /**
+   * The knob EDIT needs, and the reason it is a request field rather than a
+   * driver setting: it is one stage's answer to one meter, not a property of
+   * Groq. Absent from the body unless a caller asks for it, so every stage
+   * that reasons keeps the model's own default.
+   */
+  it("sends reasoning_effort only when the caller asks for one", async () => {
+    const driver = makeDriver(await mock.baseUrl);
+
+    await driver.complete({ model: "qwen/qwen3.8-27b", messages: [{ role: "user", content: "trim it" }] });
+    expect(mock.lastRequestBody()).not.toHaveProperty("reasoning_effort");
+
+    await driver.complete({ model: "qwen/qwen3.8-27b", messages: [{ role: "user", content: "trim it" }], reasoningEffort: "none" });
+    expect(mock.lastRequestBody()).toMatchObject({ reasoning_effort: "none" });
+  });
+
   it("serializes a prior assistant tool-call and its tool-result message back onto the wire", async () => {
     const driver = makeDriver(await mock.baseUrl);
     await driver.complete({

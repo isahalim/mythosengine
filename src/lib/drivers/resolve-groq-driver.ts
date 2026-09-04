@@ -29,7 +29,14 @@ const QUOTA_SAFETY_FACTOR = 0.9;
 export function createGroqLimiter(): TokenBucketLimiter {
   return new TokenBucketLimiter(
     Math.floor(QUOTAS.groq.requestsPerMinute * QUOTA_SAFETY_FACTOR),
-    Math.floor(QUOTAS.groq.tokensPerMinute * QUOTA_SAFETY_FACTOR),
+    // The lowest input ceiling any model on this account enforces, not the
+    // highest. One limiter paces every Groq stage in a render and the
+    // stages are no longer all on one model: gpt-oss allows 8,000 input
+    // tokens a minute and the qwen3 models EDIT runs on allow 7,000
+    // (measured 2026-09-04, off the refusal itself — their own response
+    // header still advertises 8,000). A bucket sized on the larger figure
+    // paces EDIT straight into a 429 it thought it had room for.
+    Math.floor(Math.min(QUOTAS.groq.tokensPerMinute, QUOTAS.groq.inputTokensPerMinuteQwen3) * QUOTA_SAFETY_FACTOR),
   );
 }
 
@@ -63,8 +70,32 @@ export async function createGroqDriverFromVault(
  * though there's no vault.get() call here to restrict.
  */
 export function createGroqDriverFromEnv(apiKey: string, limiter: TokenBucketLimiter, testOverrides?: { baseUrl?: string; fetchImpl?: typeof fetch }): LlmDriver {
-  return new GroqLlmDriver({ apiKey, limiter, ...testOverrides });
+  return new GroqLlmDriver({ apiKey, limiter, maxRetryDelayMs: PIPELINE_MAX_RETRY_DELAY_MS, ...testOverrides });
 }
+
+/**
+ * How long the **pipeline's** Groq driver may wait out a 429, against
+ * `fetchWithRetry`'s 5s default.
+ *
+ * The default is right for the Worker, which has to answer a request. It is
+ * wrong here for the same reason the Ideas refresh's rule is right there:
+ * what a caller may do about a per-minute meter is decided by the budget it
+ * is running inside, and this one is a GitHub Actions job with
+ * `timeout-minutes: 180`. A 429 that says "try again in 15s" is a 15-second
+ * wait, not a failure — and treating it as a failure is what cost the
+ * 2026-09-04 render six of its eight clips: EDIT met the qwen3 **output**
+ * meter, `Retry-After 10s exceeds the 5s retry budget` turned it into a
+ * `rate_limited` error, `LadderLlmDriver` spent both rungs on it inside 70
+ * seconds, and shots 3 through 7 were abandoned without a request being
+ * made for any of them. Every `Retry-After` measured on that meter that day
+ * — 1.4s, 10s, 15s, 41.8s, 44.8s — fits inside a minute.
+ *
+ * This is a ceiling on one sleep, not a total: `maxAttempts` still bounds
+ * how many of them a request may make, and a meter that is still refusing
+ * after that still surfaces as `rate_limited` and still descends the ladder.
+ * What changes is that a wait the job could afford is now taken.
+ */
+const PIPELINE_MAX_RETRY_DELAY_MS = 60_000;
 
 /** Same vault-first/env-fallback resolution as createGroqDriverFromVault, for the voice surface's speech-to-text call (src/lib/drivers/groq-whisper.ts). */
 export async function createGroqWhisperDriverFromVault(

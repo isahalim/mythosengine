@@ -41,28 +41,70 @@ export const QUOTAS = {
     tokensPerDayGptOss: 200_000,
     tokensPerDayQwen3: 2_000_000,
     /**
+     * **Input** tokens per minute on the qwen3 models — lower than
+     * `tokensPerMinute`, which was measured on gpt-oss-120b.
+     *
+     * Read straight off a refusal on 2026-09-04, on a request whose own
+     * response header still advertised the gpt-oss figure
+     * (`x-ratelimit-limit-tokens=8000`):
+     *
+     *     HTTP 429 "Rate limit reached for model `qwen/qwen3.6-27b` ... on
+     *     input tokens per minute (ITPM): Limit 7000, Used 5677, Requested
+     *     1781. Please try again in 3.925714285s"
+     *
+     * The header is the account's default; the error is the model's. Since
+     * one limiter paces every Groq stage in a render, it has to pace against
+     * the **lowest** ceiling any of them meets — a bucket sized on 8,000
+     * walks a qwen3 tool loop into a 429 it believed it had room for, which
+     * is the same class of mistake as trusting the estimate over the meter.
+     */
+    inputTokensPerMinuteQwen3: 7000,
+    /**
      * **Output** tokens per minute on the qwen3 models — a second, separate
      * meter from `tokensPerMinute`, which counts input.
      *
      * Measured against the live API on 2026-09-04, not read off a pricing
-     * page. It behaves the way Groq's 8,000-token input ceiling does and the
-     * way CLAUDE.md's NEVER block describes: **it applies per request as
-     * well as per minute**, and a single request whose expected output
-     * exceeds it is refused outright, before anything runs —
+     * page, and measured **twice** that day — the second time because the
+     * first reading was not the whole rule.
+     *
+     * *The per-request half, which stands.* A request whose `max_tokens`
+     * exceeds the limit on its own is refused before anything runs —
      *
      *     HTTP 400 "Request too large for model `qwen/qwen3.8-27b` ... on
      *     output tokens per minute (OTPM): Limit 1000, Requested 1024"
      *
-     * — with `type: "invalid_request_error"`, not `rate_limited`. So
-     * `fetchWithRetry` will not retry it and the rate limiter cannot help:
+     * — with `type: "invalid_request_error"`, not `rate_limited`, so
+     * `fetchWithRetry` will not retry it and the limiter cannot help:
      * `acquire()` clamps an oversized demand and lets it through by design.
-     * The only defence is asking for less, which is why EDIT derives its
-     * `max_tokens` from this number (src/lib/pipeline/edit.ts).
+     * That is why EDIT derives its `max_tokens` from this number
+     * (src/lib/pipeline/edit.ts) and why it must stay under it. It is also
+     * what took the whole EDIT ladder down on the morning run of
+     * 2026-09-04: `max_tokens: 1024`, both rungs, every turn, 5ms, nothing
+     * billed.
      *
-     * This is what took EDIT's whole ladder down on the 2026-09-04 run:
-     * `max_tokens: 1024` against a limit of 1000 meant both qwen rungs
-     * refused every request in 5ms with 0 tokens billed, and the stage
-     * degraded to "every clip as sourced" for the entire render.
+     * *The per-minute half, which the morning's fix did not account for.*
+     * Under the ceiling, this is an ordinary rolling meter and a legal
+     * request still fails against it once the minute is spent:
+     *
+     *     HTTP 429 "Rate limit reached ... on output tokens per minute
+     *     (OTPM): Limit 1000, Used 702, Requested 321. Please try again in
+     *     1.38s", type "tokens", code "rate_limit_exceeded"
+     *
+     * Note `Requested`: Groq reserves its own *estimate* of the answer, not
+     * our `max_tokens` (321 against a `max_tokens` of 896). So no local
+     * budget can predict this meter, and nothing here tries to. It is a
+     * `rate_limited` error carrying a `Retry-After`, and the defence is to
+     * take the wait — every one measured that day fit inside a minute
+     * (1.4s, 10s, 15s, 41.8s, 44.8s). A caller that cannot afford a wait
+     * that long converts a pause into a lost stage, which is what cost the
+     * evening render six of its eight clips; see
+     * `PIPELINE_MAX_RETRY_DELAY_MS` in
+     * src/lib/drivers/resolve-groq-driver.ts.
+     *
+     * The practical consequence for any tool loop on these models: roughly
+     * 1,000 output tokens a minute, all in. That is why EDIT asks for no
+     * reasoning at all — a hidden trace is billed here too, and on the
+     * fallback rung it was most of the spend.
      *
      * The gpt-oss models have no comparable ceiling — 8,192 is accepted
      * there — so this lives beside `tokensPerDayQwen3` as a qwen3 fact

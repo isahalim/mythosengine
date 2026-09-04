@@ -96,7 +96,36 @@ export interface LlmRequest {
   temperature?: number;
   tools?: ToolDefinition[];
   toolChoice?: "auto" | "none";
+  /**
+   * How much of the completion budget the model may spend thinking before
+   * it emits anything, on the providers that expose the knob.
+   *
+   * Undefined means the model's own default, which is what every stage that
+   * reasons wants. `"none"` is for a stage that is mechanical rather than
+   * argumentative and is metered on **output** tokens — EDIT, where the
+   * qwen3 models' 1,000-output-tokens-per-minute meter makes a hidden
+   * reasoning trace both the thing that truncates the answer and the thing
+   * that empties the minute's allowance (`src/lib/pipeline/edit.ts`).
+   *
+   * A driver whose provider has no such parameter ignores it, which is the
+   * honest behaviour: it is a hint about spend, never about correctness.
+   */
+  reasoningEffort?: "none" | "low" | "medium" | "high";
 }
+
+/**
+ * `LlmResponse.finishReason` for a turn the *provider* rejected and this
+ * project put back together — today only Groq's `tool_use_failed` 400, whose
+ * `failed_generation` carries the model's own words (see
+ * `recoverFailedGeneration` in groq.ts).
+ *
+ * It is a real answer, so it is returned as one, but it is an answer that
+ * did not reach the provider's tool channel: whatever the model was trying
+ * to call, it did not call. A tool loop has to be able to tell that apart
+ * from a model that chose to stop, which is the difference between nudging
+ * it and giving up on the clip.
+ */
+export const TOOL_USE_FAILED_RECOVERED = "tool_use_failed_recovered";
 
 export interface LlmResponse extends Quota {
   content: string;

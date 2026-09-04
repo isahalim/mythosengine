@@ -295,4 +295,67 @@ describe("editClips", () => {
     // above it is rejected before it runs, so the limiter cannot save it.
     expect(requests[0].maxTokens).toBeLessThan(QUOTAS.groq.outputTokensPerMinuteQwen3);
   });
+
+  /**
+   * The evening half of the same day's outage.
+   *
+   * `EDIT_FALLBACK_MODEL` thinks before it answers, and that thinking is
+   * billed against the same `max_tokens` — measured live on 2026-09-04 at
+   * 122-173 tokens on a first turn, and past the whole budget once a scene
+   * list was in the transcript. A turn that runs out mid-thought comes back
+   * `finish_reason: "length"` with empty content and no tool call, which
+   * reads here as a model that said nothing. Shots 0 and 1 of the 21:40
+   * render were lost that way.
+   */
+  it("asks for no reasoning, because a hidden trace is what truncated the answer", async () => {
+    const { llm, requests } = spying(scripted([{ text: "FINAL: /tmp/sourced-0.mp4" }]).llm);
+
+    await editClips([clip()], deps(llm));
+
+    expect(requests[0].reasoningEffort).toBe("none");
+  });
+
+  /**
+   * The work was done; only the sentence naming it was missing.
+   *
+   * Shot 0 of the 21:40 render called `video_trim` twice and shipped as
+   * sourced, because the turn that would have written `FINAL:` came back
+   * empty. Kinocut had already said where it wrote the clip, in the tool
+   * result the loop had in hand.
+   */
+  it("ships the clip Kinocut reported writing when the model never names one", async () => {
+    const trimmed = join(workDir, "trimmed-0.mp4");
+    writeFileSync(trimmed, "video");
+    const { llm } = scripted([{ tool: "video_trim", args: { input_path: "/tmp/sourced-0.mp4", output_path: trimmed } }, { text: "I have finished editing the clip." }]);
+
+    const result = await editClips([clip()], deps(llm));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.clips[0]).toMatchObject({ filePath: trimmed, edited: true, skippedReason: null });
+  });
+
+  // Same recovery, for the model that closes with a path it invented rather
+  // than the one the tool handed it — watched happening against the live
+  // Kinocut server on 2026-09-04.
+  it("prefers Kinocut's own output over a path the model made up", async () => {
+    const trimmed = join(workDir, "trimmed-0.mp4");
+    writeFileSync(trimmed, "video");
+    const { llm } = scripted([{ tool: "video_trim", args: { input_path: "/tmp/sourced-0.mp4", output_path: trimmed } }, { text: `FINAL: ${join(workDir, "never-written.mp4")}` }]);
+
+    const result = await editClips([clip()], deps(llm));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.clips[0]).toMatchObject({ filePath: trimmed, edited: true });
+  });
+
+  // The floor stays where it was: nothing rendered, nothing to recover, and
+  // the clip goes through as sourced with the reason attached.
+  it("still reports the clip as sourced when no tool wrote anything", async () => {
+    const { llm } = scripted([{ tool: "video_info", args: { input_path: "/tmp/sourced-0.mp4" } }, { text: "The clip looks fine to me." }]);
+
+    const result = await editClips([clip()], deps(llm));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.clips[0]).toMatchObject({ filePath: "/tmp/sourced-0.mp4", edited: false, skippedReason: "the model finished without naming a final file path" });
+  });
 });

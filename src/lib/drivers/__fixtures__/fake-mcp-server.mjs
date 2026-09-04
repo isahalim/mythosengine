@@ -70,7 +70,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: '{"error":"start past end"}' }], isError: true } });
       return;
     }
-    send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: JSON.stringify({ success: true, tool: name, got: args ?? null }) }] } });
+    // Kinocut answers a render with the path it wrote; a probe carries no
+    // `output_path` at all. EDIT reads that field to recover a finished trim
+    // when the model's own closing line does not survive, so the stub has to
+    // reproduce the distinction rather than answer every call alike.
+    const wrote = name === "video_trim" ? { output_path: args?.output_path ?? "/tmp/kinocut-generated.mp4" } : {};
+    send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: JSON.stringify({ success: true, tool: name, got: args ?? null, ...wrote }) }] } });
     return;
   }
 

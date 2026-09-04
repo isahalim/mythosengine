@@ -1,5 +1,5 @@
 import { access } from "node:fs/promises";
-import type { DriverError, LlmDriver, LlmMessage, ToolDefinition } from "../drivers/types.ts";
+import { TOOL_USE_FAILED_RECOVERED, type DriverError, type LlmDriver, type LlmMessage, type ToolDefinition } from "../drivers/types.ts";
 import { EDIT_MODEL } from "../../config/models.ts";
 import { QUOTAS } from "../../config/quotas.ts";
 import { McpStdioClient } from "../drivers/mcp-stdio.ts";
@@ -83,27 +83,35 @@ const MAX_TOOL_ITERATIONS = 6;
  * Completion budget for one turn, and the number that has to stay under
  * `QUOTAS.groq.outputTokensPerMinuteQwen3`.
  *
- * The qwen3 models meter **output** tokens per minute at 1,000, and that
- * ceiling applies per request as well as per minute: a request whose
- * expected output exceeds it is refused with an HTTP 400
- * `invalid_request_error` in about five milliseconds, having billed nothing
- * and run nothing. `max_tokens: 1024` — inherited from the gpt-oss era, when
- * this stage was on a model with no such ceiling — was therefore *one token
- * over a hard wall*, and it took both rungs of the EDIT ladder down on every
- * single turn of the 2026-09-04 run. The stage did exactly what it is built
- * to do (every clip as sourced, render exported) and that is the only reason
- * it was a Groq dashboard line rather than a page.
+ * The qwen3 models meter **output** tokens at 1,000 a minute, and a request
+ * whose `max_tokens` exceeds that on its own is refused outright with an
+ * HTTP 400 `invalid_request_error` — which is why this is derived from the
+ * quota rather than written down, and why `max_tokens: 1024`, inherited from
+ * the gpt-oss era, took both rungs of the ladder down on every turn of the
+ * 2026-09-04 morning run.
  *
- * 768 is three quarters of the ceiling, not the whole of it, because the
- * limit is a *leaky bucket* as well as a per-request wall: a request
- * reserves its `max_tokens` on admission and reconciles to the real figure
- * afterwards, so sitting at 1,000 would mean the first turn of every minute
- * consumed the entire allowance. Measured against both rungs with the real
- * three-tool menu on 2026-09-04, a turn emits 33-208 output tokens — a tool
- * call and its reasoning — so this is roughly four times the worst observed
- * turn and was never the binding constraint on what the model could say.
+ * **Why 900 rather than the 750 that replaced it.** 750 was chosen as three
+ * quarters of the ceiling to leave the minute some room, on the measurement
+ * that a turn emits 33-208 output tokens. That measurement was taken on
+ * `EDIT_MODEL`, which does not think out loud. `EDIT_FALLBACK_MODEL` does:
+ * measured against the live API on 2026-09-04 it spends 122-173 tokens of
+ * hidden reasoning *before* the visible answer on a first turn, and more
+ * once a scene list is in the transcript. Reasoning is billed against the
+ * same budget and arrives in a separate `reasoning` field, so a turn that
+ * runs out of it comes back `finish_reason: "length"` with **empty
+ * `content` and no tool call** — indistinguishable, from here, from a model
+ * that simply declined to answer. That is exactly what the audit package
+ * recorded for shots 0 and 1 of the 21:40 render: "the model finished
+ * without naming a final file path", on a rung that had been cut off
+ * mid-thought. Reproduced against the live API and the real Kinocut server
+ * before this was changed.
+ *
+ * The budget alone is not the fix — `reasoningEffort: "none"` below is, and
+ * it is what makes 900 comfortable rather than tight. This is the ceiling
+ * for the case where a model ignores that hint, kept under the quota so the
+ * request is always legal.
  */
-const EDIT_MAX_TOKENS = Math.floor(QUOTAS.groq.outputTokensPerMinuteQwen3 * 0.75);
+const EDIT_MAX_TOKENS = Math.floor(QUOTAS.groq.outputTokensPerMinuteQwen3 * 0.9);
 
 export interface EditableClip {
   /** Composited position, so a reported result maps back to the montage slot. */
@@ -188,6 +196,10 @@ this stage no longer does that, and a call to any other tool will be refused
 and will cost you a turn.
 
 Rules:
+- Send every argument with exactly the JSON type the tool's schema declares.
+  Kinocut types its timestamps as STRINGS: start: "18.86", duration: "7.20".
+  A number there, or Python's True/False for a boolean, is rejected before
+  the tool runs and costs you the turn.
 - Write every output to a NEW file inside ${workDir}. Never overwrite an input.
 - NEVER make the clip shorter than the length the brief asks for. A clip short
   of its slot leaves a gap in the finished video.
@@ -226,6 +238,32 @@ If you make no change at all, reply:
 FINAL: ${clip.filePath}`;
 }
 
+/**
+ * Pulls the path Kinocut says it wrote out of a tool result.
+ *
+ * Kinocut answers a render with `{"success": true, "output_path": "..."}`
+ * (its own tool docs say so and the live server does it), and a tool that
+ * rendered nothing — `video_info`, `video_detect_scenes` — carries no
+ * `output_path` at all, so this reads as null for them without needing a
+ * list of which tools produce files. A failed call is not read: the caller
+ * only offers this a payload it knows succeeded.
+ */
+function readOutputPath(payload: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    // Not JSON. Kinocut's results are, so this is a build that answers in
+    // prose; there is nothing to recover and the model's own FINAL line
+    // remains the only route.
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const record = parsed as { success?: unknown; output_path?: unknown };
+  if (record.success === false) return null;
+  return typeof record.output_path === "string" && record.output_path.length > 0 ? record.output_path : null;
+}
+
 /** Pulls the model's declared output path out of its closing message. */
 function readFinalPath(content: string): string | null {
   const match = /FINAL:\s*(\S+)/.exec(content);
@@ -244,6 +282,20 @@ async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdi
   const maxIterations = deps.maxIterations ?? MAX_TOOL_ITERATIONS;
   const toolsRun: string[] = [];
   const allowed = new Set(tools.map((tool) => tool.name));
+  /**
+   * The last file Kinocut reported writing, straight off a tool result.
+   *
+   * The model is asked to close with `FINAL: <path>`, and when it does that
+   * is the answer. This is what the stage falls back on when it does not:
+   * `video_trim` returns `{"success": true, "output_path": ...}`, so a clip
+   * that was actually cut has a real file on disk whether or not the turn
+   * that would have named it survived. Throwing that away was costing
+   * finished work — shot 0 of the 2026-09-04 21:40 render ran `video_trim`
+   * twice and shipped as sourced — and it also covers the case observed live
+   * against Kinocut the same day, where the model closed with a path it had
+   * invented rather than the one the tool had just handed it.
+   */
+  let toolOutputPath: string | null = null;
 
   // The model that actually answered, which on the EDIT ladder is not
   // necessarily the one that was asked for: a failure on `EDIT_MODEL` moves
@@ -256,6 +308,27 @@ async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdi
     clip: { position: clip.position, filePath: clip.filePath, edited: false, toolsRun, skippedReason: reason },
     modelUsed,
   });
+
+  /**
+   * How every way of *not* getting a `FINAL:` line ends: with the cut
+   * Kinocut has already made, if it made one, and otherwise as sourced.
+   *
+   * The model's own answer is still what this stage prefers — it is the one
+   * that knows which of two trims it meant. This is the floor underneath it,
+   * and it exists because the alternative is discarding a file that was
+   * rendered, verified and sitting on disk over a formatting failure in the
+   * sentence that was supposed to point at it.
+   */
+  const finish = async (reason: string): Promise<{ clip: EditedClip; modelUsed: string | null }> => {
+    if (toolOutputPath === null || toolOutputPath === clip.filePath) return unedited(reason);
+    try {
+      await access(toolOutputPath);
+    } catch {
+      return unedited(reason);
+    }
+    onEvent(`EDIT: shot ${clip.position} — ${reason}; using the clip Kinocut reported writing instead (${toolOutputPath}).`);
+    return { clip: { position: clip.position, filePath: toolOutputPath, edited: true, toolsRun, skippedReason: null }, modelUsed };
+  };
 
   const messages: LlmMessage[] = [
     { role: "system", content: editSystemPrompt(deps.workDir) },
@@ -281,13 +354,24 @@ async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdi
       tools,
       toolChoice: "auto",
       // Derived from the qwen3 output-per-minute ceiling, never a literal —
-      // see `EDIT_MAX_TOKENS`. A turn here emits either one tool call or the
-      // line `FINAL: /path`, so a larger budget was never spent, but it was
-      // *reserved* twice over: by Groq's OTPM meter, which refuses the whole
-      // request above 1,000, and by our own limiter, which paces on
-      // `maxTokens + prompt` against 8K input tokens a minute.
+      // see `EDIT_MAX_TOKENS`. It is a ceiling rather than an allowance: a
+      // turn emits one tool call or the line `FINAL: /path`, and what it
+      // must never do is ask for more output than the meter allows in a
+      // whole minute, which is refused before anything runs.
       maxTokens: EDIT_MAX_TOKENS,
       temperature: 0.3,
+      // EDIT does not need a chain of thought and cannot afford one. The
+      // work is "probe, detect, trim": every decision is read straight off a
+      // tool result, and the two places judgement enters — which scene, and
+      // whether the clip is already right — are one comparison each. What a
+      // hidden reasoning trace costs is not abstract: it is billed against
+      // `EDIT_MAX_TOKENS`, so on `EDIT_FALLBACK_MODEL` it truncated the
+      // visible answer to nothing on the 2026-09-04 run, and it is billed
+      // against the 1,000-output-tokens-a-minute meter, so it also decided
+      // how many turns a minute this stage gets. Measured on both rungs that
+      // day: 122-173 reasoning tokens on a first turn with it on, 0 with it
+      // off, and the same tool call either way.
+      reasoningEffort: "none",
     });
     if (!completion.ok) return unedited(`${completion.error.kind}: ${completion.error.message}`);
     modelUsed = completion.value.modelUsed ?? EDIT_MODEL;
@@ -295,21 +379,53 @@ async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdi
     const call = completion.value.toolCalls?.[0];
     if (call === undefined) {
       const finalPath = readFinalPath(completion.value.content);
-      if (finalPath === null) return unedited("the model finished without naming a final file path");
+      if (finalPath === null) {
+        // A turn that produced neither a tool call nor a `FINAL:` line has
+        // wasted a turn, not ended the clip — so it costs a turn and the
+        // loop says what was missing. Ending here was throwing away the
+        // four turns still on the table, and there are at least three ways
+        // to land in it that a second ask fixes: a `finish_reason: "length"`
+        // truncation, a turn that narrates the plan without carrying it out,
+        // and — watched live against Groq on 2026-09-04 — a tool call
+        // rejected server-side for a schema violation
+        // (`"accurate": expected boolean`), which arrives here as the prose
+        // the model wrote before the call, the call itself gone.
+        if (isLast) return finish("the model finished without naming a final file path");
+        messages.push({ role: "assistant", content: completion.value.content });
+        messages.push({
+          role: "user",
+          content:
+            completion.value.finishReason === TOOL_USE_FAILED_RECOVERED
+              ? // The provider itself refused the call, and it refused it for
+                // a reason the model can act on. Measured on
+                // `EDIT_FALLBACK_MODEL` against the live server on
+                // 2026-09-04, twice in one clip: `/accurate: expected
+                // boolean` (it sent Python's `False`) and `/duration:
+                // expected string` (it sent the number 7.20). Left to the
+                // generic nudge it re-sent the same shape and then gave up;
+                // told what was wrong with it, it has something to fix.
+                `Your last tool call was rejected before it ran: its arguments did not match the tool's schema. Read the schema again and re-send the call with exactly the JSON types it declares — a string argument needs quotes, a boolean must be true or false. Do not change your plan, only the argument types.`
+              : `That turn called no tool and gave no FINAL: line. Either call one of the three tools, or reply with the FINAL: line naming the clip to use. Nothing else.`,
+        });
+        continue;
+      }
       if (finalPath === clip.filePath) return unedited("the model judged the clip already right and changed nothing");
 
       // The model names a path; this checks it exists before the encoder is
       // told to read it. A hallucinated path would otherwise fail the whole
-      // render at encode time, long after the stage that invented it.
+      // render at encode time, long after the stage that invented it — and
+      // a model naming a plausible path over the one `video_trim` handed it
+      // is not hypothetical, it was watched happening against the live
+      // server on 2026-09-04.
       try {
         await access(finalPath);
       } catch {
-        return unedited(`the model named an output file that does not exist: ${finalPath}`);
+        return finish(`the model named an output file that does not exist: ${finalPath}`);
       }
       return { clip: { position: clip.position, filePath: finalPath, edited: true, toolsRun, skippedReason: null }, modelUsed };
     }
 
-    if (isLast) return unedited(`the model kept calling tools through all ${maxIterations} turns without producing a clip`);
+    if (isLast) return finish(`the model kept calling tools through all ${maxIterations} turns without producing a clip`);
 
     messages.push({
       role: "assistant",
@@ -336,11 +452,12 @@ async function editOne(clip: EditableClip, tools: ToolDefinition[], mcp: McpStdi
     toolsRun.push(call.name);
     const result = await mcp.callTool(call.name, args);
     const payload = result.ok ? result.value.text : JSON.stringify({ error: `${result.error.kind}: ${result.error.message}` });
+    if (result.ok) toolOutputPath = readOutputPath(payload) ?? toolOutputPath;
     messages.push({ role: "tool", content: payload, toolCallId: call.id });
     if (!result.ok) onEvent(`EDIT: ${call.name} failed for shot ${clip.position} — ${result.error.message}`);
   }
 
-  return unedited(`no final clip after ${maxIterations} turns`);
+  return finish(`no final clip after ${maxIterations} turns`);
 }
 
 /**
