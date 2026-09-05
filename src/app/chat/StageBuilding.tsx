@@ -3,7 +3,6 @@ import { describeError, getBrief, getRunProgress, isUnauthorized, streamExportUr
 import { ForgePane } from "../glass/ForgePane.tsx";
 import type { SetKey } from "../glass/geometry.ts";
 import { ShardPlayer } from "../glass/ShardPlayer.tsx";
-import { OrbLazy } from "../orb/OrbLazy.tsx";
 import { MetadataPanel } from "../stages/MetadataPanel.tsx";
 import type { BriefView, RunProgress } from "../types.ts";
 import { parseDigest } from "../types.ts";
@@ -18,16 +17,26 @@ import { dockedFraction } from "./orbit.ts";
  *
  * The sequence, as drawn:
  *
- *   1. The orb **emerges from the text input** and drifts gently up. It
- *      replaces both the board's black hole and its aurora (operator
- *      direction, 2026-09-04): "instead of using the aurora use the gradient
- *      orb and make it smoothly and fluid-like to emerge from the text input
- *      place and drift upwards gently".
+ *   1. The orb rises and settles **dead centre of the video card**, which is
+ *      also the centre of the ring and the point every shard docks into
+ *      (operator direction, 2026-09-05: "make sure the orb is in the center
+ *      as the video card gets slowly formed"). It replaces both the board's
+ *      black hole and its aurora (operator direction, 2026-09-04): "instead
+ *      of using the aurora use the gradient orb and make it smoothly and
+ *      fluid-like to emerge from the text input place and drift upwards
+ *      gently".
+ *
+ *      **The orb is rendered by `OrbitField`, not here.** It has to be a
+ *      sibling of the shards to be something they can pass behind and in
+ *      front of; while it lived in this column no z-index on any shard could
+ *      reach it. This screen owns *when* it rises and when it goes, and marks
+ *      the element it centres on — nothing else.
  *   2. The input locks — "won't accept anything until run ends (success or
  *      fails)". The prompt stays visible above it, greyed, so the operator can
  *      see what they asked for.
- *   3. The orb gathers the page's edge glass and sets it orbiting
- *      (`OrbitField`).
+ *   3. The orb gathers the page's edge glass and sets it orbiting, small,
+ *      tumbling on three axes, trailing dust, half of it behind the orb and
+ *      half in front (`OrbitField`).
  *   4. **As each pipeline stage lands**, shards leave the orbit and dock into
  *      the video card, whose fracture heals from 1 to 0.
  *   5. Healed, the card becomes a `ShardPlayer` — the same sealed → cracked →
@@ -188,7 +197,7 @@ export function StageBuilding({ briefId, traceId, prompt, dispatchNote, setKey, 
     <>
       {/* Replaces EdgeFrame for the life of this screen — these ARE the edge
           shards, leaving their edges. App.tsx hides the frame here. */}
-      <OrbitField setKey={setKey} progress={fraction} active={risen} />
+      <OrbitField setKey={setKey} progress={fraction} active={risen} cracked={cracked} anchor={`[data-orbit-anchor="${briefId}"]`} />
 
       <StageFrame
         eyebrow="Step 2 of 3"
@@ -196,33 +205,6 @@ export function StageBuilding({ briefId, traceId, prompt, dispatchNote, setKey, 
         blurb={statusLine(brief, progress, done)}
       >
         <div className="pointer-events-auto mx-auto flex h-full w-full max-w-2xl flex-col items-center">
-          {/*
-            The orb. Absolutely positioned, starting at the locked input's own
-            place and scale, and transitioning up and open once `risen` — the
-            board's "emerge from the text input place and drift upwards
-            gently".
-
-            **How it sits on a white page.** The vendored component renders
-            into an opaque WebGL canvas (`alpha: false`), so it is always a
-            filled rectangle. Two things were needed, both outside that file:
-
-            1. `background: "#ffffff"`, its own documented option. Passing
-               `"transparent"` is not a colour three.js can parse — it warned
-               and left the canvas white anyway, which is how the square was
-               found (`THREE.Color: Unknown color transparent`, 2026-09-04).
-            2. A radial mask on the wrapper (`.orb-rise` in shards.css) to cut
-               the rectangle away. `mix-blend-mode: multiply` — the trick
-               `Spheres.tsx` uses on this same ground — cannot work here,
-               because blending only reaches the backdrop inside its own
-               stacking context and the spheres are a fixed sibling far below.
-          */}
-          <div
-            aria-hidden="true"
-            className={`orb-rise pointer-events-none absolute left-1/2 z-0 ${risen ? "orb-rise--up" : ""} ${cracked ? "orb-rise--gone" : ""}`}
-          >
-            <OrbLazy config={{ background: "#ffffff", rotationSpeed: 0.22 }} />
-          </div>
-
           {/* The locked input. Still on screen, still holding the prompt,
               accepting nothing — "won't accept anything until run ends". */}
           <div className="z-10 w-full shrink-0 rounded-full border border-hairline bg-slate/40 px-5 py-3 text-sm text-bone/70">
@@ -238,12 +220,16 @@ export function StageBuilding({ briefId, traceId, prompt, dispatchNote, setKey, 
                 same pane. `fracture` is `1 - done/6` — counted facts, not a
                 curve. */}
             {exportId === null ? (
-              <div className="w-1/2 max-w-[16rem]">
+              /* The anchor: `OrbitField` measures this box every frame and
+                 centres the orb, the ring and the dock target on it. Keyed by
+                 brief id so the selector cannot match a stale node left by a
+                 previous screen. */
+              <div className="w-1/2 max-w-[16rem]" data-orbit-anchor={briefId}>
                 <ForgePane fracture={1 - fraction} glow="var(--violet)" clips={[]} working={running} />
               </div>
             ) : (
               <>
-                <div className="w-1/2 max-w-[16rem]">
+                <div className="w-1/2 max-w-[16rem]" data-orbit-anchor={briefId}>
                   <ShardPlayer
                     src={streamExportUrl(exportId)}
                     onStateChange={onPlayerState}

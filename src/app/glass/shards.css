@@ -170,6 +170,15 @@
   opacity: 0.85;
 }
 
+/* On the building screen these fragments are not border decoration, they are
+   the subject — so they come up from the edge frame's 0.36, which was chosen
+   to sit *behind* a stage rather than to be looked at. Still short of full
+   strength: they are glass, and glass on this ground is meant to be read
+   through. */
+.shard--orbit {
+  opacity: 0.74;
+}
+
 .shard--gone {
   opacity: 0;
   pointer-events: none;
@@ -618,22 +627,26 @@
 }
 
 /*
-   The orb emerging from the text input and drifting up.
+   The orb rising into the centre of the scene.
 
    The board: "make it smoothly and fluid-like to emerge from the text input
    place and drift upwards gently."
 
-   It starts as a small disc sitting exactly where the locked input is
-   (`top: 0`, the same row), and transitions to a large one above it. Two
-   separate durations, and the difference is the whole feel: the scale runs
-   slower than the translate, so the orb keeps swelling after it has arrived
-   rather than reaching its size and then sliding — which is what reads as
-   fluid rather than as a moving object.
+   It starts as a small disc low in the field and swells into a large one at
+   the centre. Two separate durations, and the difference is the whole feel:
+   the scale runs slower than the translate, so the orb keeps swelling after
+   it has arrived rather than reaching its size and then sliding — which is
+   what reads as fluid rather than as a moving object.
+
+   `left`/`top` are NOT set here. `OrbitField`'s loop writes them every frame
+   from the measured card, so the orb is centred on the thing being built
+   (operator direction, 2026-09-05) on every viewport rather than at a
+   hard-coded percentage that was right on one. This rule owns the transform
+   and only the transform; the two never touch the same property.
 
    `--ease-out` is the same curve every other entrance on this surface uses.
 */
 .orb-rise {
-  top: 0;
   width: 3.5rem;
   height: 3.5rem;
   /*
@@ -655,7 +668,7 @@
   */
   -webkit-mask-image: radial-gradient(circle at 50% 50%, #000 0%, #000 46%, transparent 62%);
   mask-image: radial-gradient(circle at 50% 50%, #000 0%, #000 46%, transparent 62%);
-  transform: translate(-50%, 0) scale(0.35);
+  transform: translate(-50%, calc(-50% + 5rem)) scale(0.35);
   opacity: 0;
   transition:
     transform 1.8s var(--ease-out),
@@ -665,25 +678,50 @@
 }
 
 /*
-   Where it comes to rest.
+   Where it comes to rest: dead centre of the card, which is also the centre
+   of the ring and the point every shard docks into (operator direction,
+   2026-09-05 — "make sure the orb is in the center as the video card gets
+   slowly formed").
 
    NOT at the top of the frame, which is where a first pass put it and where
    its bright core sat directly behind the stage title and washed it out. The
    board's panel 3 is the one that settles this: during a run the orb belongs
    among the orbiting shards with the healing card in front of it — "black
-   hole still visible behind the glass slab". So it rises to roughly the ring
-   centre `OrbitField` uses, which clears the header and puts the card
-   between the operator and the orb, exactly as drawn.
+   hole still visible behind the glass slab".
 
    The mask fades in from 46% of the radius, so the visible core starts well
-   inside this box — that is what lets the box overlap the input's row without
-   anything bright reaching the blurb above it.
+   inside this box — that is what lets a 17rem box sit behind a 16rem card
+   without anything bright reaching past its edges.
 */
 .orb-rise--up {
-  width: 17rem;
-  height: 17rem;
-  transform: translate(-50%, -18%) scale(1);
+  /*
+     Sized against the viewport, not fixed, and the ratio is the point rather
+     than the number. The ring's radius is 27% of the field's width and the
+     mask leaves roughly 0.44 of this box visible, so `38vw` is what puts the
+     orbit clear of the orb's edge at every width — at a flat 34rem the orb
+     was wider than a phone and every fragment orbited inside its glow. The
+     cap is where it stops growing on a very wide monitor.
+  */
+  width: min(38vw, 34rem);
+  height: min(38vw, 34rem);
+  transform: translate(-50%, -50%) scale(1);
   opacity: 0.82;
+}
+
+/*
+   Portrait, matching the `(max-aspect-ratio: 1/1)` query `App.tsx` picks the
+   atlas by, so the orb and the fragment set change over together.
+
+   A phone's card is nearly half the screen wide, and 38vw of it leaves the
+   orb's visible core entirely behind that card — present in the DOM, invisible
+   on the device. The ring widens to 44% here to keep the fragments clear of
+   the bigger orb; the two numbers only make sense as a pair.
+*/
+@media (max-aspect-ratio: 1/1) {
+  .orb-rise--up {
+    width: 72vw;
+    height: 72vw;
+  }
 }
 
 /* The board: the orb stays visible behind the sealed slab, "but upon first
@@ -709,6 +747,49 @@
 .orbit-shard {
   will-change: transform, opacity;
   transition: opacity 0.6s var(--ease-out);
+  /*
+     Depth for the fragment INSIDE this wrapper. `useShardField` writes
+     rotateX/rotateY/translateZ to `.shard`, and without a perspective on an
+     ancestor those flatten into a shear — which is what happened the moment
+     the scene layer stopped being `preserve-3d`. It had to stop: a
+     `preserve-3d` parent sorts its children by 3D position and ignores
+     z-index, and z-index is the only thing that puts a shard in front of the
+     orb (see OrbitField). So the perspective moves down here, onto each
+     wrapper, where it depends on no ancestor at all.
+
+     The wrapper's OWN tumble gets its depth from the `perspective()` function
+     inside the transform the loop writes — same reason, one level up.
+  */
+  perspective: 1000px;
+}
+
+/*
+   One speck of the dust the ring trails (operator direction, 2026-09-05).
+
+   "very minute glass debris that are non interactable": one to four pixels,
+   no handlers, no `data-shard`, and `pointer-events: none` so eighty of them
+   crossing the cursor never steal a hover from the ten fragments that ARE
+   interactive.
+
+   Not a round dot. The fleck is clipped to a rhombus and lit from one side,
+   because at three pixels the only thing that distinguishes glass from dust
+   is that it has edges and a highlight. Colour comes from the same two tokens
+   the fragments do, so the band belongs to the same material.
+*/
+.orbit-debris {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  clip-path: polygon(50% 0%, 100% 42%, 62% 100%, 8% 74%);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--violet) 55%, var(--mercury)), color-mix(in srgb, var(--mercury) 45%, transparent));
+  will-change: transform, opacity;
+  pointer-events: none;
+  /* Invisible until the loop has placed it. The specks render before the
+     atlas has decoded — they do not need it — and without this the first
+     paint is seventy-six flecks stacked in the top-left corner, which is
+     where an element with no transform sits. */
+  opacity: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

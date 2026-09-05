@@ -11,14 +11,47 @@
 --    `queuePlan`'s validation all work with no change whatsoever. A synthetic
 --    signal needs a source, and the existing CHECK refused one.
 --
---    SQLite cannot ALTER a CHECK constraint, so the table is rebuilt in the
---    12-step order the SQLite docs prescribe. Every column, index and default
---    is reproduced exactly; only the CHECK is wider.
+--    SQLite cannot ALTER a CHECK constraint, so the table is rebuilt. Every
+--    column, index and default is reproduced exactly; only the CHECK is
+--    wider — and the rebuild is written to survive D1, which is a longer
+--    story told where it happens, below.
 --
 -- 2. `briefs` — one row per thing the operator asked for.
 -- 3. `brief_attachments` — the files they attached, whose bytes are in R2.
 
-PRAGMA foreign_keys=OFF;--> statement-breakpoint
+-- SQLite cannot ALTER a CHECK constraint, so `sources` is rebuilt. The
+-- 12-step recipe in the SQLite docs opens with `PRAGMA foreign_keys=OFF`,
+-- and on D1 that line is a lie: wrangler applies a migration inside one
+-- transaction, and `PRAGMA foreign_keys` is documented as a no-op within a
+-- transaction. So foreign keys stayed ON, and `DROP TABLE sources` did what
+-- an enforced drop of a *parent* table does — an implicit `DELETE FROM
+-- sources`, which fires `signals.source_id`'s ON DELETE CASCADE and takes
+-- signals → scripts → renders with it, until `exports.render_id` (ON DELETE
+-- no action) refuses and the whole migration rolls back. That is the
+-- SQLITE_CONSTRAINT_FOREIGNKEY the 2026-09-05 deploy died on, and the refusal
+-- is the only reason 1,234 signals and 14 exports still exist.
+--
+-- `PRAGMA defer_foreign_keys` is D1's supported replacement, but on its own
+-- it does not save this: deferral postpones the *check*, and a cascade is an
+-- *action*. Verified locally against a copy of this foreign-key graph — with
+-- deferral alone the drop still deletes signals, scripts and renders, and
+-- then fails at COMMIT on the dangling exports.
+--
+-- So the drop is made to find nothing to cascade to. The children are
+-- repointed to ids no source row has, which is a foreign-key violation that
+-- deferral genuinely does cover; the emptied-of-matches drop cascades to zero
+-- rows; the new table takes the name, which is what `signals`' FK clause
+-- resolves by; and the children are repointed back before COMMIT, so the
+-- deferred-violation counter returns to zero. `signals` is the only table
+-- with a foreign key to `sources`.
+--
+-- The new CHECK is written unqualified. Drizzle emits `CHECK("__new_sources".
+-- "kind" ...)`, and that qualifier has to survive the rename to `sources`;
+-- D1's SQLite rewrites it (migration 0002 did exactly this and the live
+-- schema reads `"signals"."state"`), but SQLite 3.54 refuses the rename
+-- outright. Unqualified is correct on both.
+
+PRAGMA defer_foreign_keys=on;--> statement-breakpoint
 
 CREATE TABLE `__new_sources` (
 	`id` text PRIMARY KEY NOT NULL,
@@ -28,16 +61,21 @@ CREATE TABLE `__new_sources` (
 	`last_seen_at` text,
 	`etag` text,
 	`last_modified` text,
-	CONSTRAINT "chk_sources_kind" CHECK("__new_sources"."kind" IN ('reddit','rss','x','youtube_community','operator'))
+	CONSTRAINT "chk_sources_kind" CHECK(`kind` IN ('reddit','rss','x','youtube_community','operator'))
 );--> statement-breakpoint
 
 INSERT INTO `__new_sources` (`id`, `kind`, `url`, `enabled`, `last_seen_at`, `etag`, `last_modified`)
 	SELECT `id`, `kind`, `url`, `enabled`, `last_seen_at`, `etag`, `last_modified` FROM `sources`;--> statement-breakpoint
 
+-- Verified 2026-09-05 against the live database: no `signals.source_id`
+-- begins with this prefix, and the strip below is guarded by the same LIKE,
+-- so a row that somehow did is left alone rather than truncated.
+UPDATE `signals` SET `source_id` = 'mig0017:' || `source_id`;--> statement-breakpoint
+
 DROP TABLE `sources`;--> statement-breakpoint
 ALTER TABLE `__new_sources` RENAME TO `sources`;--> statement-breakpoint
 
-PRAGMA foreign_keys=ON;--> statement-breakpoint
+UPDATE `signals` SET `source_id` = substr(`source_id`, 9) WHERE `source_id` LIKE 'mig0017:%';--> statement-breakpoint
 
 CREATE TABLE `briefs` (
 	`id` text PRIMARY KEY NOT NULL,

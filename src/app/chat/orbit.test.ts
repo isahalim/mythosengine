@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { dockedFor, dockedFraction, easeOut, GATHER_S, ORBIT_PERIOD_S, orbitPose, type OrbitCentre, type OrbitSeed } from "./orbit.ts";
+import {
+  debrisPose,
+  debrisSeeds,
+  dockedFor,
+  dockedFraction,
+  DOCK_SPAN,
+  easeOut,
+  GATHER_S,
+  ORBIT_PERIOD_S,
+  ORBIT_SPAN,
+  orbitPose,
+  spread,
+  type OrbitCentre,
+  type OrbitSeed,
+} from "./orbit.ts";
 
 /**
  * The orbit's arithmetic, tested away from rAF and the DOM.
@@ -9,8 +23,17 @@ import { dockedFor, dockedFraction, easeOut, GATHER_S, ORBIT_PERIOD_S, orbitPose
  * the orbit behaves can be checked without a browser.
  */
 
-const CENTRE: OrbitCentre = { x: 50, y: 34, rx: 26, ry: 15 };
-const seed = (index: number, count = 4, fromX = 0, fromY = 0): OrbitSeed => ({ fromX, fromY, index, count });
+const CENTRE: OrbitCentre = { x: 50, y: 50, rx: 27, ry: 13 };
+const seed = (index: number, count = 4, fromX = 0, fromY = 0, span = 20): OrbitSeed => ({ fromX, fromY, index, count, span });
+
+/** The elapsed time at which a given index sits on the near half of the ring, so a test can pick a moment rather than hope for one. */
+function nearHalf(index: number, count: number): number {
+  // angle = index/count*2π - π/2 + (t/period)*2π, and depth is sin(angle), so
+  // the near point is angle = π/2 — half a period on from where index 0
+  // starts, less however far round the ring this index already is.
+  const t = ORBIT_PERIOD_S * (0.5 - index / count);
+  return t < GATHER_S ? t + ORBIT_PERIOD_S : t;
+}
 
 describe("easeOut", () => {
   it("clamps outside 0..1 rather than overshooting", () => {
@@ -20,6 +43,22 @@ describe("easeOut", () => {
 
   it("front-loads the motion, which is what makes a shard leave its edge and settle", () => {
     expect(easeOut(0.5)).toBeGreaterThan(0.5);
+  });
+});
+
+describe("spread", () => {
+  it("is deterministic, because these poses have to survive a reload and a test run unchanged", () => {
+    expect(spread(3)).toBe(spread(3));
+    expect(spread(3, 0.2)).toBe(spread(3, 0.2));
+  });
+
+  it("stays inside 0..1 and does not repeat across a ring's worth of indices", () => {
+    const values = Array.from({ length: 12 }, (_, i) => spread(i));
+    for (const v of values) {
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThan(1);
+    }
+    expect(new Set(values.map((v) => v.toFixed(6))).size).toBe(12);
   });
 });
 
@@ -63,7 +102,7 @@ describe("orbitPose", () => {
     const pose = orbitPose(seed(0, 4, 12, 8), CENTRE, 0, 0);
     expect(pose.dx).toBe(0);
     expect(pose.dy).toBe(0);
-    expect(pose.opacity).toBe(1);
+    expect(pose.scale).toBe(1);
   });
 
   it("has moved it onto the ring by the end of the gather", () => {
@@ -94,20 +133,94 @@ describe("orbitPose", () => {
     expect(new Set(positions).size).toBe(4);
   });
 
-  it("collapses a docked shard toward the centre and shrinks it, rather than teleporting it", () => {
+  /*
+   * Operator direction, 2026-09-05: "way smaller ... and only get slowly big
+   * as a stage finishes and comes to form the video card". Two assertions,
+   * because the instruction has two halves and either one alone would let the
+   * other regress silently.
+   */
+  it("shrinks a fragment to a fraction of its edge size once it is on the ring", () => {
+    const s = seed(0, 4, 0, 0, 20);
+    const pose = orbitPose(s, CENTRE, GATHER_S, 0);
+    expect(pose.scale).toBeLessThan(0.6);
+    // Normalised against the fragment's own span, so a 6% sliver and a 27%
+    // slab end up the same size on the ring rather than one of each.
+    const slab = orbitPose(seed(0, 4, 0, 0, 44), CENTRE, GATHER_S, 0);
+    expect(slab.scale * 44).toBeCloseTo(pose.scale * 20, 6);
+  });
+
+  it("grows a docking fragment well past its ring size, and lands it near the centre", () => {
     const s = seed(0, 4, 0, 0);
     const orbiting = orbitPose(s, CENTRE, GATHER_S, 0);
+    const halfway = orbitPose(s, CENTRE, GATHER_S, 0.5);
     const docked = orbitPose(s, CENTRE, GATHER_S, 1);
 
-    expect(Math.hypot(docked.dx - CENTRE.x, docked.dy - CENTRE.y)).toBeLessThan(Math.hypot(orbiting.dx - CENTRE.x, orbiting.dy - CENTRE.y));
-    expect(docked.scale).toBeLessThan(orbiting.scale);
+    expect(halfway.scale).toBeGreaterThan(orbiting.scale);
+    expect(docked.scale).toBeGreaterThan(halfway.scale);
+    expect(DOCK_SPAN).toBeGreaterThan(ORBIT_SPAN);
+
+    // The dock is a journey to the centre, not a jump: the pose lands the
+    // fragment on the orb rather than leaving it on the ring.
+    expect(Math.hypot(s.fromX + docked.dx - CENTRE.x, s.fromY + docked.dy - CENTRE.y)).toBeCloseTo(0, 6);
+  });
+
+  it("puts half the ring behind the orb and half in front, because that is where a tilted ring is", () => {
+    const count = 8;
+    const depths = Array.from({ length: count }, (_, i) => orbitPose(seed(i, count), CENTRE, GATHER_S, 0).depth);
+    expect(depths.filter((d) => d < 0).length).toBe(4);
+    expect(depths.filter((d) => d >= 0).length).toBe(4);
+  });
+
+  it("ties depth to the vertical position, so a near fragment is the low one and reads as nearer", () => {
+    const s = seed(0, 4, 0, 0);
+    const near = orbitPose(s, CENTRE, nearHalf(0, 4), 0);
+    const far = orbitPose(s, CENTRE, nearHalf(0, 4) + ORBIT_PERIOD_S / 2, 0);
+
+    expect(near.depth).toBeGreaterThan(0.99);
+    expect(far.depth).toBeLessThan(-0.99);
+    // Lower on the screen, larger, and not hazed.
+    expect(near.dy).toBeGreaterThan(far.dy);
+    expect(near.scale).toBeGreaterThan(far.scale);
+    expect(near.opacity).toBeGreaterThan(far.opacity);
+  });
+
+  it("tumbles on three axes at once — two would read as a spin, three read as a solid", () => {
+    const s = seed(1);
+    const a = orbitPose(s, CENTRE, GATHER_S + 1, 0);
+    const b = orbitPose(s, CENTRE, GATHER_S + 4, 0);
+    expect(b.rotX).not.toBeCloseTo(a.rotX, 3);
+    expect(b.rotY).not.toBeCloseTo(a.rotY, 3);
+    expect(b.rotZ).not.toBeCloseTo(a.rotZ, 3);
+    // Different rates, or the three axes would be one rotation in disguise.
+    expect(b.rotX - a.rotX).not.toBeCloseTo(b.rotY - a.rotY, 3);
+  });
+
+  it("gives different fragments different tumbles, so ten pieces are not one piece ten times", () => {
+    const angles = [0, 1, 2, 3].map((i) => orbitPose(seed(i), CENTRE, GATHER_S + 5, 0).rotY.toFixed(3));
+    expect(new Set(angles).size).toBe(4);
+  });
+
+  it("stops the tumble at both ends — nothing spins on the edge, nothing spins inside the card", () => {
+    const s = seed(1);
+    const pinned = orbitPose(s, CENTRE, 0, 0);
+    expect(pinned.rotX).toBe(0);
+    expect(pinned.rotY).toBe(0);
+    expect(pinned.rotZ).toBe(0);
+
+    const landed = orbitPose(s, CENTRE, GATHER_S + 5, 1);
+    expect(landed.rotX).toBe(0);
+    expect(landed.rotY).toBe(0);
+    expect(landed.rotZ).toBe(0);
   });
 
   it("holds a docking shard at full opacity for most of the journey, then takes it out", () => {
     const s = seed(0);
-    expect(orbitPose(s, CENTRE, GATHER_S, 0.5).opacity).toBe(1);
-    expect(orbitPose(s, CENTRE, GATHER_S, 0.7).opacity).toBe(1);
-    expect(orbitPose(s, CENTRE, GATHER_S, 0.85).opacity).toBeCloseTo(0.5, 2);
+    // Read as a ratio against the same moment undocked, so the far side's
+    // haze — which is about depth, not docking — cannot flip this test.
+    const base = orbitPose(s, CENTRE, GATHER_S, 0).opacity;
+    expect(orbitPose(s, CENTRE, GATHER_S, 0.5).opacity / base).toBeCloseTo(1, 5);
+    expect(orbitPose(s, CENTRE, GATHER_S, 0.7).opacity / base).toBeCloseTo(1, 5);
+    expect(orbitPose(s, CENTRE, GATHER_S, 0.85).opacity / base).toBeCloseTo(0.5, 2);
     expect(orbitPose(s, CENTRE, GATHER_S, 1).opacity).toBeCloseTo(0, 5);
   });
 
@@ -117,9 +230,60 @@ describe("orbitPose", () => {
     expect(orbitPose(s, CENTRE, GATHER_S, -2).scale).toBeCloseTo(orbitPose(s, CENTRE, GATHER_S, 0).scale, 5);
   });
 
-  it("never divides by zero when it is handed an empty ring", () => {
-    const pose = orbitPose({ fromX: 0, fromY: 0, index: 0, count: 0 }, CENTRE, GATHER_S, 0);
-    expect(Number.isFinite(pose.dx)).toBe(true);
-    expect(Number.isFinite(pose.dy)).toBe(true);
+  it("never divides by zero when it is handed an empty ring or a zero-span fragment", () => {
+    const empty = orbitPose({ fromX: 0, fromY: 0, index: 0, count: 0, span: 20 }, CENTRE, GATHER_S, 0);
+    expect(Number.isFinite(empty.dx)).toBe(true);
+    expect(Number.isFinite(empty.dy)).toBe(true);
+
+    const flat = orbitPose(seed(0, 4, 0, 0, 0), CENTRE, GATHER_S, 0);
+    expect(Number.isFinite(flat.scale)).toBe(true);
+  });
+});
+
+describe("debris", () => {
+  it("is deterministic and as many specks as it was asked for", () => {
+    expect(debrisSeeds(40)).toHaveLength(40);
+    expect(debrisSeeds(12)).toEqual(debrisSeeds(12));
+    expect(debrisSeeds(0)).toEqual([]);
+  });
+
+  it("is very minute, and spread over a band rather than a line", () => {
+    const seeds = debrisSeeds(60);
+    for (const s of seeds) {
+      expect(s.size).toBeGreaterThanOrEqual(1);
+      expect(s.size).toBeLessThanOrEqual(4);
+    }
+    const radii = seeds.map((s) => s.radius);
+    expect(Math.max(...radii) - Math.min(...radii)).toBeGreaterThan(0.5);
+  });
+
+  it("runs the inner specks faster than the outer ones, which is what shears the band into trails", () => {
+    const seeds = debrisSeeds(60);
+    const inner = seeds.reduce((a, b) => (a.radius < b.radius ? a : b));
+    const outer = seeds.reduce((a, b) => (a.radius > b.radius ? a : b));
+    expect(inner.speed).toBeGreaterThan(outer.speed);
+  });
+
+  it("shares the shards' ring, tilt and depth rule, or neither would read as one plane", () => {
+    const s = debrisSeeds(8)[0];
+    const over = Array.from({ length: 24 }, (_, i) => debrisPose(s, CENTRE, i));
+    expect(over.some((p) => p.depth < 0)).toBe(true);
+    expect(over.some((p) => p.depth > 0)).toBe(true);
+
+    const near = over.reduce((a, b) => (a.depth > b.depth ? a : b));
+    const far = over.reduce((a, b) => (a.depth < b.depth ? a : b));
+    expect(near.y).toBeGreaterThan(far.y);
+    expect(near.scale).toBeGreaterThan(far.scale);
+    expect(near.opacity).toBeGreaterThan(far.opacity);
+  });
+
+  it("stays inside the field it is given rather than flying off the screen", () => {
+    for (const s of debrisSeeds(40)) {
+      for (let t = 0; t < ORBIT_PERIOD_S; t += 1.5) {
+        const p = debrisPose(s, CENTRE, t);
+        expect(Math.abs(p.x - CENTRE.x)).toBeLessThan(CENTRE.rx * 1.5);
+        expect(Math.abs(p.y - CENTRE.y)).toBeLessThan(CENTRE.ry * 1.5 + 2);
+      }
+    }
   });
 });
