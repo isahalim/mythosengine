@@ -32,13 +32,23 @@
  *
  * Operator direction (2026-09-05): on the chat route the card is not
  * pre-made. It starts with no fragments at all and takes one as each
- * milestone lands — `assembled` — so the pieces the orbit is docking have
- * somewhere to arrive and the card is visibly built rather than visibly
- * repaired. That is the landing demo's progression (`useScrollAssembly`
+ * milestone lands — `assembled` — so the card is visibly built rather than
+ * visibly repaired. That is the landing demo's progression (`useScrollAssembly`
  * lands one fragment per stage) driven by counted pipeline facts instead of
  * by scroll. Stage 5 passes nothing and keeps the whole mosaic from the
  * first frame: it shows up to six cards at once and a grid of part-built
  * ones reads as a rendering fault rather than as progress.
+ *
+ * Operator direction (2026-09-05, later): a pane that is being ASSEMBLED
+ * draws no crack lines at all — "there shouldn't be a empty purple frame ...
+ * The glass shards should settle in free float to make the video card, but
+ * without any guidance of those purple lines". The fracture SVG is the right
+ * layer for a card that exists and is broken, which is stage 5's case; on a
+ * card with no fragments in it yet it drew a violet wireframe of the shape
+ * the fragments were going to take — an outline of a video nothing had made.
+ * So the cracks are tied to `assembled === undefined`, which is exactly "this
+ * pane is not being built out of milestones"; `fracture` on an assembling
+ * pane reaches only the glow.
  *
  * The fracture is NOT an estimate. src/server/console/runs.ts is explicit
  * that the waiting screen "does not interpolate a percentage, estimate a
@@ -65,14 +75,15 @@ interface ForgePaneProps {
   working: boolean;
   /**
    * How much of the card has arrived, 0..1, from the caller's counted
-   * milestones — the same fraction the orbit docks its shards on.
+   * milestones.
    *
    * Undefined means "all of it", which is stage 5's case and the default:
    * that screen's cards are not being assembled out of anything on screen.
    * When it IS passed, the fragment count is floored rather than rounded, so
    * a fragment only ever appears once the milestone that brings it is
-   * actually true — the same rule `dockedFor` uses, and the reason the two
-   * stay in step.
+   * actually true — this pane never shows progress that has not happened.
+   * Passing it also takes the crack lines off the card entirely; see the
+   * header.
    */
   assembled?: number;
   /**
@@ -220,24 +231,29 @@ export function ForgePane({ fracture, assembled, glow, clips, working, variant =
       </div>
 
       {/* The fracture itself, glowing from within — and healing as the
-          milestones land. At fracture 0 the opacity is 0: no cracks. */}
-      <svg
-        className={`forge-crack ${working ? "forge-crack--working" : ""}`}
-        viewBox={`0 0 ${cracks.w} ${cracks.h}`}
-        preserveAspectRatio="none"
-        aria-hidden="true"
-      >
-        <g style={{ strokeWidth: 2.4, opacity: 0.5 }}>
-          {cracks.main.map((d) => (
-            <path key={d} d={d} />
-          ))}
-        </g>
-        <g style={{ strokeWidth: 1 }}>
-          {cracks.main.map((d) => (
-            <path key={`l-${d}`} d={d} />
-          ))}
-        </g>
-      </svg>
+          milestones land. At fracture 0 the opacity is 0: no cracks. Not
+          drawn at all on a pane that is being assembled: there is nothing to
+          crack yet, and an outline of the card to come is a guide the
+          operator did not ask for. See the header. */}
+      {assembled === undefined && (
+        <svg
+          className={`forge-crack ${working ? "forge-crack--working" : ""}`}
+          viewBox={`0 0 ${cracks.w} ${cracks.h}`}
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <g style={{ strokeWidth: 2.4, opacity: 0.5 }}>
+            {cracks.main.map((d) => (
+              <path key={d} d={d} />
+            ))}
+          </g>
+          <g style={{ strokeWidth: 1 }}>
+            {cracks.main.map((d) => (
+              <path key={`l-${d}`} d={d} />
+            ))}
+          </g>
+        </svg>
+      )}
     </div>
   );
 }

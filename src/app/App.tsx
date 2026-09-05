@@ -11,10 +11,12 @@
  * (docs/CHAT_PIPELINE.md); the second opens the five stages this system has
  * always had, unchanged. They rejoin at `review`.
  *
- * The one place the edge frame is NOT mounted is the chat route's building
- * screen, where `OrbitField` renders those same fragments leaving their edges
- * to orbit the orb. Two sets of border glass, one of them departing, would
- * read as a copy of the other.
+ * The edge frame is mounted on every stage, the chat route's building screen
+ * included. It was the one exception for four days, because that screen used
+ * to gather those same fragments off the borders and set them orbiting the
+ * orb — two sets of border glass, one of them departing, would have read as a
+ * copy. The orbit was removed on 2026-09-05 (operator direction), so the
+ * exception went with it and this screen has the same chrome as the rest.
  *
  * The lava-lamp spheres are mounted once, above everything's z-index
  * floor and below every surface — they never remount, so they keep
@@ -166,7 +168,6 @@ export default function App() {
             traceId={state.traceId}
             prompt={state.prompt ?? ""}
             dispatchNote={state.dispatchNote}
-            setKey={setKey}
             onReview={() => dispatch({ type: "goto", stage: "review" })}
             onUnauthorized={onUnauthorized}
           />
@@ -218,14 +219,10 @@ export default function App() {
     }
   })(state.stage);
 
-  // The building screen owns the edge glass for as long as it is up: those
-  // fragments are the ones it gathers into orbit.
-  const edgeFrameHidden = state.stage === "building";
-
   return (
     <>
       <Spheres />
-      {!edgeFrameHidden && <EdgeFrame setKey={setKey} />}
+      <EdgeFrame setKey={setKey} />
       <TopBar
         current={state.stage}
         furthest={furthest}

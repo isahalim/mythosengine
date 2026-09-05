@@ -8,8 +8,12 @@ import { StageFrame } from "../ui/StageFrame.tsx";
  * The chat route's first screen — panel 1 of the chat design board.
  *
  * One input, centred, with a `+` on the left and a submit on the right. The
- * placeholder cycles, fading in and out behind a cursor bar, and the whole
- * cue greys out and disappears the moment the operator types.
+ * placeholder cycles, fading in and out, and the whole cue greys out and
+ * disappears the moment the operator types. There is no caret drawn beside
+ * it (operator direction, 2026-09-05): the field is empty and unfocused, so
+ * a blinking bar there was a caret the operator did not have — it invited a
+ * click that had already happened and did nothing to say "type" that the
+ * cue's own text was not saying.
  *
  * **The placeholder text is static copy, not model-generated.** The design
  * board's note beside it reads "use gemini 3.7 flash for now" — there is no
@@ -179,13 +183,12 @@ export function StageCompose({ onSubmitted, onUnauthorized }: StageComposeProps)
                 className="w-full bg-transparent text-sm text-mercury outline-none placeholder:text-transparent disabled:opacity-60"
               />
               {/* The cue lives beside the input rather than in `placeholder`,
-                  because a native placeholder cannot cross-fade and cannot
-                  carry a cursor bar. `pointer-events-none` so clicking it
-                  still focuses the field underneath. */}
+                  because a native placeholder cannot cross-fade.
+                  `pointer-events-none` so clicking it still focuses the field
+                  underneath. */}
               {empty && (
                 <span key={cue} className="chat-cue pointer-events-none absolute inset-y-0 left-0 flex items-center text-sm text-bone">
                   {PLACEHOLDERS[cue]}
-                  <i className="chat-caret ml-0.5 inline-block h-4 w-px bg-bone align-middle" aria-hidden="true" />
                 </span>
               )}
             </div>

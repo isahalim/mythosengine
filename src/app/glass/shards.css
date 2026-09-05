@@ -170,15 +170,6 @@
   opacity: 0.85;
 }
 
-/* On the building screen these fragments are not border decoration, they are
-   the subject — so they come up from the edge frame's 0.36, which was chosen
-   to sit *behind* a stage rather than to be looked at. Still short of full
-   strength: they are glass, and glass on this ground is meant to be read
-   through. */
-.shard--orbit {
-  opacity: 0.74;
-}
-
 .shard--gone {
   opacity: 0;
   pointer-events: none;
@@ -477,8 +468,8 @@
 
    The fade is slower than `.shard`'s own 0.3s and it is the one place a
    fragment's opacity is worth a full second: this is a piece of glass
-   arriving from the orbit, at the moment the orbiting one fades out at the
-   centre, and the two have to read as one handover rather than as a swap.
+   settling into a card that is being built out of nothing, and it has to
+   read as arriving rather than as switching on.
    `filter: none` because the resting drop-shadow would otherwise still be
    cast by a fragment that is not there.
 */
@@ -652,18 +643,6 @@
   100% { opacity: 0; }
 }
 
-/* The cursor bar beside it. Blinks on the terminal's own cadence rather than
-   a browser caret's, because there is no real caret here — the field is
-   empty and unfocused, and the bar is what says "type". */
-.chat-caret {
-  animation: chat-caret 1.1s steps(1, end) infinite;
-}
-
-@keyframes chat-caret {
-  0%, 49% { opacity: 1; }
-  50%, 100% { opacity: 0; }
-}
-
 /*
    The orb rising into the centre of the scene.
 
@@ -676,7 +655,7 @@
    it has arrived rather than reaching its size and then sliding — which is
    what reads as fluid rather than as a moving object.
 
-   `left`/`top` are NOT set here. `OrbitField`'s loop writes them every frame
+   `left`/`top` are NOT set here. `OrbField`'s loop writes them every frame
    from the measured card, so the orb is centred on the thing being built
    (operator direction, 2026-09-05) on every viewport rather than at a
    hard-coded percentage that was right on one. This rule owns the transform
@@ -716,16 +695,15 @@
 }
 
 /*
-   Where it comes to rest: dead centre of the card, which is also the centre
-   of the ring and the point every shard docks into (operator direction,
+   Where it comes to rest: dead centre of the card (operator direction,
    2026-09-05 — "make sure the orb is in the center as the video card gets
    slowly formed").
 
    NOT at the top of the frame, which is where a first pass put it and where
    its bright core sat directly behind the stage title and washed it out. The
-   board's panel 3 is the one that settles this: during a run the orb belongs
-   among the orbiting shards with the healing card in front of it — "black
-   hole still visible behind the glass slab".
+   board's panel 3 is the one that settles this: during a run the orb sits
+   behind the card being built — "black hole still visible behind the glass
+   slab".
 
    The mask fades in from 46% of the radius, so the visible core starts well
    inside this box — that is what lets a 17rem box sit behind a 16rem card
@@ -733,12 +711,10 @@
 */
 .orb-rise--up {
   /*
-     Sized against the viewport, not fixed, and the ratio is the point rather
-     than the number. The ring's radius is 27% of the field's width and the
-     mask leaves roughly 0.44 of this box visible, so `38vw` is what puts the
-     orbit clear of the orb's edge at every width — at a flat 34rem the orb
-     was wider than a phone and every fragment orbited inside its glow. The
-     cap is where it stops growing on a very wide monitor.
+     Sized against the viewport, not fixed. A flat 34rem was wider than a
+     phone; the cap is where it stops growing on a very wide monitor, and the
+     mask leaves roughly 0.44 of this box visible so the glow never reaches
+     past the card it sits behind.
   */
   width: min(38vw, 34rem);
   height: min(38vw, 34rem);
@@ -751,9 +727,8 @@
    atlas by, so the orb and the fragment set change over together.
 
    A phone's card is nearly half the screen wide, and 38vw of it leaves the
-   orb's visible core entirely behind that card — present in the DOM, invisible
-   on the device. The ring widens to 44% here to keep the fragments clear of
-   the bigger orb; the two numbers only make sense as a pair.
+   orb's visible core entirely behind that card — present in the DOM,
+   invisible on the device.
 */
 @media (max-aspect-ratio: 1/1) {
   .orb-rise--up {
@@ -762,133 +737,27 @@
   }
 }
 
-/* The board: the orb stays visible behind the sealed slab, "but upon first
-   crack it disappears". A fade rather than a cut, and slow — the video is
-   about to start and a hard removal would pull the eye back to the
+/* The orb leaves when the card is whole (operator direction, 2026-09-05:
+   "when the glass video card gets healed, fade out the gradient orb at that
+   time. Dont wait for the first click/shatter to remove it"). It used to
+   wait for the operator's first click on the finished player, so a run that
+   finished unattended sat with the orb burning through the video for as long
+   as nobody touched it. A fade rather than a cut, and slow — the card has
+   just become a video and a hard removal would pull the eye back to the
    background at exactly the wrong moment. */
 .orb-rise--gone {
   opacity: 0;
   transition: opacity 1.4s var(--ease-out);
 }
 
-/*
-   The wrapper each orbiting shard hangs in.
-
-   It carries the fade and the paint order against the orb, and NOTHING that
-   would flatten what is inside it. `opacity` is transitioned rather than
-   written raw so a shard that docks between two frames still fades rather
-   than blinking.
-*/
-.orbit-shard {
-  will-change: opacity;
-  transition: opacity 0.6s var(--ease-out);
-}
-
-/*
-   The fragment itself, in three dimensions.
-
-   It carries a transform written every frame by OrbitField's rAF loop, and
-   NOTHING else may animate `transform` on this element — `.float-group`'s
-   drift keyframe in particular would fight it. `will-change` because this is
-   one of ten elements moving continuously for the length of a render.
-
-   **Why this is not the wrapper.** `opacity` below 1 is a grouping property:
-   it forces the used value of `transform-style` to `flat` on whatever carries
-   it. The far half of the ring is dimmed, so a single element carrying both
-   the fade and the extrusion would have collapsed the slab onto its own face
-   for half of every revolution — and the eight body copies, being later in
-   the DOM, would then have painted over it. Two elements, one property each.
-
-   `preserve-3d` is what separates the body layers from the face rather than
-   flattening them onto it (operator direction, 2026-09-05). It is legal here
-   and forbidden on the scene layer for one reason: `preserve-3d` sorts
-   children by 3D position and ignores z-index, and up there z-index is the
-   entire mechanism that puts a fragment in front of the orb. In here the only
-   children are one face and its own body, and depth order is precisely what
-   they should be sorted by.
-
-   `perspective` gives depth to BOTH the body layers and the `.shard` inside —
-   `useShardField` writes rotateX/rotateY/translateZ there, and without a
-   perspective on an ancestor those flatten into a shear. It lives here rather
-   than on the scene, where it would have had to be `preserve-3d` to reach
-   this far down. The tumble this element writes for ITSELF gets its depth
-   from the `perspective()` function inside that transform — same reason, one
-   level up.
-*/
-.orbit-pose {
-  position: absolute;
-  inset: 0;
-  will-change: transform;
-  transform-style: preserve-3d;
-  perspective: 1000px;
-}
-
-/*
-   One layer of a fragment's thickness.
-
-   The same silhouette as the shard it hangs behind — the mask comes off the
-   same atlas sprite, written inline by OrbitField — filled with a flat pane
-   of glass rather than the sprite's own facets: this is the *inside* of the
-   material, and printing the fracture detail eight more times behind the face
-   would read as a smeared duplicate rather than as depth. The tint is the two
-   tokens the fragments and the dust already share, so the body belongs to the
-   same glass.
-
-   No handler, no `data-shard`, `pointer-events: none`. `will-change` is
-   deliberately absent: unlike the wrapper and the dust, nothing ever
-   re-writes this transform — it is set once and inherited into the wrapper's
-   motion, and promoting eighty static layers to their own compositor tiles
-   would cost far more than it saves.
-*/
-.orbit-body {
-  position: absolute;
-  inset: 0;
-  display: block;
-  pointer-events: none;
-  background: linear-gradient(128deg, color-mix(in srgb, var(--violet) 42%, var(--mercury)), color-mix(in srgb, var(--mercury) 62%, transparent));
-}
-
-/*
-   One speck of the dust the ring trails (operator direction, 2026-09-05).
-
-   "very minute glass debris that are non interactable": one to four pixels,
-   no handlers, no `data-shard`, and `pointer-events: none` so eighty of them
-   crossing the cursor never steal a hover from the ten fragments that ARE
-   interactive.
-
-   Not a round dot. The fleck is clipped to a rhombus and lit from one side,
-   because at three pixels the only thing that distinguishes glass from dust
-   is that it has edges and a highlight. Colour comes from the same two tokens
-   the fragments do, so the band belongs to the same material.
-*/
-.orbit-debris {
-  position: absolute;
-  left: 0;
-  top: 0;
-  display: block;
-  clip-path: polygon(50% 0%, 100% 42%, 62% 100%, 8% 74%);
-  background: linear-gradient(135deg, color-mix(in srgb, var(--violet) 55%, var(--mercury)), color-mix(in srgb, var(--mercury) 45%, transparent));
-  will-change: transform, opacity;
-  pointer-events: none;
-  /* Invisible until the loop has placed it. The specks render before the
-     atlas has decoded — they do not need it — and without this the first
-     paint is seventy-six flecks stacked in the top-left corner, which is
-     where an element with no transform sits. */
-  opacity: 0;
-}
-
 @media (prefers-reduced-motion: reduce) {
-  /* The cue stops cycling and the caret stops blinking; the text stays, so
-     the hint is still readable. The orb's rise becomes a cut to its final
-     pose — OrbitField makes the same choice for the shards, holding them at
-     their ring positions. */
-  .chat-cue,
-  .chat-caret {
+  /* The cue stops cycling; the text stays, so the hint is still readable.
+     The orb's rise becomes a cut to its final pose. */
+  .chat-cue {
     animation: none;
   }
 
-  .orb-rise,
-  .orbit-shard {
+  .orb-rise {
     transition: none;
   }
 }

@@ -122,48 +122,35 @@ Board panel 1. One pill input, `+` on the left, submit on the right. The placeho
 
 Board panels 2 and 3, one screen, no stage change.
 
-1. **The orb rises into the centre of the video card** (`.orb-rise` in `shards.css`), which is also the centre of the ring and the point every shard docks into (operator direction, 2026-09-05: "make sure the orb is in the center as the video card gets slowly formed"). It replaces both the board's black hole and its aurora. The scale runs slower than the translate, so it keeps swelling after it has arrived — which is what reads as fluid rather than as a moving object. It is rendered by `OrbitField`, not by `StageBuilding` — see *behind and in front*, below.
+1. **The orb rises into the centre of the video card** (`.orb-rise` in `shards.css`, operator direction 2026-09-05: "make sure the orb is in the center as the video card gets slowly formed"). It replaces both the board's black hole and its aurora. The scale runs slower than the translate, so it keeps swelling after it has arrived — which is what reads as fluid rather than as a moving object. It is rendered by `OrbField`, not by `StageBuilding`, because it is several times the card's width and the column the card lives in scrolls and clips.
 2. **The input locks**, still holding the prompt, greyed.
-3. **The shards gather and orbit** (`OrbitField.tsx`). They are literally the `edgeLayout` fragments — the same glass pinned to the borders of every other screen — leaving their edges and coming inward, which is the board's "gathering pieces from edges of website". `EdgeFrame` is unmounted for the life of this screen: two sets of border glass, one of them departing, would read as a copy. They arrive at their edge size and **shrink to roughly a twentieth of it** on the ring, tumbling on three axes, trailing a band of minute, non-interactable glass dust.
-   **They are slabs, not sheets** (operator direction, 2026-09-05: "make them have depth as currently when they rotate, you can see them disappear for a bit as they are like paper thinness"). A `.shard` is one plane, and a plane at 90° is zero pixels wide — at 14-35°/s of tumble that was most of a second of nothing, twice a revolution. Each fragment now holds the lit face plus eight masked copies of the same silhouette stepped 8px backwards along Z, inside a `preserve-3d` `.orbit-pose`. The copies stop overlapping only past 89.2° (`tan θ = W·layers/depth`), and the depth is in **px through a 2D `scale()`**, so every fragment is the same thickness on screen whatever size it is.
-4. **The card is built out of the shards**, one fragment per milestone (operator direction, 2026-09-05: "during when the pipeline is running, don't pre-make the shards ... they should slowly get placed one by one as the pipeline progresses just like how it is in the demo's video card progression"). `ForgePane` starts with **no** fragments and takes one as each fact lands (`assembled` → `landedFragments`), so a shard fading out at the centre of the ring and a fragment appearing in the card are the same event. Its `fracture` goes `1 → 0` over the same six facts. Stage 5 passes no `assembled` and keeps the whole mosaic: a grid of six part-built cards reads as a rendering fault, not as progress.
-5. **The shatter progression**: `ShardPlayer`, unmodified — sealed → cracked → open → autoplay. The orb is visible behind the sealed slab and fades on the first crack, exactly as the board says.
-6. **Download · Review · Metadata · Discard** underneath (`ExportActions.tsx`, shared with stage 6).
+3. **The card is built out of shards**, one fragment per milestone (operator direction, 2026-09-05: "during when the pipeline is running, don't pre-make the shards ... they should slowly get placed one by one as the pipeline progresses just like how it is in the demo's video card progression"). `ForgePane` starts with **no** fragments and takes one as each fact lands (`assembled` → `landedFragments`), each one free floating in place. Stage 5 passes no `assembled` and keeps the whole mosaic: a grid of six part-built cards reads as a rendering fault, not as progress.
+4. **The shatter progression**: `ShardPlayer`, unmodified — sealed → cracked → open → autoplay.
+5. **Download · Review · Metadata · Discard** underneath (`ExportActions.tsx`, shared with stage 6).
 
-### The orbit, mechanically
+### What this screen deliberately does not draw
 
-Three transform layers, three owners, and **no two on one element**:
+*Operator direction, 2026-09-05: "I want to make the design more simple, so completely remove the orbiting glass shards and debris! Also there shouldn't be a empty purple frame! The glass shards should settle in free float to make the video card, but without any guidance of those purple lines!"*
 
-| Layer | Owner | Carries |
-|---|---|---|
-| `.orbit-shard` (wrapper) | `OrbitField`'s rAF loop | the fade, and the paint order against the orb — **no transform** |
-| `.orbit-pose` | `OrbitField`'s rAF loop | the orbit, the gather, the tumble, the dock, and the one `preserve-3d` |
-| `.shard` | `useShardField`'s spring loop | tilt, parallax, hover lift |
-| — | — | nothing else; in particular **not** `.float-group`, whose drift keyframe animates the same property |
+Three things were removed together, and they were one thing:
 
-The fade and the pose are two elements because `opacity` below 1 is a *grouping* property: it forces `transform-style: flat` on whatever carries it. The far half of the ring is dimmed, so one element carrying both would collapse each fragment's extrusion onto its own face for half of every revolution — and the body copies, being later in the DOM, would then paint over it. This is the ordinary `scene → cube → faces` arrangement: the scene may be flat, the cube may not.
+- **The orbit.** `OrbitField` gathered the ten `edgeLayout` fragments off the page borders, shrank them to a twentieth of their size, tumbled them on three axes around a tilted ring — half behind the orb, half in front, by `depth = sin(angle)` and a z-index flip — extruded each into an eight-layer slab so it was never edge-on and zero pixels wide, and docked one into the card per milestone on an eased approach to a counted target. All of it is gone, along with `orbit.ts`'s geometry and `OrbitField.tsx` itself. What is left is `OrbField.tsx` (the orb, centred on the measured card) and `progress.ts` (`milestoneFraction`, the counted rule the whole thing was driven by).
+- **The debris.** Seventy-six non-interactable specks trailing the ring, sheared into arcs by differential rotation.
+- **The crack lines on this card.** `ForgePane` draws its fracture SVG only when `assembled` is undefined — which is precisely "this pane is not being built out of milestones", i.e. stage 5. On a card with no fragments in it yet, a full-strength fracture drew a violet wireframe of a video nothing had made: an outline of the shape the fragments were going to take, which is a guide, not a fact. `fracture` still rides the counted fraction and now reaches only the glow.
 
-`useShardField`'s targets are closure-private and are reset by its own pointer handlers, so orbit positions could not be pushed through it even if that were desirable. This is the same idiom `ShardPlayer` uses for its spread, and it is what keeps the shards interactive while they orbit.
+`EdgeFrame` is mounted here again, like every other stage — it was unmounted for four days only because the orbit was taking those same fragments.
 
-`orbit.ts` is pure arithmetic and fully unit-tested; the loop does nothing but call it and write the result. Note that `orbitPose` returns offsets in **% of the field** and the loop converts them to pixels — a `translate` percentage resolves against the *wrapper's own box*, and these boxes range from 6% to 27% wide.
+### The orb leaves when the card is whole
 
-### Behind and in front
+*Operator direction, 2026-09-05: "when the glass video card gets healed, fade out the gradient orb at that time. Dont wait for the first click/shatter to remove it!"*
 
-The ring is a real ring seen at an angle, and `depth = sin(angle)` is the whole of it: +1 at the near edge of the ellipse, −1 at the far edge. It decides the perspective scale, the haze on the far side, and — the point of it — the **paint order against the orb**. A fragment is behind the orb for exactly half of every revolution because that is where the ring is, not because a timer said so.
+`OrbField`'s `healed` is `exportId !== null` — the sixth counted fact, the same one that turns the pane into a player. It used to be the player's own first crack, which is an act the operator performs: a run that finished while nobody was watching kept a `min(38vw, 34rem)` orb burning through the finished video until someone clicked it. `.orb-rise--gone` is a 1.4s fade, not a cut.
 
-That is only expressible if the orb and the fragments are siblings in one stacking context, which is why **`OrbitField` renders the orb** and `StageBuilding` only says when it rises and when it goes:
+The orb's centre is **measured**, not assumed: the loop reads the card's box (`data-orb-anchor`) every frame, because the card is a `ForgePane` at one moment and a `ShardPlayer` at the next, in a column that scrolls, and a hard-coded percentage is its centre on exactly one viewport height.
 
-| z-index | What |
-|---|---|
-| 1 | fragments and dust on the far half |
-| 2 | the orb |
-| 3 | fragments and dust on the near half |
+### The card is bounded by the viewport's height
 
-Two consequences worth knowing. The scene layer must stay **flat**: a `preserve-3d` parent sorts its children by 3D position and ignores z-index. So the perspective each fragment needs moves down onto `.orbit-shard` itself — the CSS property for the `.shard` inside it, the `perspective()` transform function for the wrapper's own tumble. And the scene's centre is **measured**, not assumed: the loop reads the card's box (`data-orbit-anchor`) every frame, because a hard-coded percentage is the card's centre on exactly one viewport height.
-
-### The dock is counted, and the approach is eased
-
-`dockedFor` is a step function — when a milestone lands, a shard's target goes 0 → 1 in one frame. Read straight into the pose that is a teleport, and "only get slowly big as a stage finishes" never happens on screen. So the loop eases each shard *toward* its counted target (`DOCK_TAU`, frame-rate independent), which is the same split `ForgePane` already makes between a counted `fracture` and the CSS transition that carries it. Nothing is invented: the value only ever moves toward a number `dockedFor` returned, the first frame takes its target whole so a reloaded run opens correct, and with reduced motion it is simply set.
+*Operator direction, 2026-09-05: "move the video card down so it doesn't clip at the top."* The card is `w-1/2 max-w-[min(16rem,24vh)]` and the column carries `pt-6`. A flat `16rem` is 455px of 9:16 card, and the finished state is that card plus a caption, four buttons and a metadata sheet — more than what is left of a laptop's viewport under the header and the locked prompt, so the column scrolled and scrolling put the top of the video under its own edge. The height cap is what removes the scroll on an ordinary window; the padding keeps the card's top edge clear when the metadata sheet does make it scroll.
 
 ### It scrolls
 
@@ -245,5 +232,5 @@ The first version of `chat-render.ts` imported `renderOneVideo` from `render.ts`
 | `src/lib/pipeline/narration-voice.ts` | Kore/English, and what an unmet request costs. |
 | `src/lib/rag/langchain-research.ts` | Grounded RESEARCH. |
 | `src/app/stages/StageFork.tsx` | The fork. |
-| `src/app/chat/**` | Compose, Building, OrbitField, orbit arithmetic, the shared export actions. |
+| `src/app/chat/**` | Compose, Building, OrbField, the counted progress fraction, the shared export actions. |
 | `src/app/orb/**` | The vendored 21st.dev Gradient Orb, and the lazy wrapper that keeps it out of the app's budget. |
