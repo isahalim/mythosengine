@@ -80,6 +80,17 @@ export interface ExportPackageInput {
   footage: FootageProvenance;
   ttsSettings: TtsSettingsUsed;
   auditResult: AuditResult;
+  /**
+   * Exactly what the operator typed, for a chat-route video — null for a
+   * brainstorm-route one, where nobody typed anything.
+   *
+   * §9 requires the audit package to carry what produced the video, and for
+   * a chat-route video the prompt IS that: the script, the footage and the
+   * research all descend from one sentence, and a reviewer who cannot see it
+   * cannot tell whether the video answers what was asked. Verbatim, never a
+   * summary — a summary of the input would be a second thing to audit.
+   */
+  operatorPrompt: string | null;
   suggestedTitle: string;
   suggestedDescription: string;
   suggestedTags: string[];
@@ -101,6 +112,10 @@ export function assembleAuditJson(input: ExportPackageInput): string {
     footage: input.footage,
     ttsSettings: input.ttsSettings,
     auditResult: input.auditResult,
+    // Top-level rather than inside `auditResult`, because it is an *input* to
+    // the run and everything in `auditResult` is a finding about the output.
+    // Stage 6's Metadata sheet reads it from here.
+    operatorPrompt: input.operatorPrompt,
   });
 }
 

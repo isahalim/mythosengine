@@ -6,6 +6,8 @@ Lives at `/console` on the same Worker that serves the Mythos Engine status page
 
 > Pivoted from MythosEngine's console spec, 2026-08-27; rescoped again 2026-08-27 (later the same day) for manual review — nothing uploads automatically anymore. §1 (auth) is structurally unchanged. §2 (key vault) loses the YouTube refresh token entry — there's no OAuth upload credential left to rotate. §3 is now a pipeline settings composer (voice/rate/sources/games/diversity), not just focus-game steering. §4 is rewritten for a review/export queue instead of an upload-approval queue.
 
+> **Superseded for the UI, 2026-08-31** by `docs/SIX_STAGES.md`, and **again on 2026-09-04** for the second route: signing in now lands on a fork, and `docs/CHAT_PIPELINE.md` governs what is behind the "already have an idea" side of it. This document stays authoritative for auth (§1), the key vault (§2) and the directive model — **including this**: the directive is still the only place voice, rate, source and game preferences live. A chat brief may name a voice or a language, but that override belongs to one render and never writes here (`src/lib/pipeline/narration-voice.ts`).
+
 ---
 
 ## 0. Threat model

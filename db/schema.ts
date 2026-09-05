@@ -14,7 +14,12 @@ export const sources = sqliteTable(
   "sources",
   {
     id: text("id").primaryKey(),
-    kind: text("kind", { enum: ["reddit", "rss", "x", "youtube_community"] }).notNull(),
+    // `operator` is not a feed. It is the single synthetic source the chat
+    // route hangs its briefs off (migration 0017): `signals.source_id` is a
+    // NOT NULL foreign key, so an operator-authored idea needs a row here
+    // before it can exist as a signal at all. WATCH never polls it — it has
+    // no real URL and `enabled` is 0 — and every other kind is unchanged.
+    kind: text("kind", { enum: ["reddit", "rss", "x", "youtube_community", "operator"] }).notNull(),
     url: text("url").notNull(),
     enabled: integer("enabled").notNull().default(1),
     lastSeenAt: text("last_seen_at"),
@@ -23,7 +28,7 @@ export const sources = sqliteTable(
     etag: text("etag"),
     lastModified: text("last_modified"),
   },
-  (t) => [check("chk_sources_kind", sql`${t.kind} IN ('reddit','rss','x','youtube_community')`)],
+  (t) => [check("chk_sources_kind", sql`${t.kind} IN ('reddit','rss','x','youtube_community','operator')`)],
 );
 
 export const signals = sqliteTable(
@@ -559,3 +564,83 @@ export const mcpTokens = sqliteTable("mcp_tokens", {
   lastUsedAt: text("last_used_at"),
   revokedAt: text("revoked_at"),
 });
+
+/**
+ * One operator brief — the chat route's unit of work (operator direction,
+ * 2026-09-04).
+ *
+ * This table is the whole handoff between the Worker and the pipeline, and
+ * the split is deliberate: the Worker writes the row and dispatches, and
+ * every field that required *thinking* is written back by the pipeline. The
+ * Worker makes no model call (CLAUDE.md), so it cannot know the topic, the
+ * title, or whether the prompt was specific enough to render on its own —
+ * DIGEST decides all three inside GitHub Actions and updates this row.
+ *
+ * `prompt` is kept verbatim and forever (until the brief is reaped with its
+ * export), because it reaches the operator's own review surface: §9 requires
+ * the audit package to carry what produced the video, and for a chat-route
+ * video that is the sentence they typed.
+ */
+export const briefs = sqliteTable(
+  "briefs",
+  {
+    id: text("id").primaryKey(),
+    /** Exactly what the operator typed. Never rewritten, never summarized in place. */
+    prompt: text("prompt").notNull(),
+    status: text("status", {
+      enum: ["queued", "digesting", "running", "succeeded", "failed"],
+    }).notNull(),
+    /**
+     * The `runs.trace_id` this brief's render was dispatched under, so the
+     * chat surface can poll the same trace the pipeline writes to — the
+     * lesson `scripts.trace_id` already encodes.
+     */
+    traceId: text("trace_id"),
+    /** The run plan DIGEST queued for this brief. Null until stage 0 has run. */
+    planId: text("plan_id"),
+    /**
+     * The signal this brief resolved to — either the synthetic row DIGEST
+     * minted for a specific idea, or the rank-1 idea a vague prompt fell
+     * back to. Deliberately NOT a foreign key: the brief is a record of what
+     * the operator asked for and must outlive a reaped signal.
+     */
+    signalId: text("signal_id"),
+    /** DIGEST's structured conclusion, verbatim JSON. Null until stage 0 has run. */
+    digestJson: text("digest_json"),
+    /** Why this brief produced no video, when it did not. Null on the happy path. */
+    failureReason: text("failure_reason"),
+    createdAt: text("created_at").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (t) => [
+    index("idx_briefs_created").on(t.createdAt),
+    index("idx_briefs_status").on(t.status),
+    check("chk_briefs_status", sql`${t.status} IN ('queued','digesting','running','succeeded','failed')`),
+  ],
+);
+
+/**
+ * A file the operator attached to a brief.
+ *
+ * Bytes live in R2 under `briefs/<brief_id>/<n>` and are read exactly once,
+ * by DIGEST, which is multimodal. Nothing else in the system opens them, and
+ * they are swept with the brief — an attachment is working material for one
+ * decision, not a library.
+ */
+export const briefAttachments = sqliteTable(
+  "brief_attachments",
+  {
+    id: text("id").primaryKey(),
+    briefId: text("brief_id")
+      .notNull()
+      .references(() => briefs.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    filename: text("filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    /** The R2 object key. Always `briefs/<brief_id>/<position>` — derived, stored so a key-format change cannot orphan old rows. */
+    storageKey: text("storage_key").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [index("idx_brief_attachments_brief").on(t.briefId, t.position)],
+);

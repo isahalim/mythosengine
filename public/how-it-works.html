@@ -1,0 +1,855 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex, nofollow" />
+<meta name="theme-color" content="#ffffff" />
+<title>Mythos Engine — how it works</title>
+<link rel="icon" href="data:," />
+<!--
+  A standalone explainer for the whole system. Served straight out of
+  /public, so it loads no framework, no CDN and no webfont — the same rule
+  the app follows (docs/SIX_STAGES.md: "nothing loads from a third-party CDN
+  at runtime"). Colours mirror src/styles/tokens.css by hand, because a
+  static file cannot import it.
+-->
+<style>
+:root{
+  color-scheme: light;
+  --ink:#ffffff; --slate:#f5f5f8; --mercury:#15151b; --bone:#55555f;
+  --hairline:#e4e4ec;
+  --oxide:#0d6b4f; --sodium:#a34e08; --rose:#b62f40; --violet:#5b39e0;
+  --orb-1:#ff5f8d; --orb-2:#ffc247; --orb-3:#35d0c7;
+  --orb-4:#8b6cff; --orb-5:#4aa8ff; --orb-6:#ff8a4c;
+  --shadow-1:0 1px 2px rgba(20,20,40,.06), 0 2px 8px rgba(20,20,40,.06);
+  --shadow-2:0 2px 4px rgba(20,20,40,.07), 0 8px 24px rgba(20,20,40,.10);
+  --shadow-3:0 4px 8px rgba(20,20,40,.08), 0 18px 48px rgba(20,20,40,.14);
+  --ease:cubic-bezier(.16,1,.3,1);
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,ui-sans-serif,system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+  --maxw:1120px;
+}
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;scroll-behavior:smooth;scroll-padding-top:84px}
+body{
+  margin:0;background:var(--ink);color:var(--mercury);
+  font-family:var(--sans);font-size:17px;line-height:1.62;
+  letter-spacing:-.005em;-webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+
+/* ── the spheres ─────────────────────────────────────────────────────
+   Six soft gradients drifting behind everything, composited `multiply`
+   over white so overlaps genuinely combine, exactly as Spheres.tsx does
+   in the product. Pure CSS: no canvas, no physics, no collisions. */
+.field{position:fixed;inset:-15vmax;z-index:0;pointer-events:none;mix-blend-mode:multiply;filter:blur(90px);opacity:.22}
+.orb{position:absolute;border-radius:50%;width:46vmax;height:46vmax;mix-blend-mode:multiply}
+.o1{background:radial-gradient(circle at 35% 35%,var(--orb-1),transparent 68%);top:2%;left:4%;animation:drift1 34s var(--ease) infinite alternate}
+.o2{background:radial-gradient(circle at 40% 40%,var(--orb-2),transparent 68%);top:26%;left:52%;animation:drift2 41s var(--ease) infinite alternate}
+.o3{background:radial-gradient(circle at 45% 30%,var(--orb-3),transparent 68%);top:52%;left:12%;animation:drift3 47s var(--ease) infinite alternate}
+.o4{background:radial-gradient(circle at 30% 50%,var(--orb-4),transparent 68%);top:66%;left:58%;animation:drift4 38s var(--ease) infinite alternate}
+.o5{background:radial-gradient(circle at 50% 40%,var(--orb-5),transparent 68%);top:12%;left:70%;animation:drift5 44s var(--ease) infinite alternate}
+.o6{background:radial-gradient(circle at 40% 45%,var(--orb-6),transparent 68%);top:80%;left:30%;animation:drift6 51s var(--ease) infinite alternate}
+@keyframes drift1{to{transform:translate3d(18vmax,10vmax,0) scale(1.15)}}
+@keyframes drift2{to{transform:translate3d(-16vmax,14vmax,0) scale(.88)}}
+@keyframes drift3{to{transform:translate3d(22vmax,-12vmax,0) scale(1.1)}}
+@keyframes drift4{to{transform:translate3d(-20vmax,-16vmax,0) scale(.92)}}
+@keyframes drift5{to{transform:translate3d(-14vmax,18vmax,0) scale(1.08)}}
+@keyframes drift6{to{transform:translate3d(16vmax,-20vmax,0) scale(.9)}}
+
+.page{position:relative;z-index:1}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+
+/* ── nav ─────────────────────────────────────────────────────────── */
+.nav{position:sticky;top:0;z-index:20;backdrop-filter:blur(14px) saturate(1.4);
+  background:color-mix(in srgb,#fff 78%,transparent);border-bottom:1px solid var(--hairline)}
+.nav-in{max-width:var(--maxw);margin:0 auto;padding:12px 24px;display:flex;align-items:center;gap:22px}
+.brand{font-weight:700;letter-spacing:-.03em;font-size:15px;white-space:nowrap;display:flex;align-items:center;gap:9px}
+.brand .dot{width:11px;height:11px;border-radius:50%;
+  background:conic-gradient(var(--orb-1),var(--orb-2),var(--orb-3),var(--orb-4),var(--orb-5),var(--orb-1));flex:none}
+.nav-links{display:flex;gap:4px;overflow-x:auto;scrollbar-width:none;margin-left:auto}
+.nav-links::-webkit-scrollbar{display:none}
+.nav-links a{font-size:13px;color:var(--bone);text-decoration:none;padding:5px 10px;border-radius:8px;white-space:nowrap;transition:.18s var(--ease)}
+.nav-links a:hover{color:var(--mercury);background:var(--slate)}
+.nav-links a.on{color:var(--mercury);background:var(--slate);font-weight:500}
+
+/* ── type ────────────────────────────────────────────────────────── */
+h1,h2,h3,h4{letter-spacing:-.035em;line-height:1.1;margin:0;font-weight:700}
+h1{font-size:clamp(40px,7vw,74px)}
+h2{font-size:clamp(28px,4.2vw,42px)}
+h3{font-size:20px;letter-spacing:-.025em}
+h4{font-size:15px;letter-spacing:-.01em;font-weight:600}
+p{margin:0 0 16px}
+a{color:var(--violet)}
+.lede{font-size:clamp(18px,2.2vw,21px);color:var(--bone);line-height:1.58;max-width:62ch}
+.kicker{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--bone);margin:0 0 14px}
+.muted{color:var(--bone)}
+.small{font-size:14.5px;line-height:1.55}
+code,.mono{font-family:var(--mono);font-size:.88em}
+p code,li code,td code{background:var(--slate);border:1px solid var(--hairline);border-radius:5px;padding:1px 5px;font-size:.84em;color:var(--mercury)}
+
+section{padding:76px 0;scroll-margin-top:70px}
+section+section{border-top:1px solid var(--hairline)}
+.sec-head{max-width:70ch;margin-bottom:40px}
+.sec-head p{margin-top:14px}
+
+/* ── hero ────────────────────────────────────────────────────────── */
+.hero{padding:104px 0 84px}
+.hero h1{margin-bottom:22px}
+.hero h1 .frac{
+  background:linear-gradient(100deg,var(--orb-4),var(--orb-1) 40%,var(--orb-2) 72%,var(--orb-3));
+  -webkit-background-clip:text;background-clip:text;color:transparent}
+.hero-facts{display:flex;flex-wrap:wrap;gap:10px;margin-top:32px}
+.fact{background:color-mix(in srgb,var(--slate) 86%,transparent);border:1px solid var(--hairline);
+  border-radius:999px;padding:7px 15px;font-size:13.5px;color:var(--bone);backdrop-filter:blur(6px)}
+.fact b{color:var(--mercury);font-weight:600}
+
+/* ── cards ───────────────────────────────────────────────────────── */
+.card{background:color-mix(in srgb,var(--slate) 84%,transparent);border:1px solid var(--hairline);
+  border-radius:18px;padding:24px;backdrop-filter:blur(10px);box-shadow:var(--shadow-1)}
+.grid{display:grid;gap:18px}
+.g2{grid-template-columns:repeat(auto-fit,minmax(280px,1fr))}
+.g3{grid-template-columns:repeat(auto-fit,minmax(232px,1fr))}
+.card h3,.card h4{margin-bottom:9px}
+.card p:last-child{margin-bottom:0}
+
+/* ── flow rail ───────────────────────────────────────────────────── */
+.rail{display:flex;flex-wrap:wrap;align-items:stretch;gap:8px;margin-top:8px}
+.node{flex:1 1 128px;background:#fff;border:1px solid var(--hairline);border-radius:14px;padding:13px 14px;
+  box-shadow:var(--shadow-1);min-width:128px;position:relative}
+.node .n{font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--bone);display:block;margin-bottom:5px}
+.node .t{font-weight:600;font-size:14.5px;letter-spacing:-.02em;display:block;line-height:1.25}
+.node .s{font-size:12.5px;color:var(--bone);line-height:1.4;display:block;margin-top:5px}
+.node::after{content:"";position:absolute;right:-8px;top:50%;width:8px;height:1px;background:var(--hairline)}
+.node:last-child::after{display:none}
+.node[data-kind="model"]{border-color:color-mix(in srgb,var(--violet) 34%,var(--hairline))}
+.node[data-kind="model"] .n{color:var(--violet)}
+.node[data-kind="ffmpeg"]{border-color:color-mix(in srgb,var(--sodium) 34%,var(--hairline))}
+.node[data-kind="ffmpeg"] .n{color:var(--sodium)}
+.node[data-kind="code"] .n{color:var(--oxide)}
+
+/* ── badges ──────────────────────────────────────────────────────── */
+.badges{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
+.badge{font-family:var(--mono);font-size:10.5px;letter-spacing:.07em;text-transform:uppercase;
+  padding:4px 9px;border-radius:7px;border:1px solid var(--hairline);background:#fff;color:var(--bone);white-space:nowrap}
+.badge.model{color:var(--violet);border-color:color-mix(in srgb,var(--violet) 30%,var(--hairline));background:color-mix(in srgb,var(--violet) 6%,#fff)}
+.badge.code{color:var(--oxide);border-color:color-mix(in srgb,var(--oxide) 30%,var(--hairline));background:color-mix(in srgb,var(--oxide) 6%,#fff)}
+.badge.tool{color:var(--sodium);border-color:color-mix(in srgb,var(--sodium) 30%,var(--hairline));background:color-mix(in srgb,var(--sodium) 6%,#fff)}
+
+/* ── stage blocks ────────────────────────────────────────────────── */
+.stage{display:grid;grid-template-columns:64px 1fr;gap:22px;padding:32px 0;border-top:1px solid var(--hairline)}
+.stage:first-of-type{border-top:0}
+.stage-num{font-family:var(--mono);font-size:12px;color:var(--bone);letter-spacing:.1em;padding-top:5px}
+.stage-num .big{display:block;font-size:30px;letter-spacing:-.04em;color:var(--mercury);font-family:var(--sans);font-weight:700;line-height:1}
+.stage-body h3{margin-bottom:10px}
+.stage-body>p{max-width:72ch}
+
+/* ── example blocks ──────────────────────────────────────────────── */
+.ex{margin-top:16px;border:1px solid var(--hairline);border-radius:14px;overflow:hidden;background:#fff}
+.ex-h{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--bone);
+  padding:9px 15px;background:var(--slate);border-bottom:1px solid var(--hairline);display:flex;gap:10px;align-items:center}
+.ex-h .tag{margin-left:auto;color:var(--violet)}
+.ex-b{padding:15px}
+pre{margin:0;font-family:var(--mono);font-size:12.5px;line-height:1.62;white-space:pre-wrap;word-break:break-word;color:var(--mercury)}
+pre .c{color:var(--bone)}
+pre .k{color:var(--violet)}
+pre .g{color:var(--oxide)}
+pre .w{color:var(--sodium)}
+.io{display:grid;gap:12px;grid-template-columns:1fr 1fr}
+@media(max-width:720px){.io{grid-template-columns:1fr}}
+.io>div{background:var(--slate);border:1px solid var(--hairline);border-radius:10px;padding:12px}
+.io h5{margin:0 0 7px;font-family:var(--mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--bone);font-weight:400}
+
+/* ── notes ───────────────────────────────────────────────────────── */
+.note{margin-top:15px;display:flex;gap:11px;align-items:flex-start;font-size:14.5px;line-height:1.55;color:var(--bone);
+  background:color-mix(in srgb,var(--oxide) 4%,#fff);border:1px solid color-mix(in srgb,var(--oxide) 20%,var(--hairline));
+  border-radius:12px;padding:12px 15px}
+.note b{color:var(--mercury);font-weight:600}
+.note .ic{flex:none;font-family:var(--mono);font-size:11px;color:var(--oxide);letter-spacing:.08em;padding-top:2px}
+
+/* ── tables ──────────────────────────────────────────────────────── */
+.tw{overflow-x:auto;border:1px solid var(--hairline);border-radius:16px;background:#fff}
+table{border-collapse:collapse;width:100%;min-width:660px;font-size:14.5px}
+th,td{text-align:left;padding:13px 16px;border-bottom:1px solid var(--hairline);vertical-align:top}
+th{font-family:var(--mono);font-size:10.5px;letter-spacing:.11em;text-transform:uppercase;color:var(--bone);font-weight:400;background:var(--slate)}
+tr:last-child td{border-bottom:0}
+td b{font-weight:600}
+
+/* ── output ──────────────────────────────────────────────────────── */
+.out{display:grid;grid-template-columns:minmax(0,300px) 1fr;gap:32px;align-items:start}
+@media(max-width:840px){.out{grid-template-columns:1fr}}
+.phone{border-radius:26px;overflow:hidden;border:1px solid var(--hairline);box-shadow:var(--shadow-3);background:#000;aspect-ratio:9/16}
+.phone video{width:100%;height:100%;display:block;object-fit:cover}
+.frames{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;margin-top:16px}
+.frames img{width:100%;aspect-ratio:9/16;object-fit:cover;border-radius:9px;border:1px solid var(--hairline);display:block}
+.checks{list-style:none;margin:0;padding:0;display:grid;gap:9px}
+.checks li{display:flex;gap:11px;align-items:flex-start;font-size:15px;line-height:1.5}
+.checks .tick{flex:none;width:19px;height:19px;border-radius:6px;background:color-mix(in srgb,var(--oxide) 12%,#fff);
+  border:1px solid color-mix(in srgb,var(--oxide) 32%,var(--hairline));color:var(--oxide);
+  font-size:11px;line-height:17px;text-align:center;margin-top:2px}
+.checks b{font-weight:600}
+
+/* ── rules ───────────────────────────────────────────────────────── */
+.rules{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+.rule{background:#fff;border:1px solid var(--hairline);border-left:3px solid var(--rose);border-radius:12px;padding:15px 17px}
+.rule b{display:block;font-size:15px;margin-bottom:5px;letter-spacing:-.015em}
+.rule span{font-size:14px;color:var(--bone);line-height:1.5}
+
+/* ── footer ──────────────────────────────────────────────────────── */
+footer{border-top:1px solid var(--hairline);padding:38px 0 56px;font-size:13.5px;color:var(--bone)}
+footer .fl{display:flex;flex-wrap:wrap;gap:18px;justify-content:space-between;align-items:center}
+
+/* ── reveal ──────────────────────────────────────────────────────── */
+.rv{opacity:0;transform:translateY(14px);transition:opacity .6s var(--ease),transform .6s var(--ease)}
+.rv.in{opacity:1;transform:none}
+
+@media(max-width:600px){
+  body{font-size:16px}
+  section{padding:56px 0}
+  .stage{grid-template-columns:1fr;gap:12px}
+  .stage-num{padding-top:0;display:flex;align-items:baseline;gap:9px}
+  .stage-num .big{display:inline}
+}
+@media(prefers-reduced-motion:reduce){
+  *{animation:none!important;transition:none!important;scroll-behavior:auto}
+  .rv{opacity:1;transform:none}
+}
+</style>
+</head>
+<body>
+
+<div class="field" aria-hidden="true">
+  <div class="orb o1"></div><div class="orb o2"></div><div class="orb o3"></div>
+  <div class="orb o4"></div><div class="orb o5"></div><div class="orb o6"></div>
+</div>
+
+<div class="page">
+
+<nav class="nav">
+  <div class="nav-in">
+    <div class="brand"><span class="dot"></span> Mythos Engine</div>
+    <div class="nav-links">
+      <a href="#purpose">Purpose</a>
+      <a href="#shape">Architecture</a>
+      <a href="#console">The console</a>
+      <a href="#pipeline">The pipeline</a>
+      <a href="#models">Models</a>
+      <a href="#output">Output</a>
+      <a href="#rules">Rules</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ═══ HERO ═══ -->
+<header class="hero wrap">
+  <p class="kicker rv">Autonomous video production · one operator</p>
+  <h1 class="rv">It reads the argument<br>of the day and <span class="frac">shatters<br>it into a video.</span></h1>
+  <p class="lede rv">Mythos Engine watches what the internet is arguing about, researches it against real sources, writes a short opinionated script, finds footage that actually illustrates the point, and renders a finished vertical video with narration, animated captions and an animated host. Then it stops — and hands the whole thing to a human to look at.</p>
+  <div class="hero-facts rv">
+    <span class="fact"><b>3</b> videos a day, at most</span>
+    <span class="fact"><b>~130s</b> typical runtime</span>
+    <span class="fact"><b>0</b> automatic uploads</span>
+    <span class="fact"><b>12</b> stages per render</span>
+    <span class="fact"><b>2</b> model providers, on purpose</span>
+  </div>
+</header>
+
+<!-- ═══ PURPOSE ═══ -->
+<section id="purpose" class="wrap">
+  <div class="sec-head rv">
+    <p class="kicker">What it's for</p>
+    <h2>A studio that runs itself, and still asks permission.</h2>
+    <p class="lede">Making a good short video is about six jobs — noticing a story, checking it, writing it, shooting it, cutting it, packaging it. Each one is small. Doing all six, three times a day, forever, is not. This system does the six jobs and leaves the seventh — deciding whether the thing is good enough to publish — to a person.</p>
+  </div>
+  <div class="grid g3">
+    <div class="card rv">
+      <h3>It notices</h3>
+      <p class="muted small">Every hour it reads public discussion feeds — Reddit, news, YouTube — and scores what's rising: how fast a conversation is growing, how new it is, and whether it's just a repeat of something from last week.</p>
+    </div>
+    <div class="card rv">
+      <h3>It builds</h3>
+      <p class="muted small">A run turns one story into a finished 1080×1920 video: researched, scripted, performed, shot, cut, captioned and hosted. It takes minutes and costs a few cents of model usage.</p>
+    </div>
+    <div class="card rv">
+      <h3>It shows its work</h3>
+      <p class="muted small">Nothing ships without a paper trail: the script, the critic's verdict, every clip's source and the exact seconds used, which voice spoke it, and which model answered every thinking step.</p>
+    </div>
+  </div>
+  <div class="note rv" style="margin-top:22px">
+    <span class="ic">RULE</span>
+    <span><b>There is no publish button anywhere in this system.</b> It holds no YouTube upload credential and calls no upload endpoint. The last mile — watching the video, reading the sheet, pasting the title — is deliberately human, because the channel carries a real person's name.</span>
+  </div>
+</section>
+
+<!-- ═══ ARCHITECTURE ═══ -->
+<section id="shape" class="wrap">
+  <div class="sec-head rv">
+    <p class="kicker">Architecture</p>
+    <h2>Two machines, and a clean line between them.</h2>
+    <p class="lede">A tiny always-on web service holds the state and the steering. A heavy build machine does the video. Nothing on the web side ever calls a model or touches a video file — that split is what keeps the interactive surface instant and the expensive work interruptible.</p>
+  </div>
+
+  <div class="grid g2">
+    <div class="card rv">
+      <p class="kicker" style="margin-bottom:8px">Always on · the control surface</p>
+      <h3>One Cloudflare Worker</h3>
+      <p class="small muted">Serves the whole app and its API from one place. Behind it: <b>D1</b> (a SQL database) for state, <b>KV</b> for hot JSON and the encrypted key vault, and <b>R2</b> for finished video files, which are 40–60&nbsp;MB and too big for anything else. Sign-in is a passkey — no password exists.</p>
+      <p class="small muted" style="margin-top:10px"><b>It makes no model call at all.</b> Not one. Every screen it draws comes from the database or from plain code.</p>
+    </div>
+    <div class="card rv">
+      <p class="kicker" style="margin-bottom:8px">On demand · the build machine</p>
+      <h3>A GitHub Actions runner</h3>
+      <p class="small muted">Cloudflare can't run FFmpeg or start a subprocess, so the render happens on a real machine with <b>FFmpeg</b>, <b>Python</b> and <b>yt-dlp</b> installed. The operator presses a button; the Worker starts the job and hands it a trace id; the job reports each stage back into the same database the console reads.</p>
+      <p class="small muted" style="margin-top:10px">Every model call in the product happens here, inside the render — never in the browser, never in the Worker.</p>
+    </div>
+  </div>
+
+  <div class="card rv" style="margin-top:18px">
+    <p class="kicker">One render, end to end</p>
+    <div class="rail">
+      <div class="node" data-kind="code"><span class="n">01 · code</span><span class="t">Watch</span><span class="s">Read the feeds</span></div>
+      <div class="node" data-kind="code"><span class="n">02 · code</span><span class="t">Score</span><span class="s">Rank &amp; dedupe</span></div>
+      <div class="node" data-kind="model"><span class="n">03 · model</span><span class="t">Research</span><span class="s">Grounded brief</span></div>
+      <div class="node" data-kind="model"><span class="n">04 · model</span><span class="t">Script</span><span class="s">Beats + delivery</span></div>
+      <div class="node" data-kind="model"><span class="n">05 · model</span><span class="t">Critic</span><span class="s">Second opinion</span></div>
+      <div class="node" data-kind="model"><span class="n">06 · model</span><span class="t">Plan</span><span class="s">The shot list</span></div>
+      <div class="node" data-kind="code"><span class="n">07 · code</span><span class="t">Source</span><span class="s">Get the footage</span></div>
+      <div class="node" data-kind="model"><span class="n">08 · model</span><span class="t">Edit</span><span class="s">Trim &amp; grade</span></div>
+      <div class="node" data-kind="ffmpeg"><span class="n">09 · tts</span><span class="t">Narrate</span><span class="s">Voice + timings</span></div>
+      <div class="node" data-kind="ffmpeg"><span class="n">10 · ffmpeg</span><span class="t">Render</span><span class="s">Cut &amp; caption</span></div>
+      <div class="node" data-kind="ffmpeg"><span class="n">11 · ffmpeg</span><span class="t">Host</span><span class="s">Composite the robot</span></div>
+      <div class="node" data-kind="code"><span class="n">12 · code</span><span class="t">Export</span><span class="s">Package + audit</span></div>
+    </div>
+    <p class="small muted" style="margin-top:16px;margin-bottom:0">Purple stages ask a model something. Green stages are ordinary code. Orange stages are FFmpeg and the voice engine. <b>Seven of the twelve spend no tokens at all</b> — where there is one right answer, the system spends determinism instead.</p>
+  </div>
+</section>
+
+<!-- ═══ CONSOLE ═══ -->
+<section id="console" class="wrap">
+  <div class="sec-head rv">
+    <p class="kicker">The operator surface</p>
+    <h2>One page, six stages, made of broken glass.</h2>
+    <p class="lede">The console isn't a dashboard that reports what happened. It's a workspace that decides what happens next: how many videos this run makes, what each one is about, and which story each one tells. It's a single continuous surface — shattered glass over drifting colour — rather than a set of pages.</p>
+  </div>
+  <div class="grid g3">
+    <div class="card rv"><p class="kicker" style="margin-bottom:6px">Stage 1</p><h4>The landing</h4><p class="small muted" style="margin-top:6px">Sign in with a passkey. Scroll, and sixteen glass fragments assemble into one sealed pane with a real finished video inside it. Click to crack it; click again to play.</p></div>
+    <div class="card rv"><p class="kicker" style="margin-bottom:6px">Stage 2</p><h4>How many</h4><p class="small muted" style="margin-top:6px">Light one shard per video you want from this run. The number of glows is the number of videos.</p></div>
+    <div class="card rv"><p class="kicker" style="margin-bottom:6px">Stage 3</p><h4>Topics</h4><p class="small muted" style="margin-top:6px">Each lit shard fuses with a new one and takes a topic colour — viral, politics, tech, science, AI, philosophy, concept.</p></div>
+    <div class="card rv"><p class="kicker" style="margin-bottom:6px">Stage 4</p><h4>Ideas</h4><p class="small muted" style="margin-top:6px">A bigger shard joins each video carrying its story, chosen from a live-scored list of what's being argued about right now.</p></div>
+    <div class="card rv"><p class="kicker" style="margin-bottom:6px">Stage 5</p><h4>Agents deployed</h4><p class="small muted" style="margin-top:6px">The run starts. Each video's pane heals as its stages complete — you watch the glass reassemble in real time.</p></div>
+    <div class="card rv"><p class="kicker" style="margin-bottom:6px">Stage 6</p><h4>Review</h4><p class="small muted" style="margin-top:6px">Play it in place, read the upload sheet, check every clip's source, download it, mark it reviewed — or throw it away and run it again.</p></div>
+  </div>
+  <div class="note rv">
+    <span class="ic">FRESH</span>
+    <span><b>The Ideas list is current the moment you open it,</b> and no model orders it. Opening stage 4 re-reads the feeds — one source per host, rotating, with no retries, because Reddit serves roughly one request per IP per 30–60 seconds. Ranking blends keyword match with a 12-hour recency half-life, so a story ingested seconds ago outranks a week-old one it barely beats on wording.</span>
+  </div>
+</section>
+
+<!-- ═══ PIPELINE ═══ -->
+<section id="pipeline" class="wrap">
+  <div class="sec-head rv">
+    <p class="kicker">The pipeline, stage by stage</p>
+    <h2>What actually happens between a headline and a video.</h2>
+    <p class="lede">Everything below follows one worked example: a rising thread about a publisher revoking access to games people had already paid for. The examples are illustrative and abbreviated, but the prompts, tools, models and rules are the real ones.</p>
+  </div>
+
+  <!-- 01 WATCH -->
+  <article class="stage rv">
+    <div class="stage-num"><span class="big">01</span> Watch</div>
+    <div class="stage-body">
+      <div class="badges"><span class="badge code">plain code · no model</span><span class="badge">hourly</span><span class="badge">RSS</span></div>
+      <h3>Read the feeds, keep what's new</h3>
+      <p class="muted">A list of sources lives in a file in the repo, and the database follows the file rather than the other way round. Each source is a public syndication feed — subreddits, news outlets — fetched with a real browser identity and a hard timeout. Everything found becomes a “signal”: a title, a summary, a source, a timestamp.</p>
+      <p class="muted small">One deliberate detail: the feeds are <code>rising.rss</code>, not <code>hot.rss</code>. A “hot” feed's newest item measured about four hours old — proven discourse, but not what's being argued about <em>right now</em>, which is the whole point of the screen it feeds.</p>
+      <div class="ex">
+        <div class="ex-h">Example signal <span class="tag">as stored</span></div>
+        <div class="ex-b"><pre><span class="c">source</span>  reddit-gaming · https://reddit.com/r/gaming/rising.rss
+<span class="c">title</span>   "They revoked my licence to a game I bought in 2019"
+<span class="c">summary</span> Thread arguing about whether a purchase is a purchase when
+        the storefront can withdraw the licence years later.
+<span class="c">seen</span>    2026-09-03T09:14:22Z   <span class="c">status</span> observed</pre></div>
+      </div>
+    </div>
+  </article>
+
+  <!-- 02 SCORE -->
+  <article class="stage rv">
+    <div class="stage-num"><span class="big">02</span> Score</div>
+    <div class="stage-body">
+      <div class="badges"><span class="badge code">plain code · no model</span><span class="badge">simhash</span></div>
+      <h3>Which of these is worth a video</h3>
+      <p class="muted">Signals are ranked on how fast the conversation is growing and how fresh it is, then checked against the last seven days with a similarity fingerprint so the channel doesn't make the same video twice under two headlines. When the operator turns on diversity mode, the day's picks are actively spread across different sources instead of all coming from whichever feed is loudest.</p>
+      <div class="ex"><div class="ex-h">Example score</div><div class="ex-b"><pre><span class="c">engagement velocity</span> 0.74   <span class="c">freshness</span> 0.93   <span class="c">novelty</span> 0.88
+<span class="c">near-duplicate of</span>    none in the trailing 7 days
+<span class="g">→ score 0.81 · eligible</span></pre></div></div>
+    </div>
+  </article>
+
+  <!-- 03 RESEARCH -->
+  <article class="stage rv">
+    <div class="stage-num"><span class="big">03</span> Research</div>
+    <div class="stage-body">
+      <div class="badges"><span class="badge model">gemini-3.7-flash → openai/gpt-oss-120b</span><span class="badge tool">2 tools</span><span class="badge">BM25 + rerank</span><span class="badge">fails soft</span></div>
+      <h3>Find out what's actually being said</h3>
+      <p class="muted">Before anything is written, the model builds a short factual brief — what happened, what people are arguing, and which retrieved source backs each claim. It is told, in as many words, that the retrieved material is <em>everything it knows</em>: an angle is its to invent, a fact is not.</p>
+
+      <h4 style="margin-top:20px">How the search works</h4>
+      <p class="muted small">There is no vector database and no agent framework here — retrieval is about a hundred lines of ordinary code. <b>BM25</b> is the classic keyword-relevance formula (the one search engines used before embeddings) run over everything the system has already ingested. It's cheap and it's fast, but it's blind to <em>meaning</em>: search for “prison overcrowding” and it will happily rank “the overcrowding of the prison of self-regard” above a sentencing report, because that headline contains both words.</p>
+      <p class="muted small">So a second, tiny model pass <b>reranks</b> the candidates by topical usefulness. It is allowed to reorder what search found and nothing else — it can't add a source, so it can never introduce a citation the brief would then fail to verify. If it errors or answers badly, the keyword order simply stands.</p>
+
+      <div class="ex">
+        <div class="ex-h">Rerank prompt <span class="tag">verbatim, abbreviated</span></div>
+        <div class="ex-b"><pre>You are ranking retrieved headlines by how useful each one is for
+researching a specific topic.
+
+&lt;topic&gt;game licence revoked after purchase&lt;/topic&gt;
+&lt;candidates&gt;
+1. reddit | They revoked my licence to a game I bought in 2019
+2. news   | Storefront delistings and what buyers actually own
+3. reddit | The overcrowding of my Steam library
+...
+&lt;/candidates&gt;
+
+<span class="k">Judge topical relevance, not word overlap.</span> A headline that shares
+words with the topic but discusses something else is NOT relevant —
+that is exactly the mistake the keyword ranking already made, and
+the reason you are being asked.
+
+Output JSON only, as: {"ranked_positions": [3, 1, 7]}</pre></div>
+      </div>
+
+      <h4 style="margin-top:22px">The two tools the researcher can call</h4>
+      <div class="io" style="margin-top:12px">
+        <div><h5>search_discourse(query, limit)</h5><p class="small muted" style="margin:0">Keyword search over everything already ingested. Returns ids, titles, sources, dates — never full text.</p></div>
+        <div><h5>read_source(signal_id)</h5><p class="small muted" style="margin:0">The full text behind one result. Two or three reads is plenty; it's writing a brief, not a report.</p></div>
+      </div>
+
+      <div class="ex">
+        <div class="ex-h">A research turn <span class="tag">tool loop</span></div>
+        <div class="ex-b"><pre><span class="k">→ search_discourse</span>("game licence revoked purchase", 16)
+  <span class="c">16 candidates → reranked → top 6 kept</span>
+<span class="k">→ read_source</span>("sig_8fa1")   <span class="c">24,000 chars of the news write-up</span>
+<span class="k">→ read_source</span>("sig_2b07")   <span class="c">the original thread</span>
+<span class="g">← brief</span>
+{
+  "summary": "A publisher withdrew licences for a 2019 title after a
+    rights lapse. Buyers say a purchase implied permanence; the
+    storefront's terms have always described a revocable licence.
+    <span class="w">Sources disagree on whether refunds were offered.</span>",
+  "key_points": ["licences withdrawn 2026-08-29", "terms unchanged
+    since 2017", "no refund policy stated publicly"],
+  "citations": [{"signal_id":"sig_8fa1","claim":"rights lapse"}, ...]
+}</pre></div>
+      </div>
+
+      <h4 style="margin-top:22px">Why this one stage uses two different providers</h4>
+      <p class="muted small">Research is the only stage limited by how much it can <em>read</em> at once rather than how well it can think. On the primary provider the whole growing conversation has to fit inside a 7,200-token per-request ceiling, which means throwing away articles the model already went and fetched. Gemini's intake is large enough that nothing has to be dropped, so it gets the first attempt — capped at <b>four tool turns</b>, because the free tier allows five requests a minute and a full loop is six. That exact overrun cost a render on 1 Sep.</p>
+      <div class="note">
+        <span class="ic">SOFT</span>
+        <span><b>Any failure at all — a 500, a timeout, malformed JSON, four turns that never stop — falls straight back to Groq.</b> And if research fails entirely, the script is written from the headline alone and the export is stamped <code>ungrounded</code>. A failed brief costs the video its grounding; it never costs the day's video.</span>
+      </div>
+    </div>
+  </article>
+
+  <!-- 04 SCRIPT -->
+  <article class="stage rv">
+    <div class="stage-num"><span class="big">04</span> Script</div>
+    <div class="stage-body">
+      <div class="badges"><span class="badge model">openai/gpt-oss-120b</span><span class="badge">JSON out</span><span class="badge">no structure gate</span></div>
+      <h3>Write a person talking, not narration</h3>
+      <p class="muted">The writer gets three things and nothing else: the signal, the research brief, and a <b>performance</b>. It returns a hook, a list of beats, and a closing question — as structured data, so every later stage can reason about the parts.</p>
+
+      <h4 style="margin-top:20px">The performance is rolled with dice, not asked for</h4>
+      <p class="muted small">Told to “vary the tone”, a model varies it across the small space that <em>it</em> finds natural — nine renders came out as the same measured explainer with the same three commas. So the format, the tone at each phase, which non-verbal sounds are in play, roughly how many, and the comedic device are all <b>rolled outside the model</b> from a seed, and handed over as an instruction. Seeded, so the audit package can reproduce it exactly.</p>
+      <div class="ex">
+        <div class="ex-h">Rolled performance <span class="tag">seed → prompt block</span></div>
+        <div class="ex-b"><pre><span class="c">format</span>   hot_take — a position argued fast and hard that concedes
+           exactly once, and is more convincing for it
+<span class="c">opening</span>  [incredulous] · [very fast]
+<span class="c">middle</span>   [conspiratorial]
+<span class="c">closing</span>  [wistful] · [very slow]
+<span class="c">sounds</span>   [laughs] [scoffs] [sharp inhale]  — about 4, spread out
+<span class="c">comedy</span>   a cliché everyone uses here, said out loud until it
+           sounds stupid  — deliver that beat [sarcastically]</pre></div>
+      </div>
+      <p class="muted small" style="margin-top:14px">Six formats exist — <b>discourse</b> (one mind changing its own position out loud), <b>story</b>, <b>hot take</b>, <b>myth bust</b>, <b>confession</b>, <b>escalation</b>. What is <em>never</em> rolled is the energy shape: hook hard, warm through the middle, soften at the close, on every single video. That's a retention strategy, not a taste.</p>
+
+      <h4 style="margin-top:22px">Delivery tags, and why they can't leak</h4>
+      <p class="muted small">Beats carry bracketed direction inline — <code>[giggles]</code>, <code>[sarcastically]</code>, <code>[very slow]</code> — placed where a real person would actually make the sound. The voice model performs them. Everything else in the system gets the text with the tags <b>stripped</b>: the spoken narration on the fallback voice, the stored script, the alignment step, and above all the captions burned into the picture, which cannot be taken back. The guarantee is subtractive, so an invented tag costs a delivery note rather than printing “whispering conspiratorially” across the screen.</p>
+
+      <div class="ex">
+        <div class="ex-h">Script output <span class="tag">abbreviated</span></div>
+        <div class="ex-b"><pre>{
+ "hook": "<span class="k">[incredulous]</span> You didn't buy that game. You rented it
+          for seven years and nobody said so.",
+ "beats": [
+  {"move":"verdict",  "text":"A purchase that can be withdrawn is a
+     subscription with extra steps. <span class="k">[very fast]</span> That's it.
+     That's the whole argument."},
+  {"move":"evidence", "text":"The terms said licence. They said it in
+     2017, they say it now. Nobody read them, including me."},
+  {"move":"escalation","text":"<span class="k">[scoffs]</span> And the button still says
+     BUY. In capitals. Next to a price."},
+  {"move":"pushback", "text":"<span class="k">[reluctantly]</span> Okay — one honest
+     concession. The rights genuinely lapsed. That part isn't
+     villainy, it's paperwork."},
+  {"move":"punchline","text":"<span class="k">[sarcastically]</span> You own nothing and
+     you're happy about it. <span class="k">[laughs]</span> We say that like it's
+     a joke we're in on."}
+ ],
+ "open_question": "<span class="k">[wistful]</span> If the button said LICENCE instead
+   of BUY — would you still have clicked it?"
+}</pre></div>
+      </div>
+      <div class="note">
+        <span class="ic">GATE</span>
+        <span><b>There is no structural gate.</b> Scripts used to be failed outright for not being an argument — a story doesn't push back, an escalation has nothing to be wrong about — and that threw away finished renders. Length is advice now: one rewrite quoting the word count to aim at, then the closer of the two drafts ships either way.</span>
+      </div>
+    </div>
+  </article>
+
+  <!-- 05 CRITIC -->
+  <article class="stage rv">
+    <div class="stage-num"><span class="big">05</span> Critic</div>
+    <div class="stage-body">
+      <div class="badges"><span class="badge model">openai/gpt-oss-20b</span><span class="badge">different model on purpose</span><span class="badge">advisory only</span></div>
+      <h3>A second opinion that never blocks</h3>
+      <p class="muted">A separate model reads the finished script cold — it never sees the prompt that wrote it — and scores one thing: did this take a genuine angle, or does it just recite the story back with narrator filler? It also flags anything shaped like defamation of a named real person, medical or legal claims stated as fact, or text that reads as a verbatim repost.</p>
+      <p class="muted small">It deliberately runs on a <em>different</em> model from the writer. A critic sharing the writer's model is grading its own work — that was a known compromise for a while, and it isn't one any more.</p>
+      <div class="ex"><div class="ex-h">Critic output</div><div class="ex-b"><pre>{ "originality_score": 0.72,
+  "policy_flags": [],
+  "verdict": "approved",
+  "reason": "Takes a position and concedes once; not a recap." }</pre></div></div>
+      <div class="note"><span class="ic">SOFT</span><span><b>The verdict stops nothing.</b> A low score, a flag, or a critic that can't be reached at all — the render continues and the result travels to the reviewer. The score is left empty rather than defaulted, because a placeholder number would read like a real verdict.</span></div>
+    </div>
+  </article>
+
+  <!-- 06 PLAN -->
+  <article class="stage rv">
+    <div class="stage-num"><span class="big">06</span> Plan</div>
+    <div class="stage-body">
+      <div class="badges"><span class="badge model">openai/gpt-oss-120b</span><span class="badge">max 8 shots</span><span class="badge">checked after</span><span class="badge">fails soft</span></div>
+      <h3>Decide what the audience sees</h3>
+      <p class="muted">The model is cast as the cinematographer: it can't change a word of the argument, only choose what's on screen while it's made. For each beat it writes a search query and picks a provider — stock library, or real recorded video.</p>
+      <p class="muted small"><b>Why spend a model here at all?</b> The first version of this used word-frequency counting and searched for “maybe”, “yet” and “perhaps” — and got a crystal mobile, a ferry railing and two strangers on a hill for a video about moral collapse. “Which phrase in this beat is a <em>picture</em>” isn't a counting problem. This is the one footage decision with real ambiguity, so it's the one that spends a token.</p>
+      <div class="ex">
+        <div class="ex-h">Prompt, the part that matters <span class="tag">verbatim</span></div>
+        <div class="ex-b"><pre><span class="k">`query` is what gets typed into a stock video search box.</span>
+It must name something a camera can point at.
+
+  GOOD: "empty courtroom gallery", "hands sorting paperwork",
+        "prison corridor at night", "crowd crossing a wide street"
+  BAD:  "maybe", "perhaps", "yet", "morality", "justice", "the truth"
+
+Two to five words. Physical nouns. No proper nouns unless the
+script is literally about that place, person or object.
+
+An animated host is composited near the bottom of the frame and
+captions sit across the middle. <span class="w">A shot whose entire subject sits
+down there is a shot nobody will see.</span></pre></div>
+      </div>
+      <div class="ex">
+        <div class="ex-h">The shot list it returned</div>
+        <div class="ex-b"><pre><span class="c">#  beat  source   query                      intent</span>
+0  hook  pexels   "hands holding game disc"  the object you thought you owned
+1  0     pexels   "cursor clicking buy"      the button that says BUY
+2  1     youtube  "storefront terms page"    the words nobody read
+3  2     pexels   "empty server rack room"   where the licence actually lives
+4  3     youtube  "rights document signing"  the paperwork, not the villainy
+5  4     pexels   "empty living room tv"     the shelf with nothing on it</pre></div>
+      </div>
+      <p class="muted small" style="margin-top:14px">Afterwards, plain code checks every query: a single word is rejected, and so is one that's still abstract once articles and prepositions are stripped. <b>Bad shots are dropped, never repaired</b> — a query invented to patch a hole is exactly the filler this stage exists to prevent. If the whole stage fails, keyword extraction fills in and the export says so.</p>
+      <div class="note"><span class="ic">SKIP</span><span><b>The <code>viral</code> topic never reaches the model.</b> Its background is always gameplay footage cut from random high-motion windows — once the topic has decided the footage, there is nothing left to decide, so it spends nothing.</span></div>
+    </div>
+  </article>
+
+  <!-- 07 SOURCE -->
+  <article class="stage rv">
+    <div class="stage-num"><span class="big">07</span> Source</div>
+    <div class="stage-body">
+      <div class="badges"><span class="badge code">plain code · no model</span><span class="badge">Pexels API</span><span class="badge">yt-dlp</span><span class="badge">motion scoring</span></div>
+      <h3>Go and get the footage</h3>
+      <p class="muted">The plan gets executed. <b>Stock</b> answers “an ordinary scene, shot well” — the returned clip <em>is</em> the shot. <b>Real video</b> answers “the actual thing”, and a real video is an hour long with one usable minute in it, so the window is chosen by measuring motion across the file rather than taking the front — which is where a channel puts its intro.</p>
+      <div class="ex"><div class="ex-h">One shot, resolved</div><div class="ex-b"><pre>shot 3 · <span class="c">query</span> "empty server rack room" · <span class="c">provider</span> pexels
+  <span class="g">→ clip 8842019 · 14.2s · 3840x2160 · CC0</span>
+
+shot 2 · <span class="c">query</span> "storefront terms page" · <span class="c">provider</span> youtube
+  <span class="c">→ candidate 47m18s · motion-scored in 5s windows</span>
+  <span class="g">→ best window 21:04–21:12 · cut · source retained 24h, clip 0h</span></pre></div></div>
+      <p class="muted small" style="margin-top:14px">Downloading a real video is potentially a gigabyte over the operator's own connection, so there's a hard cap per render: <b>four</b> on politics, tech, science and AI — where the real recorded event exists and stock has no clip of it — and <b>two</b> on everything else. Shots past the cap fall back to stock and say so in the audit package.</p>
+      <div class="note">
+        <span class="ic">KEEP</span>
+        <span><b>Nothing is retained.</b> Clip bytes live in the render's working directory and die with it. What survives is the <em>provenance</em> — provider, source video, the exact seconds used, the query that found it — written before the clip ever reaches the encoder, and deleted when the export retires.</span>
+      </div>
+    </div>
+  </article>
+
+  <!-- 08 EDIT -->
+  <article class="stage rv">
+    <div class="stage-num"><span class="big">08</span> Edit</div>
+    <div class="stage-body">
+      <div class="badges"><span class="badge model">openai/gpt-oss-120b</span><span class="badge tool">Kinocut over MCP</span><span class="badge">9 of 196 tools</span><span class="badge">fails soft ×2</span></div>
+      <h3>Find the moment in each clip worth showing</h3>
+      <p class="muted">Each clip goes to the model one at a time, along with what that shot is <em>doing</em> in the argument and exactly how long it will be on screen. The model probes it, detects its scene changes, trims to the window that's actually worth the seconds, and optionally applies one subtle grade.</p>
+
+      <h4 style="margin-top:20px">What MCP is, in one paragraph</h4>
+      <p class="muted small">A model can't edit video by writing text — it has to <em>call</em> something. MCP (Model Context Protocol) is a small standard for exposing real programs as callable functions with described inputs. <b>Kinocut</b> is one such program: an open-source, local-only wrapper around FFmpeg that needs no key and no account. The client that talks to it here is about 150 lines of newline-delimited JSON-RPC over a pipe rather than the official SDK, because three methods over one transport against one server doesn't justify a dependency.</p>
+
+      <h4 style="margin-top:22px">Why only nine tools</h4>
+      <p class="muted small">Kinocut exposes <b>196</b> tools. A tool-calling loop re-sends every tool's description on every single turn, so offering all of them would spend a large share of the day's entire token budget on <em>the menu</em>, before the model looked at one frame. The shortlist is exactly what this stage is for — and the tool descriptions are fetched live from the server at run time rather than copied into the code, because a pasted description silently drifts on the server's next release.</p>
+
+      <div class="ex">
+        <div class="ex-h">The nine tools · and one clip's real loop</div>
+        <div class="ex-b"><pre><span class="c">offered:</span> video_info · video_detect_scenes · video_trim ·
+video_filter · effect_vignette · effect_glow ·
+effect_chromatic_aberration · effect_scanlines · effect_noise
+
+<span class="c">clip 2 — "storefront terms page", 8.0s on screen, intent:
+"the words nobody read"</span>
+<span class="k">→ video_info</span>(path)              <span class="c">← 8.4s · 1920x1080 · 30fps</span>
+<span class="k">→ video_detect_scenes</span>(path)     <span class="c">← cuts at 0.0, 2.6, 5.1</span>
+<span class="k">→ video_trim</span>(start=2.6, end=8.4) <span class="c">← the sustained shot</span>
+<span class="k">→ effect_vignette</span>(0.25)         <span class="c">← pulls the eye to centre</span>
+<span class="g">← edited · 4 tools · output path verified to exist</span></pre></div>
+      </div>
+      <p class="muted small" style="margin-top:14px">Two safety details worth naming: the allowlist is enforced on the <em>call</em>, not merely by what was offered; and the file path the model claims to have written is checked to exist before the encoder is told to read it, because a hallucinated path would otherwise fail the whole render minutes later at encode time.</p>
+      <div class="note">
+        <span class="ic">SOFT</span>
+        <span><b>Edit is never allowed to fail a render, at either level.</b> One clip whose edit fails keeps its original bytes and stays in the montage. A stage that can't start at all — Kinocut missing, model rate-limited — returns <em>every</em> clip as sourced. Either way the video is exactly the one it would have been before this stage existed, and the reason is written into the audit package. It also does not stitch, composite or encode: those stay in the verified FFmpeg path.</span>
+      </div>
+    </div>
+  </article>
+
+  <!-- 09 NARRATE -->
+  <article class="stage rv">
+    <div class="stage-num"><span class="big">09</span> Narrate</div>
+    <div class="stage-body">
+      <div class="badges"><span class="badge tool">Edge TTS · default</span><span class="badge tool">Gemini TTS · upgrade</span><span class="badge">word timings</span><span class="badge">Whisper align</span></div>
+      <h3>Say it out loud, and know when every word lands</h3>
+      <p class="muted">The captions in this product are word-by-word — each word accents as it's spoken — which means the system needs the exact millisecond of every word, not just an audio file.</p>
+      <div class="grid g2" style="margin-top:16px">
+        <div class="card" style="background:#fff">
+          <h4>Edge TTS — the default</h4>
+          <p class="small muted" style="margin-top:8px">Microsoft's free voice engine, driven through a thin Python wrapper that explicitly asks for word-boundary events. It returns audio <em>and</em> one <code>{word, start, end}</code> entry per word, so caption timing is exact and costs nothing extra. Voice, rate and pitch are drawn per render from the operator's pool, avoiding voices already used today.</p>
+        </div>
+        <div class="card" style="background:#fff">
+          <h4>Gemini TTS — the upgrade</h4>
+          <p class="small muted" style="margin-top:8px">More expressive, and the only voice that performs the <code>[giggles]</code>-style delivery tags. Limited to <b>10 requests per day</b>, so it's one request for the whole video and it's offered only while fewer than 8 of today's renders have used it — two held back so a re-run gets the same voice.</p>
+        </div>
+      </div>
+      <p class="muted small" style="margin-top:16px"><b>Gemini returns audio and no timings</b> — the single most important technical fact in this design, because switching voice naively would silently delete the caption feature. So when it's used, a Whisper transcription pass force-aligns the audio at word granularity and maps the known beat texts onto the result. Below a 60% word match the alignment is rejected outright, since bad alignment doesn't look like an error downstream — it looks like a video whose captions drift and whose cuts land mid-word.</p>
+      <div class="ex"><div class="ex-h">Three possible caption states <span class="tag">always recorded</span></div><div class="ex-b"><pre><span class="g">native</span>     Edge's own word events — exact, no extra call
+<span class="g">aligned</span>    Whisper force-alignment — accurate to the match ratio
+<span class="w">estimated</span>  alignment failed; words spread across the measured
+           duration by length. <span class="w">Flagged in the export</span>, because a
+           reviewer can't tell drift from a bad take unless told.</pre></div></div>
+      <div class="note"><span class="ic">SOFT</span><span>A Gemini failure falls back to Edge and the render continues, with the reason written down. <b>Edge failing is a real failure</b> — there is nothing below it.</span></div>
+    </div>
+  </article>
+
+  <!-- 10 RENDER -->
+  <article class="stage rv">
+    <div class="stage-num"><span class="big">10</span> Render</div>
+    <div class="stage-body">
+      <div class="badges"><span class="badge tool">FFmpeg</span><span class="badge">1080×1920</span><span class="badge">ASS captions</span><span class="badge">no model</span></div>
+      <h3>Cut it to the argument, burn in the words</h3>
+      <p class="muted">Every clip is cropped and scaled to vertical and filled to at least three-quarters of the frame height, then joined into one track. Normalising first isn't optional — joining requires the inputs to agree on size, pixel format, frame rate and aspect, and clips from different photographers agree on none of them.</p>
+      <p class="muted"><b>The cuts land on the argument, not on a timer.</b> A shot acquired for beat 3 starts on the first word of beat 3 and holds until the next shot's beat begins. A shot that would run under 900&nbsp;ms is dropped and its neighbour holds through it, so every millisecond of the video is covered by exactly one shot.</p>
+      <div class="ex"><div class="ex-h">Cut sheet <span class="tag">derived from word timings</span></div><div class="ex-b"><pre><span class="c">0.00 – 3.12   </span>hook      "hands holding game disc"
+<span class="c">3.12 – 11.40  </span>beat 0    "cursor clicking buy"
+<span class="c">11.40 – 19.05 </span>beat 1    "storefront terms page"  <span class="c">(edited: trim+vignette)</span>
+<span class="c">19.05 – 27.80 </span>beat 2    "empty server rack room"
+<span class="c">27.80 – 36.20 </span>beat 3    "rights document signing"
+<span class="c">36.20 – 44.90 </span>beat 4    "empty living room tv"
+<span class="g">output length set explicitly from the measured narration</span></pre></div></div>
+      <p class="muted small" style="margin-top:14px">Source audio is muted entirely and the narration mixed in. Captions are burned in as a subtitle track with one event per word, so the spoken word accents as it lands, and keyword words stay accented for the whole line. <b>The host is not in this pass at all</b> — what comes out here is already a complete, publishable Short.</p>
+    </div>
+  </article>
+
+  <!-- 11 HOST -->
+  <article class="stage rv">
+    <div class="stage-num"><span class="big">11</span> Host</div>
+    <div class="stage-body">
+      <div class="badges"><span class="badge tool">FFmpeg · second pass</span><span class="badge code">no model decides anything</span><span class="badge">19 actions</span><span class="badge">fails soft</span></div>
+      <h3>Put the presenter on top</h3>
+      <p class="muted">A 19-clip animated character pack is composited over the finished video in its own pass. The performance is fixed: it waves hello, runs the pack's other seventeen actions once through in order, loops that 50.5-second cycle for as long as the video lasts, and waves goodbye. The only rule is that the first and last actions are the waves.</p>
+      <p class="muted small">A model used to pick an action per shot from the pack's descriptions, and other code then had to re-check those picks and correct a mid-video sign-off or an invented id. That bought gestures that tracked the argument, and cost a model call whose output needed validating plus a class of bug you could only find by watching. <b>A fixed cycle cannot be wrong and costs nothing.</b></p>
+      <div class="ex"><div class="ex-h">The cycle <span class="tag">manifest order</span></div><div class="ex-b"><pre>wave_hello_intro <span class="c">3.0s</span> → talk_neutral → talk_emphatic →
+talk_hand_raised → talk_both_hands_explain → talk_point_right →
+talk_point_left → present_open_palm_right → point_up_key_point →
+thinking_hand_on_chin → idle_neutral → listening_attentive →
+nod_yes_agree → shake_head_no_disagree → thumbs_up_approve →
+shrug_uncertain → surprised_reaction → laugh_happy
+  <span class="c">↻ loop the 50.5s cycle …</span>  → wave_goodbye_outro <span class="c">3.0s</span></pre></div></div>
+      <p class="muted small" style="margin-top:14px">Three engineering details that make it clean: the clips carry a <b>real transparency channel</b>, so there's no colour-keying anywhere (an earlier host was keyed off a red background and the tolerance window ate her face). All nineteen files share one format, so they're joined as a single input rather than forty-odd concurrent decodes. And the track is built to run slightly <em>past</em> the end — an overshoot clips the goodbye wave's tail, an undershoot would leave the last moment with no presenter, which reads as a crash.</p>
+      <div class="note"><span class="ic">SOFT</span><span><b>A missing pack or a failed overlay costs the host, not the video.</b> The export is the finished no-host Short, flagged with the reason. Swapping the presenter is repointing one directory — no code knows it's a robot.</span></div>
+    </div>
+  </article>
+
+  <!-- 12 EXPORT -->
+  <article class="stage rv">
+    <div class="stage-num"><span class="big">12</span> Export</div>
+    <div class="stage-body">
+      <div class="badges"><span class="badge model">openai/gpt-oss-20b · listing only</span><span class="badge code">audit: no model</span><span class="badge">R2</span></div>
+      <h3>Package it for a human</h3>
+      <p class="muted">One small model call writes the title, description and hashtags the operator will paste into YouTube Studio — validated against a schema, and degrading to a listing derived from the script if anything about it is wrong. Everything else in the package is assembled by plain code that can't be creative about it.</p>
+      <div class="ex"><div class="ex-h">The upload sheet</div><div class="ex-b"><pre><span class="c">title</span>        You didn't buy that game — you rented it for 7 years
+<span class="c">description</span>  A publisher pulled licences for a 2019 title after a
+             rights lapse. The terms always said "licence". The
+             button always said BUY. Which one were you reading?
+<span class="c">hashtags</span>     #gaming #digitalownership #consumerrights #shorts</pre></div></div>
+      <div class="ex"><div class="ex-h">The audit package <span class="tag">never optional</span></div><div class="ex-b"><pre><span class="c">script</span>        full text, beats, the rolled performance + its seed
+<span class="c">critic</span>        originality 0.72, no flags   <span class="c">(or null, honestly)</span>
+<span class="c">research</span>      the brief, its citations, <span class="g">grounded</span>
+<span class="c">providers</span>     research: gemini-3.7-flash · script/plan/edit: 120b
+              critic/listing: 20b   <span class="c">+ any fallback reason</span>
+<span class="c">footage</span>       per clip: provider, source link, <span class="k">the span of the
+              source used</span> AND <span class="k">the span of the video it occupies</span>
+<span class="c">edit</span>          per clip: which tools ran, or why it was left alone
+<span class="c">narration</span>     driver, voice, rate, style sent, caption timing state
+<span class="c">host</span>          pack, version, the exact sequence performed
+<span class="c">flags</span>         everything a reviewer should look at twice</pre></div></div>
+      <div class="note"><span class="ic">HARD</span><span><b>An export without that package is useless to a reviewer, so it isn't allowed to exist.</b> And every fact in it is on screen — the source-and-seconds of each clip was recorded correctly from day one and displayed nowhere, which meant “which videos are in this?” was only answerable from a build log.</span></div>
+    </div>
+  </article>
+</section>
+
+<!-- ═══ MODELS ═══ -->
+<section id="models" class="wrap">
+  <div class="sec-head rv">
+    <p class="kicker">Models</p>
+    <h2>Who answers what, and why it's them.</h2>
+    <p class="lede">Exactly one file in the codebase is allowed to name a model. That isn't a style rule — a stage that spelled its own model id inline silently missed every model change for weeks, and another shipped a placeholder no provider would accept, which every test passed.</p>
+  </div>
+  <div class="tw rv">
+    <table>
+      <thead><tr><th>Stage</th><th>Model</th><th>Why this one</th></tr></thead>
+      <tbody>
+        <tr><td><b>Research</b> · first try</td><td><code>gemini-3.7-flash</code></td><td>The only stage limited by how much it can read at once. Big enough intake that no fetched article has to be thrown away. Capped at four tool turns against a 5-per-minute ceiling.</td></tr>
+        <tr><td><b>Research</b> · fallback</td><td><code>openai/gpt-oss-120b</code></td><td>Fires on <em>any</em> failure — 500, 429, timeout, bad JSON, a loop that won't stop. Known to work; no ladder to a third model, because handing a second model the first's signed reasoning steps is untested.</td></tr>
+        <tr><td><b>Rerank</b></td><td><code>openai/gpt-oss-120b</code></td><td>Reorders keyword results by real relevance. May only reorder, never add — so it can't invent a citation.</td></tr>
+        <tr><td><b>Script</b></td><td><code>openai/gpt-oss-120b</code></td><td>The product. Not a candidate for anything smaller.</td></tr>
+        <tr><td><b>Critic</b></td><td><code>openai/gpt-oss-20b</code></td><td>Advisory, and deliberately <em>not</em> the writer's model — a critic on the writer's model is grading its own work.</td></tr>
+        <tr><td><b>Plan</b></td><td><code>openai/gpt-oss-120b</code></td><td>Its queries are the difference between footage that illustrates the argument and a crystal mobile. Moving it was offered and declined.</td></tr>
+        <tr><td><b>Edit</b></td><td><code>openai/gpt-oss-120b</code></td><td>The biggest consumer in the system (~90–110K tokens, ~34 tool turns) and precisely where weaker tool-calling degrades quietly into “every clip as sourced”.</td></tr>
+        <tr><td><b>Export listing</b></td><td><code>openai/gpt-oss-20b</code></td><td>Turns a written script into a title and tags. No judgement a bigger model resolves better, and it already falls back to a script-derived listing.</td></tr>
+        <tr><td><b>Everything else</b></td><td>—</td><td>Watch, Score, Source, Render, Host, Ideas ranking and the whole audit package are plain code. The web service makes no model call anywhere.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="grid g2" style="margin-top:18px">
+    <div class="card rv">
+      <h4>The budget is the design constraint</h4>
+      <p class="small muted" style="margin-top:8px">Tokens are metered per model per day, so every stage sharing a model competes for one allowance. What's on the big model costs about <b>130K tokens a render</b>, which makes <b>two renders a day</b> the practical ceiling — and Edit is nearly all of it. The fix, when it's needed, is fewer tool turns or a shorter tool list, not a smaller model.</p>
+    </div>
+    <div class="card rv">
+      <h4>Adding a provider requires a human decision</h4>
+      <p class="small muted" style="margin-top:8px">Research is the one stage with two providers, and it is explicitly not a precedent for a third or for a second stage. No framework, service or model provider enters this system without the operator saying so — which is why there's no vector database, no agent framework, and a 150-line MCP client instead of an SDK.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ OUTPUT ═══ -->
+<section id="output" class="wrap">
+  <div class="sec-head rv">
+    <p class="kicker">The output</p>
+    <h2>What lands on the operator's desk.</h2>
+    <p class="lede">A finished vertical MP4, a listing to paste, and everything needed to check the video is what it claims to be. It sits in the review queue for three days; downloading it, marking it reviewed, or throwing it away are all one click.</p>
+  </div>
+  <div class="out">
+    <div class="rv">
+      <div class="phone">
+        <video src="demo/demo-short.mp4" poster="demo/demo-short.jpg" controls preload="metadata" playsinline></video>
+      </div>
+      <p class="small muted" style="margin-top:12px">A real export from this pipeline — footage, narration, word-level captions and the host, exactly as the system produced it.</p>
+      <div class="frames">
+        <img src="demo/frame-1.jpg" alt="Frame from a rendered Short" loading="lazy">
+        <img src="demo/frame-2.jpg" alt="Frame from a rendered Short" loading="lazy">
+        <img src="demo/frame-3.jpg" alt="Frame from a rendered Short" loading="lazy">
+        <img src="demo/frame-4.jpg" alt="Frame from a rendered Short" loading="lazy">
+        <img src="demo/frame-5.jpg" alt="Frame from a rendered Short" loading="lazy">
+        <img src="demo/frame-6.jpg" alt="Frame from a rendered Short" loading="lazy">
+        <img src="demo/frame-7.jpg" alt="Frame from a rendered Short" loading="lazy">
+        <img src="demo/frame-8.jpg" alt="Frame from a rendered Short" loading="lazy">
+      </div>
+    </div>
+    <div class="rv">
+      <h3 style="margin-bottom:16px">Every package contains</h3>
+      <ul class="checks">
+        <li><span class="tick">✓</span><span><b>The video.</b> 1080×1920 MP4, narrated, captioned, hosted, ready to upload as-is.</span></li>
+        <li><span class="tick">✓</span><span><b>The upload sheet.</b> Title, description and hashtags, written for the platform rather than cut off mid-word.</span></li>
+        <li><span class="tick">✓</span><span><b>The script</b> as written, plus the performance it was rolled and the seed that produced it — so the same run can be reproduced from the package alone.</span></li>
+        <li><span class="tick">✓</span><span><b>The critic's verdict</b>, or an honest empty where the critic couldn't be reached.</span></li>
+        <li><span class="tick">✓</span><span><b>The research brief and its citations</b> — or a clear <code>ungrounded</code> stamp when the script was written from the headline alone.</span></li>
+        <li><span class="tick">✓</span><span><b>Footage provenance for every clip</b>: where it came from, a link that opens the source at the right second, the span of the source used, and the span of the finished video it occupies.</span></li>
+        <li><span class="tick">✓</span><span><b>What the edit did</b> to each clip, or why it was left alone.</span></li>
+        <li><span class="tick">✓</span><span><b>The voice settings actually used</b> — driver, voice, rate, delivery direction, and which of the three caption-timing states produced the words on screen.</span></li>
+        <li><span class="tick">✓</span><span><b>Which provider answered each thinking stage</b>, and why the other one didn't.</span></li>
+        <li><span class="tick">✓</span><span><b>Flags</b>: length misses, a caption drift, a repeated-sounding script, a voice reused today, a missing host, a degraded stage. None of them block; all of them are told.</span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ RULES ═══ -->
+<section id="rules" class="wrap">
+  <div class="sec-head rv">
+    <p class="kicker">Non-negotiables</p>
+    <h2>Rules the system is built not to break.</h2>
+    <p class="lede">Almost every one of these exists because something went wrong once and the fix was written into the architecture rather than into a habit.</p>
+  </div>
+  <div class="rules">
+    <div class="rule rv"><b>It never uploads.</b><span>No upload credential, no OAuth scope, no publish endpoint, anywhere in the system. Publishing is a person in YouTube Studio.</span></div>
+    <div class="rule rv"><b>It never hands over a video without its receipts.</b><span>Script, critic, research, footage provenance, voice settings, model per stage, host sequence. An export missing them is useless to a reviewer, so it can't be produced.</span></div>
+    <div class="rule rv"><b>It never keeps footage.</b><span>Clip bytes die with the render's working directory. Provenance rows are dropped when the export retires. The only exception is a 24-hour cache of long source videos, so a repeated run doesn't re-download 1.6&nbsp;GB.</span></div>
+    <div class="rule rv"><b>A helper stage never kills a render.</b><span>Research, Plan, Edit, alignment, the critic and the host all degrade and report. The video that comes out is the one that would have come out before that stage existed.</span></div>
+    <div class="rule rv"><b>A delivery tag never reaches the picture.</b><span>Bracketed direction goes to the expressive voice model and nothing else — never the fallback voice, never the stored script, and never the burned-in captions, which can't be taken back.</span></div>
+    <div class="rule rv"><b>No secret is ever written down.</b><span>Not in a file, a log line, a commit message or a client bundle. Keys arrive from the environment and live in an encrypted vault only the drivers can open.</span></div>
+    <div class="rule rv"><b>A run makes the plan just submitted, or nothing.</b><span>It claims stories from that plan alone. A run whose plan is empty makes no video rather than falling back — no token is spent on a story chosen in an earlier session.</span></div>
+    <div class="rule rv"><b>A failed run's story is cancelled, not retried.</b><span>Re-choosing takes one click. Silently re-rendering a thirteen-hour-old story in a run sized for one video does not.</span></div>
+    <div class="rule rv"><b>The model is spent only where there's real ambiguity.</b><span>Footage acquisition, the host's performance, the ideas ranking and the whole audit package were all agentic once. Each became plain code the moment it was shown to have one right answer.</span></div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap fl">
+    <span><b style="color:var(--mercury)">Mythos Engine</b> — shatter into reality.</span>
+    <span class="mono" style="font-size:12px">Astro · React · Cloudflare Workers · D1 · KV · R2 · GitHub Actions · FFmpeg · Groq · Gemini · Kinocut</span>
+  </div>
+</footer>
+
+</div>
+
+<script>
+(function () {
+  // Reveal on scroll, and a nav that knows where you are. Both are
+  // progressive: with no IntersectionObserver everything is simply visible.
+  var revealables = document.querySelectorAll('.rv');
+  if (!('IntersectionObserver' in window)) {
+    revealables.forEach(function (el) { el.classList.add('in'); });
+    return;
+  }
+  var reveal = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (e.isIntersecting) { e.target.classList.add('in'); reveal.unobserve(e.target); }
+    });
+  }, { rootMargin: '0px 0px -8% 0px', threshold: 0.08 });
+  revealables.forEach(function (el) { reveal.observe(el); });
+
+  var links = Array.prototype.slice.call(document.querySelectorAll('.nav-links a'));
+  var sections = links.map(function (a) { return document.querySelector(a.getAttribute('href')); });
+  var spy = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (!e.isIntersecting) return;
+      var i = sections.indexOf(e.target);
+      if (i < 0) return;
+      links.forEach(function (a) { a.classList.remove('on'); });
+      links[i].classList.add('on');
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  sections.forEach(function (s) { if (s) spy.observe(s); });
+})();
+</script>
+</body>
+</html>

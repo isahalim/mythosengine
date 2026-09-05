@@ -51,6 +51,22 @@ on:
         description: "Run plan whose picks this run may claim. Leave empty for the unscoped queue."
         required: false
         default: ""
+      # The chat route (operator direction 2026-09-04, docs/CHAT_PIPELINE.md).
+      # Set by POST /console/briefs to the brief the operator just typed; the
+      # job then runs scripts/pipeline/chat-render.ts, which digests that
+      # brief, turns it into a signal and a plan, and calls the *same*
+      # renderOneVideo the brainstorm route calls.
+      #
+      # Mutually exclusive with plan_id by construction: a brief-scoped run
+      # queues its own plan on the runner, because deciding which signal to
+      # build needs a model and the Worker makes no model call (CLAUDE.md).
+      #
+      # Empty on every other kind of run, and the file then behaves exactly as
+      # it did before this input existed.
+      brief_id:
+        description: "Operator brief to build. Leave empty for the brainstorm route."
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -268,10 +284,22 @@ jobs:
           elif command -v gtimeout >/dev/null; then GUARD="gtimeout 1800"
           else GUARD=""; echo "::warning::no timeout/gtimeout on this runner - per-video guard is off, the 180-minute job timeout is the only ceiling"; fi
 
+          # Which entry point. A brief-scoped run is always one video — a
+          # brief is one idea — and it goes through chat-render.ts, which is a
+          # prelude that ends by calling the same renderOneVideo this loop's
+          # other arm calls. The count check above still bounds both.
+          if [ -n "$PIPELINE_BRIEF_ID" ]; then
+            ENTRY="scripts/pipeline/chat-render.ts"
+            RENDER_COUNT=1
+            echo "Chat route: building operator brief $PIPELINE_BRIEF_ID"
+          else
+            ENTRY="scripts/pipeline/render.ts"
+          fi
+
           FAILED=0
           for i in $(seq 1 "$RENDER_COUNT"); do
             echo "::group::video $i of $RENDER_COUNT"
-            if $GUARD npx tsx scripts/pipeline/render.ts; then
+            if $GUARD npx tsx "$ENTRY"; then
               echo "video $i succeeded"
             else
               echo "::error::video $i of $RENDER_COUNT failed — continuing with the rest of the run"
@@ -289,6 +317,8 @@ jobs:
           PIPELINE_TRACE_ID: ${{ inputs.trace_id }}
           # Empty on a hand-triggered run, and the claim is then unscoped.
           PIPELINE_PLAN_ID: ${{ inputs.plan_id }}
+          # Empty on every run but the chat route's; see the input above.
+          PIPELINE_BRIEF_ID: ${{ inputs.brief_id }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}

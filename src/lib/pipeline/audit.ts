@@ -73,7 +73,8 @@ export interface FootageProvenance {
 export interface ResearchProvenance {
   model: string;
   summary: string;
-  citations: { signalId: string; claim: string; title: string; url: string; sourceKind: string }[];
+  /** `signalId` is null for a chat-route citation, which came from the open web rather than from this system's corpus — see `ResearchCitation`. */
+  citations: { signalId: string | null; claim: string; title: string; url: string; sourceKind: string }[];
   toolCallsMade: string[];
 }
 
@@ -203,9 +204,17 @@ interface EditProvenance {
  * visible, and RENDER reads every line off the ladder that made the calls
  * rather than writing model ids down by hand.
  */
-interface StageProvenance {
+export interface StageProvenance {
   stage: string;
-  provider: "groq" | "gemini";
+  /**
+   * `gemini-grounded` is the chat route's RESEARCH, and it is a third value
+   * rather than plain `gemini` because it names a different kind of evidence.
+   * A `gemini` brief cites rows from this system's own corpus, which a
+   * reviewer can look up here; a `gemini-grounded` one cites pages the
+   * provider's search returned, which a reviewer has to open. Collapsing the
+   * two would make `citations` mean two things under one label.
+   */
+  provider: "groq" | "gemini" | "gemini-grounded";
   model: string;
   /**
    * Why this stage is not on the model it would have preferred, or null when

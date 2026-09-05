@@ -1,7 +1,29 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
-  "entry": ["src/pages/**/*.astro", "scripts/*.mjs", "scripts/pipeline/*.ts", "src/lib/drivers/*.ts", "src/lib/ingest/*.ts", "src/lib/footage/*.ts", "config/*.ts", "db/*.ts"],
-  "project": ["src/**/*.{ts,tsx,astro}", "scripts/**/*.{mjs,ts}", "config/**/*.ts", "db/**/*.ts"],
-  "ignoreDependencies": ["tailwindcss"],
-  "ignoreBinaries": ["ffmpeg", "ffprobe"]
+  "entry": [
+    "src/pages/**/*.astro",
+    "scripts/*.mjs",
+    "scripts/pipeline/*.ts",
+    "src/lib/drivers/*.ts",
+    "src/lib/ingest/*.ts",
+    "src/lib/footage/*.ts",
+    "config/*.ts",
+    "db/*.ts"
+  ],
+  "project": [
+    "src/**/*.{ts,tsx,astro}",
+    "scripts/**/*.{mjs,ts}",
+    "config/**/*.ts",
+    "db/**/*.ts"
+  ],
+  "ignoreDependencies": [
+    "tailwindcss"
+  ],
+  "ignoreBinaries": [
+    "ffmpeg",
+    "ffprobe"
+  ],
+  "ignore": [
+    "src/app/orb/GradientOrb.tsx"
+  ]
 }

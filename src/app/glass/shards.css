@@ -582,3 +582,147 @@
     animation: none;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   The chat route (docs/CHAT_PIPELINE.md, operator direction 2026-09-04).
+
+   Three things live here rather than in a stylesheet of their own, for the
+   same reason the forge's crack does: they are part of the glass surface's
+   vocabulary, and the one file that owns that vocabulary is this one.
+   --------------------------------------------------------------------------- */
+
+/* The cycling cue in the compose input. Each cue is keyed on its index, so
+   React remounts the span and the animation replays — a fade in, a hold, and
+   a fade out sized to `PLACEHOLDER_MS` in StageCompose.tsx. */
+.chat-cue {
+  animation: chat-cue 3.6s ease-in-out both;
+}
+
+@keyframes chat-cue {
+  0% { opacity: 0; }
+  12% { opacity: 1; }
+  82% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* The cursor bar beside it. Blinks on the terminal's own cadence rather than
+   a browser caret's, because there is no real caret here — the field is
+   empty and unfocused, and the bar is what says "type". */
+.chat-caret {
+  animation: chat-caret 1.1s steps(1, end) infinite;
+}
+
+@keyframes chat-caret {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+/*
+   The orb emerging from the text input and drifting up.
+
+   The board: "make it smoothly and fluid-like to emerge from the text input
+   place and drift upwards gently."
+
+   It starts as a small disc sitting exactly where the locked input is
+   (`top: 0`, the same row), and transitions to a large one above it. Two
+   separate durations, and the difference is the whole feel: the scale runs
+   slower than the translate, so the orb keeps swelling after it has arrived
+   rather than reaching its size and then sliding — which is what reads as
+   fluid rather than as a moving object.
+
+   `--ease-out` is the same curve every other entrance on this surface uses.
+*/
+.orb-rise {
+  top: 0;
+  width: 3.5rem;
+  height: 3.5rem;
+  /*
+     The vendored orb renders into an OPAQUE WebGL canvas (`alpha: false`),
+     so it is always a filled rectangle — and that rectangle was visible as a
+     pale square over the header (caught in a browser, 2026-09-04).
+
+     `mix-blend-mode: multiply` is the trick `src/app/bg/Spheres.tsx` uses on
+     this same white ground, and it does not work here: blending only reaches
+     the backdrop *within the element's own stacking context*, and the
+     spheres this would need to blend against are a fixed sibling far below
+     it in the tree.
+
+     So the canvas is masked instead, which depends on nothing outside this
+     element. The orb is circular and centred in its own canvas, and its glow
+     has fallen off well before the frame, so a radial fade from 46% to 62%
+     removes the square and touches nothing that was drawn. Deterministic,
+     stacking-context-proof, and no change to the vendored component.
+  */
+  -webkit-mask-image: radial-gradient(circle at 50% 50%, #000 0%, #000 46%, transparent 62%);
+  mask-image: radial-gradient(circle at 50% 50%, #000 0%, #000 46%, transparent 62%);
+  transform: translate(-50%, 0) scale(0.35);
+  opacity: 0;
+  transition:
+    transform 1.8s var(--ease-out),
+    width 2.4s var(--ease-out),
+    height 2.4s var(--ease-out),
+    opacity 1.2s ease-out;
+}
+
+/*
+   Where it comes to rest.
+
+   NOT at the top of the frame, which is where a first pass put it and where
+   its bright core sat directly behind the stage title and washed it out. The
+   board's panel 3 is the one that settles this: during a run the orb belongs
+   among the orbiting shards with the healing card in front of it — "black
+   hole still visible behind the glass slab". So it rises to roughly the ring
+   centre `OrbitField` uses, which clears the header and puts the card
+   between the operator and the orb, exactly as drawn.
+
+   The mask fades in from 46% of the radius, so the visible core starts well
+   inside this box — that is what lets the box overlap the input's row without
+   anything bright reaching the blurb above it.
+*/
+.orb-rise--up {
+  width: 17rem;
+  height: 17rem;
+  transform: translate(-50%, -18%) scale(1);
+  opacity: 0.82;
+}
+
+/* The board: the orb stays visible behind the sealed slab, "but upon first
+   crack it disappears". A fade rather than a cut, and slow — the video is
+   about to start and a hard removal would pull the eye back to the
+   background at exactly the wrong moment. */
+.orb-rise--gone {
+  opacity: 0;
+  transition: opacity 1.4s var(--ease-out);
+}
+
+/*
+   The wrapper each orbiting shard hangs in.
+
+   It carries a transform written every frame by OrbitField's rAF loop, and
+   NOTHING else may animate `transform` on this element — `.float-group`'s
+   drift keyframe in particular would fight it. `will-change` because this is
+   one of ten elements moving continuously for the length of a render.
+
+   `opacity` is transitioned rather than written raw so a shard that docks
+   between two frames still fades rather than blinking.
+*/
+.orbit-shard {
+  will-change: transform, opacity;
+  transition: opacity 0.6s var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The cue stops cycling and the caret stops blinking; the text stays, so
+     the hint is still readable. The orb's rise becomes a cut to its final
+     pose — OrbitField makes the same choice for the shards, holding them at
+     their ring positions. */
+  .chat-cue,
+  .chat-caret {
+    animation: none;
+  }
+
+  .orb-rise,
+  .orbit-shard {
+    transition: none;
+  }
+}

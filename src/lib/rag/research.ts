@@ -149,7 +149,22 @@ const ResearchBriefSchema = z.object({
 });
 
 export interface ResearchCitation {
-  signalId: string;
+  /**
+   * The `signals` row this claim came out of, or **null** when the brief was
+   * not built from this system's own corpus.
+   *
+   * Null is only ever produced by the chat route's grounded research
+   * (src/lib/rag/langchain-research.ts), where the sources are pages the
+   * provider found on the open web and there is no signal to point at. The
+   * BM25 path here can never emit it: `finalizeBrief` drops any citation
+   * whose id is not in `seen`, which is the trust boundary that stops a
+   * model naming a URL nobody retrieved.
+   *
+   * A reviewer reads `title` and `url` either way, so nothing downstream is
+   * weakened — but the field says outright which kind of provenance it has,
+   * rather than fabricating a signal id to fill the shape.
+   */
+  signalId: string | null;
   claim: string;
   title: string;
   url: string;

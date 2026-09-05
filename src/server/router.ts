@@ -25,8 +25,10 @@ import { getRunProgress, listRecentRuns } from "./console/runs.ts";
 import { isTopic, rankIdeas } from "./console/ideas.ts";
 import { ingestLatest } from "./console/ideas-refresh.ts";
 import { cancelPlanPick, listPlan, queuePlan, queuedSignalIds } from "./console/run-plan.ts";
+import { getBriefView, listBriefViews, submitBrief, MAX_BRIEF_ATTACHMENTS, type BriefAttachmentInput } from "./console/briefs.ts";
 import { getExportPreviews, getRunMontage } from "./console/montage.ts";
 import { handleD1Batch } from "./internal/d1-batch.ts";
+import { handleBriefBlob } from "./internal/brief-blob.ts";
 import { handleExportBlob } from "./internal/export-blob.ts";
 import { log } from "./log.ts";
 import type { KvLike } from "../lib/drivers/cache-kv.ts";
@@ -147,6 +149,8 @@ const RUN_PROGRESS_PATTERN = /^\/console\/runs\/([^/]+)$/;
 const RUN_MONTAGE_PATTERN = /^\/console\/runs\/([^/]+)\/montage$/;
 /** One queued pick, cancellable while it is still queued (db/run-picks.ts). */
 const RUN_PLAN_PICK_PATTERN = /^\/console\/run-plan\/([^/]+)$/;
+/** One operator brief, polled by the chat surface while its run is in flight (src/server/console/briefs.ts). */
+const BRIEF_PATTERN = /^\/console\/briefs\/([^/]+)$/;
 
 function json(data: unknown, status = 200): Response {
   return Response.json(data, { status });
@@ -213,6 +217,19 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
   const exportBlobMatch = pathname.match(/^\/internal\/(exports\/[^/]+)$/);
   if (exportBlobMatch && (method === "PUT" || method === "DELETE")) {
     return handleExportBlob(request, exportBlobMatch[1], {
+      db: deps.db,
+      exportBucket: deps.exportBucket,
+      pipelineBatchToken: deps.pipelineBatchToken,
+    });
+  }
+
+  // The pipeline's door to a brief's attachments, in the opposite direction
+  // to the export blob above: the Worker received these files on the console
+  // session and put them in R2 itself, and DIGEST on the runner needs to read
+  // them back (src/server/internal/brief-blob.ts).
+  const briefBlobMatch = pathname.match(/^\/internal\/(briefs\/[^/]+\/[^/]+)$/);
+  if (briefBlobMatch && (method === "GET" || method === "DELETE")) {
+    return handleBriefBlob(request, briefBlobMatch[1], {
       db: deps.db,
       exportBucket: deps.exportBucket,
       pipelineBatchToken: deps.pipelineBatchToken,
@@ -350,6 +367,67 @@ export async function handleApiRequest(request: Request, deps: RouterDeps): Prom
     // POST because it writes: new `signals` rows, and SCORE over them.
     if (pathname === "/console/ideas/refresh" && method === "POST") {
       return json(await ingestLatest(ctx.db));
+    }
+
+    // ---- the chat route (docs/CHAT_PIPELINE.md) ----
+    //
+    // Three endpoints, none of which calls a model. The operator's prompt is
+    // stored and a run is started; DIGEST decides on the runner what this
+    // brief actually is and writes the answer back onto the row, which is
+    // what these two GETs then report. See src/server/console/briefs.ts for
+    // why the judgement cannot live here.
+    if (pathname === "/console/briefs" && method === "POST") {
+      let form: FormData;
+      try {
+        form = await request.formData();
+      } catch {
+        return json({ error: "invalid_form" }, 400);
+      }
+
+      const prompt = form.get("prompt");
+      if (typeof prompt !== "string") return json({ error: "invalid_request", detail: "prompt is required" }, 400);
+
+      const files: BriefAttachmentInput[] = [];
+      // `getAll` rather than indexed field names: a browser sends every file
+      // under the same key, and reading them positionally is what lets the
+      // cap below be about how many files there are rather than about how
+      // the client happened to name them.
+      for (const entry of form.getAll("files")) {
+        if (typeof entry === "string") continue;
+        if (files.length >= MAX_BRIEF_ATTACHMENTS) return json({ error: "too_many_attachments", detail: `at most ${MAX_BRIEF_ATTACHMENTS} files` }, 422);
+        files.push({
+          filename: entry.name,
+          mimeType: entry.type || "application/octet-stream",
+          bytes: new Uint8Array(await entry.arrayBuffer()),
+        });
+      }
+
+      const result = await submitBrief(prompt, files, {
+        db: ctx.db,
+        killswitchKv: ctx.hotKv,
+        exportBucket: ctx.exportBucket,
+        actions: ctx.actions,
+        workflow: ctx.renderWorkflow,
+        ref: ctx.renderRef,
+      });
+      if (result.kind === "invalid") return json({ error: "invalid_brief", message: result.message }, 422);
+      if (result.kind === "disabled") return json({ error: "pipeline_disabled" }, 409);
+      if (result.kind === "rate_limited") return json({ error: "rate_limited" }, 429);
+      if (result.kind === "no_blob_store") return json({ error: "not_configured", detail: "this Worker has no EXPORTS R2 binding, so it cannot store attachments" }, 503);
+
+      await writeAuditLog(ctx.db, "human", "brief.submit", result.brief.id, { attachments: files.length });
+      return json({ ok: true, brief: result.brief, note: result.note });
+    }
+
+    if (pathname === "/console/briefs" && method === "GET") {
+      return json(await listBriefViews(ctx.db));
+    }
+
+    const briefMatch = pathname.match(BRIEF_PATTERN);
+    if (briefMatch && method === "GET") {
+      const brief = await getBriefView(ctx.db, briefMatch[1]);
+      if (brief === null) return json({ error: "not_found" }, 404);
+      return json(brief);
     }
 
     if (pathname === "/console/run-plan" && method === "GET") {

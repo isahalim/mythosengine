@@ -12,7 +12,7 @@
 import { err, ok, type Result } from "../lib/result.ts";
 import { fetchWithRetry } from "../lib/drivers/http.ts";
 import type { DriverError } from "../lib/drivers/types.ts";
-import type { ExportListItem, ExportMetadata, ExportPreviews, ExportStatus, IdeasIngestResult, QueuedPickView, RankedIdea, RunMontage, RunProgress, Topic } from "./types.ts";
+import type { BriefView, ExportListItem, ExportMetadata, ExportPreviews, ExportStatus, IdeasIngestResult, QueuedPickView, RankedIdea, RunMontage, RunProgress, Topic } from "./types.ts";
 
 const READ_TIMEOUT_MS = 8_000;
 const WRITE_TIMEOUT_MS = 10_000;
@@ -105,6 +105,45 @@ export function submitRunPlan(picks: { topic: Topic; signalId: string }[]): Prom
 
 export function cancelRunPick(id: string): Promise<Result<{ ok: true }, DriverError>> {
   return send(`/console/run-plan/${encodeURIComponent(id)}`, "DELETE");
+}
+
+/**
+ * The chat route's one write (docs/CHAT_PIPELINE.md).
+ *
+ * `multipart/form-data` rather than JSON, because the operator may attach
+ * files and base64 inside a JSON body would inflate a 20 MB cap to 27 MB of
+ * request for no benefit. The `content-type` header is deliberately NOT set:
+ * the browser has to add its own, with the multipart boundary in it, and
+ * setting it by hand is the classic way to make a form the server cannot
+ * parse.
+ *
+ * One attempt, like every other mutation here — a retried submit would
+ * dispatch a second run for the same idea.
+ */
+export async function submitBrief(prompt: string, files: File[]): Promise<Result<{ ok: true; brief: BriefView; note: string | null }, DriverError>> {
+  const form = new FormData();
+  form.set("prompt", prompt);
+  for (const file of files) form.append("files", file);
+
+  const res = await fetchWithRetry(
+    "/console/briefs",
+    { method: "POST", credentials: "same-origin", body: form },
+    // A generous budget: this is an upload, and the Worker writes every
+    // attachment to R2 before it answers.
+    { timeoutMs: 60_000, maxAttempts: 1, baseDelayMs: 0 },
+  );
+  if (!res.ok) return res;
+  return readJson(res.value);
+}
+
+/** The chat route's history list — every brief, newest first. */
+export function listBriefs(): Promise<Result<BriefView[], DriverError>> {
+  return get<BriefView[]>("/console/briefs");
+}
+
+/** One brief, polled while its run is in flight: this is where DIGEST's conclusion appears. */
+export function getBrief(id: string): Promise<Result<BriefView, DriverError>> {
+  return get<BriefView>(`/console/briefs/${encodeURIComponent(id)}`);
 }
 
 /** `note` is set when the run was recorded but not actually triggered (src/server/console/dispatch.ts). Stage 5 shows it verbatim. */

@@ -66,6 +66,8 @@ export interface ExportMetadata {
   durationS: number | null;
   scriptHook: string | null;
   debateQuestion: string | null;
+  /** What the operator typed, for a chat-route video. Null on the brainstorm route, and on any export predating the chat route — `incomplete` distinguishes the two. */
+  operatorPrompt: string | null;
   narrationDriver: string | null;
   narrationVoice: string | null;
   narrationFallbackReason: string | null;
@@ -215,4 +217,60 @@ export interface ExportPreviews {
   configured: boolean;
   exports: { exportId: string; keywords: string[]; clips: MontageClip[] }[];
   failures: { keyword: string; error: string }[];
+}
+
+/**
+ * One operator brief — the chat route's unit of work (docs/CHAT_PIPELINE.md).
+ *
+ * Mirrors `BriefView` in src/server/console/briefs.ts. Note how much of it is
+ * nullable: the Worker makes no model call, so at the moment this row is
+ * created the only things known about it are the prompt and the attachments.
+ * `topic`, `title` and `specificity` arrive later, written back by DIGEST on
+ * the runner, and the chat surface shows them the moment they land rather
+ * than guessing them in the meantime.
+ */
+export interface BriefView {
+  id: string;
+  prompt: string;
+  status: "queued" | "digesting" | "running" | "succeeded" | "failed";
+  /** The run this brief was dispatched as. Null when no dispatch credential is configured — a real state, shown as such. */
+  traceId: string | null;
+  planId: string | null;
+  signalId: string | null;
+  /** DIGEST's structured conclusion as raw JSON, or null before stage 0 has run. Parsed by `parseDigest`. */
+  digestJson: string | null;
+  /** Why this brief produced no video. Null on the happy path. */
+  failureReason: string | null;
+  createdAt: string;
+  updatedAt: string;
+  attachments: { filename: string; mimeType: string; sizeBytes: number }[];
+}
+
+/** What DIGEST concluded, once it has. Mirrors `BriefDigest` in src/lib/pipeline/digest.ts. */
+export interface BriefDigestView {
+  specificity: "specific" | "topic_only";
+  topic: Topic;
+  title: string;
+  angle: string;
+  mustInclude: string[];
+  voice: string | null;
+  language: string | null;
+}
+
+/**
+ * Reads DIGEST's conclusion off a brief, or null when it has not run or the
+ * stored JSON is unreadable.
+ *
+ * Unreadable JSON returns null rather than throwing, for the reason
+ * `getLatestResearchBrief` gives for the same choice: this is on the display
+ * path, and a corrupt field must cost the transcript one line, not the
+ * operator's view of a run that is otherwise fine.
+ */
+export function parseDigest(brief: BriefView): BriefDigestView | null {
+  if (brief.digestJson === null) return null;
+  try {
+    return JSON.parse(brief.digestJson) as BriefDigestView;
+  } catch {
+    return null;
+  }
 }

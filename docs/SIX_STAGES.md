@@ -1,4 +1,4 @@
-# The operator surface — six stages
+# The operator surface — the brainstorm route
 
 Supersedes `CONSOLE_SPEC.md` §3–§5 (the dashboard, chat, voice and settings
 pages) as of **2026-08-31**. `CONSOLE_SPEC.md` remains authoritative for
@@ -7,6 +7,28 @@ model the pipeline reads.
 
 Built from three hand-drawn boards supplied by the operator. Where this
 document and the boards disagree, the boards win.
+
+---
+
+## Where this route begins (2026-09-04)
+
+**Signing in no longer lands here.** It lands on a **fork** — two free-floating
+shards, `src/app/stages/StageFork.tsx` — and this document describes what is
+behind the right-hand one, *"brainstorm first"*. The left-hand one,
+*"already have an idea"*, opens the chat route, which has its own board and
+its own document: **`docs/CHAT_PIPELINE.md`**.
+
+Nothing below changed when that fork arrived. The five stages, their glass,
+their layouts and their contracts are exactly what they were; the only edits
+to this route were the entry point (`signed-in` and `restart` now go to
+`fork`) and the rail becoming route-aware (`railFor` in `src/app/state.ts`,
+still the only place either route's step count lives).
+
+The two routes **share `review` and nothing else** — the design board asked
+for that outright: *"a dedicated review section for past videos that haven't
+expired, same as the current step 5 (shares same path)"*. It is reachable from
+`TopBar` on both routes and from the fork itself, because looking at last
+week's work is not starting a new run.
 
 ---
 

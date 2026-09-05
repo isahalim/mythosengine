@@ -14,11 +14,13 @@
  * specified a whole new run, which is the opposite of what the label
  * promises.
  */
-import { RAIL, STAGES, type Stage } from "../state.ts";
+import { railFor, STAGES, type Route, type Stage } from "../state.ts";
 
 interface StageRailProps {
   current: Stage;
   furthest: Stage;
+  /** Which route's nodes to draw. The brainstorm rail has five, the chat rail three. */
+  route: Route;
   onGoto: (stage: Stage) => void;
 }
 
@@ -26,13 +28,14 @@ function indexOf(stage: Stage): number {
   return STAGES.indexOf(stage);
 }
 
-export function StageRail({ current, furthest, onGoto }: StageRailProps) {
+export function StageRail({ current, furthest, route, onGoto }: StageRailProps) {
   const currentIdx = indexOf(current);
   const furthestIdx = indexOf(furthest);
+  const rail = railFor(route);
 
   return (
     <nav className="pointer-events-auto flex items-center gap-1 sm:gap-2" aria-label="Run progress">
-      {RAIL.map(({ stage, label }, i) => {
+      {rail.map(({ stage, label }, i) => {
         const idx = indexOf(stage);
         const done = idx < currentIdx;
         const active = stage === current;

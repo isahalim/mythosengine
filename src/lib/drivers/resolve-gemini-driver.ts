@@ -87,7 +87,7 @@ export function createGeminiTextLimiter(): TokenBucketLimiter {
  * that never lets the model finish, it is the only way this stage runs on
  * the model it is configured to run on.
  */
-const GEMINI_RESEARCH_TIMEOUT_MS = 180_000;
+export const GEMINI_RESEARCH_TIMEOUT_MS = 180_000;
 
 /**
  * RESEARCH's Gemini driver: **one attempt, no retries**.

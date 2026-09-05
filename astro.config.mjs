@@ -20,5 +20,30 @@ export default defineConfig({
   devToolbar: { enabled: false },
   vite: {
     plugins: [tailwindcss()],
+    build: {
+      rollupOptions: {
+        output: {
+          /**
+           * The gradient orb gets a chunk of its own, named `orb`.
+           *
+           * Not a performance tweak — a budget boundary. `src/app/orb/**` is
+           * the vendored 21st.dev component and it is the only thing here
+           * that pulls in `three` and `@react-three/fiber`, roughly 170 KB
+           * gzipped against the 110 KB the rest of the app is held to. A
+           * deterministic chunk name is what lets `package.json`'s size-limit
+           * exclude it from that budget by glob and give it its own, so the
+           * app's budget keeps meaning "the app did not get heavier".
+           *
+           * `OrbLazy.tsx` is what makes the split actually load lazily; this
+           * only decides what lands together and what it is called.
+           */
+          manualChunks(id) {
+            if (id.includes("/src/app/orb/")) return "orb";
+            if (id.includes("/node_modules/three/") || id.includes("/node_modules/@react-three/")) return "orb";
+            return undefined;
+          },
+        },
+      },
+    },
   },
 });

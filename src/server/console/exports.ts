@@ -129,6 +129,16 @@ export interface ExportMetadata {
   durationS: number | null;
   scriptHook: string | null;
   debateQuestion: string | null;
+  /**
+   * What the operator typed, for a chat-route video; null for a
+   * brainstorm-route one, where nobody typed anything.
+   *
+   * Null therefore carries two different facts — "this came from the
+   * brainstorm route" and "this export predates the chat route" — and the
+   * second is named in `incomplete` rather than left to be guessed from a
+   * blank field.
+   */
+  operatorPrompt: string | null;
   narrationDriver: string | null;
   narrationVoice: string | null;
   narrationFallbackReason: string | null;
@@ -189,6 +199,8 @@ interface AuditJsonShape {
   script?: { hook?: unknown; debateQuestion?: unknown };
   footage?: { parts?: unknown };
   auditResult?: { narration?: unknown; ungrounded?: unknown; research?: unknown; edit?: unknown };
+  /** Present only on a chat-route export — the sentence the operator typed. See `ExportPackageInput.operatorPrompt`. */
+  operatorPrompt?: unknown;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -281,6 +293,15 @@ export async function getExportMetadata(db: AppDb, id: string): Promise<ExportMe
     incomplete.push("this export predates the EDIT stage, so no clip records whether a model cut it");
   }
 
+  // `operatorPrompt` is written on every export since the chat route landed,
+  // as a string on that route and as an explicit null on the brainstorm one.
+  // A missing KEY is therefore an older export, which is a different fact
+  // from "there was no prompt" — and a blank field on screen would merge the
+  // two, the way `edit` did before this array existed.
+  if (audit !== null && !("operatorPrompt" in audit)) {
+    incomplete.push("this export predates the chat route, so it does not record whether an operator prompt produced it");
+  }
+
   const citations = Array.isArray(research?.citations) ? research.citations : [];
 
   return {
@@ -294,6 +315,7 @@ export async function getExportMetadata(db: AppDb, id: string): Promise<ExportMe
     durationS: render?.durationS ?? null,
     scriptHook: script?.hook ?? asString(audit?.script?.hook),
     debateQuestion: script?.debateQuestion ?? asString(audit?.script?.debateQuestion),
+    operatorPrompt: asString(audit?.operatorPrompt),
     narrationDriver: asString(narration?.driver) ?? render?.ttsDriver ?? null,
     narrationVoice: asString(narration?.voice) ?? render?.ttsVoice ?? null,
     narrationFallbackReason: asString(narration?.fallbackReason),

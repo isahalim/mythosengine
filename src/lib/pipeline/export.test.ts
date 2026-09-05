@@ -85,6 +85,7 @@ function packageInput(renderId: string): ExportPackageInput {
     footage: auditResult.footage,
     ttsSettings: { voice: "en-US-GuyNeural", rate: "+0%", pitch: "+0Hz", volume: "+0%" },
     auditResult,
+    operatorPrompt: null,
     suggestedTitle: "A Title",
     suggestedDescription: "A description.",
     suggestedTags: ["gaming", "shorts"],

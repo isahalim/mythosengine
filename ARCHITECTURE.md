@@ -301,6 +301,13 @@ CREATE TABLE runs (                          -- observability, same shape as bef
 -- opened its row (observed 2026-09-03). A killed job leaves the row `running`, which
 -- `reapStaleRuns` already sweeps.
 
+-- Note (migration 0017): `sources.kind` also admits 'operator', the single synthetic
+-- source the chat route hangs its briefs off. `signals.source_id` is a NOT NULL foreign
+-- key, and the whole chat design rests on a brief becoming a REAL `signals` row in state
+-- `scored` — that is what lets SCRIPT's foreign key, `claimNextRunPick`'s eligibility
+-- subquery and `queuePlan`'s validation all work with no change. The row is `enabled: 0`
+-- and WATCH never polls it.
+
 CREATE TABLE run_picks (                     -- the operator's guided-run picks (§6); RENDER claims the newest plan first
   id            TEXT PRIMARY KEY,
   plan_id       TEXT NOT NULL,               -- one submission of the run form
@@ -320,6 +327,32 @@ CREATE TABLE run_picks (                     -- the operator's guided-run picks 
 -- only slot of a run started for a story chosen 3 seconds earlier. A stranded pick is
 -- now cancelled rather than requeued, for the same reason: a failed run is reported as
 -- failed, and its story is re-chosen by hand or not at all.
+
+CREATE TABLE briefs (                        -- the chat route's unit of work (§5.0, docs/CHAT_PIPELINE.md)
+  id            TEXT PRIMARY KEY,
+  prompt        TEXT NOT NULL,               -- exactly what the operator typed; never rewritten, and it reaches the audit package
+  status        TEXT NOT NULL CHECK (status IN ('queued','digesting','running','succeeded','failed')),
+  trace_id      TEXT,                        -- the run this was dispatched as; the chat surface polls it
+  plan_id       TEXT,                        -- the run plan DIGEST queued. Null until stage 0 has run
+  signal_id     TEXT,                        -- deliberately NOT a foreign key: a brief records what was asked for and must outlive a reaped signal
+  digest_json   TEXT,                        -- DIGEST's structured conclusion, verbatim. Null until stage 0 has run
+  failure_reason TEXT,
+  created_at    TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+-- The split between what the Worker writes and what the pipeline writes IS the design.
+-- The Worker makes no model call (§7), so at creation the only known facts are the
+-- prompt and the attachments; the topic, the title and whether the prompt was specific
+-- enough to build are decided by DIGEST on the runner and written back here.
+
+CREATE TABLE brief_attachments (             -- bytes live in R2 under briefs/<brief_id>/<position>
+  id            TEXT PRIMARY KEY,
+  brief_id      TEXT NOT NULL REFERENCES briefs(id) ON DELETE CASCADE,
+  position      INTEGER NOT NULL,
+  filename      TEXT NOT NULL, mime_type TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+  storage_key   TEXT NOT NULL,               -- derived, but stored so a key-format change cannot orphan old rows
+  created_at    TEXT NOT NULL
+);
+-- Read exactly once, by DIGEST, which is multimodal. Nothing else opens them.
 
 CREATE TABLE audit_log (                     -- append-only; never UPDATE, never DELETE
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -401,6 +434,45 @@ a schema that will.
 ---
 
 ## 5. Pipeline stages — contracts
+
+**Two routes reach this chain, and they diverge at exactly one stage.**
+
+The brainstorm route is the one described below, end to end: WATCH ingests
+discourse, SCORE promotes it, the operator picks a story, and RESEARCH
+grounds it out of the `signals` corpus.
+
+The chat route (operator direction 2026-09-04, `docs/CHAT_PIPELINE.md`) adds
+**DIGEST as stage 0** and replaces **RESEARCH** with a grounded search, then
+rejoins at SCRIPT and is indistinguishable from there down. That is possible
+because RESEARCH's entire contract with everything downstream is one nullable
+`ResearchBrief`, so supplying one is the same as producing one — and because
+`scripts/pipeline/chat-render.ts` manufactures the two things SCRIPT actually
+requires (a `signals` row in state `scored`, and a run plan naming it) before
+calling the same `renderOneVideo` the brainstorm route calls.
+
+Nothing in §5.3 through §5.9 knows which route it is on.
+
+### 0. DIGEST (the general ladder — chat route only)
+
+The operator's typed brief in, two facts out that nothing else can infer:
+**which topic it belongs to**, and **whether it names an actual video or
+merely a subject area** (`src/lib/pipeline/digest.ts`).
+
+Runs in GitHub Actions, never in the Worker — §7's rule that the Worker holds
+no model credential is not bent for chat latency. On the general ladder rather
+than on LangChain, because the ladder buys the sticky descent, the render's
+one shared rate limiter, and `lastUsed()` provenance for §9; a stage that
+cannot say which model answered it does not ship here.
+
+**Never fails.** A dead DIGEST returns `heuristicDigest` with a reason and the
+run takes the bare-topic branch.
+
+**The bare-topic branch is deterministic and has no model in it.**
+`isBareTopic` is plain code — two content words or fewer after stopwords, or
+an empty angle — and it overrides the model's own `specificity` in one
+direction only. The story then comes from `rankIdeas(topic, 1)[0]`, the same
+function stage 4 of the console calls, so the operator can open that screen
+and see why it won.
 
 ### 0. FOOTAGE REFRESH (weekly cron — the only stage that touches third-party video)
 
@@ -770,6 +842,39 @@ same way scraped video ids are (§5.0).
 Output is persisted to `research_briefs` (§4) and travels into the export's
 `audit_json`.
 
+### 2.5b. RESEARCH, chat route (LangChain over Gemini + Google Search grounding)
+
+`src/lib/rag/langchain-research.ts`. The chat route's replacement for §2.5,
+and the only stage the two routes do differently.
+
+**Why BM25 is wrong here rather than merely unavailable.** A brainstorm-route
+idea *is* a row in the `signals` corpus, so retrieval is a lookup and
+`read_source` can be confined to what retrieval returned. A chat brief has no
+such anchor — it may be about something an hour old that no feed this system
+polls will ever carry. Retrieval would return something *adjacent*, and a
+script grounded in something adjacent is worse than an honest ungrounded one.
+
+Grounding was chosen over a scraped SERP driver and over adding Tavily or
+Brave (operator direction 2026-09-04): no new credential, no fourth metered
+provider, no page markup to be broken by.
+
+The bounds are §2.5's own, and for the same reasons: four turns against the
+5-requests-per-minute meter, `maxRetries: 0`, and `GEMINI_RESEARCH_TIMEOUT_MS`
+carried as an `AbortSignal` rather than a framework default.
+
+**The trust boundary is the same shape as `finalizeBrief`'s.** There, a model
+may cite only what retrieval returned; here, only what the provider's own
+grounding metadata says it consulted. A claim whose URL is not in that list is
+dropped, and a brief left with no citation is an error rather than a brief.
+Those citations carry `signalId: null` and `sourceKind: "web"`, and §9 records
+the stage as `gemini-grounded` — a corpus citation can be looked up in this
+database, a web one has to be opened.
+
+**Fails soft twice.** Any failure falls to §2.5's corpus path against the
+synthetic signal, and if that fails too the render is exported flagged
+`ungrounded`. An upgrade must not become a dependency (2026-09-01), and that
+applies to a framework exactly as it applied to a provider.
+
 ### 3. SCRIPT (the general ladder: `gemini-3.5-flash-lite` → `openai/gpt-oss-120b` → `openai/gpt-oss-20b`)
 - **Beats, written to a duration** (built 2026-08-31, reshaped 2026-09-03). Emits `{hook, beats: [{move, text}], open_question}`, written to a requested duration (`directives.compiled_json.target_duration_s`, 60–180s) rather than a word count. Word count becomes derived.
 - `move` is what replaced the second speaker when the format was cut to one host, and every downstream stage varies on it: TTS delivery direction, caption emphasis, and where the footage cuts. The vocabulary is `question · attempt · pushback · reframe · land · open` (the discourse arc) plus `setup · turn · escalation · evidence · verdict · confession · aside · punchline`, which is what the other formats actually do.
@@ -927,6 +1032,10 @@ Runs between SOURCE and RENDER — strictly, after the montage timeline exists, 
 | `GET /console/ideas?topic=&limit=&exclude=` | ranked candidate signals for one topic — BM25 over `signals` plus engagement, **no model call** (`src/server/console/ideas.ts`); the guided run's step 3. Returns a bare array | session |
 | `POST /console/ideas/refresh` | re-runs WATCH's ingest and SCORE once per stage entry, polling **one source per host**, rotating to whichever that host left stalest, with 429 retries off (`src/server/console/ideas-refresh.ts`, 2026-09-03). reddit.com serves ~one RSS request per IP per 30-60s, measured; the previous concurrent-with-retries refresh sent up to nine in a burst and every Reddit fetch on entry failed. Never fails the screen — it reports `sourcesFetched`/`degradedReason` | session |
 | `POST /console/ideas/refresh` | re-runs WATCH's ingest and SCORE once, for the stage 3 -> stage 4 transition. Sources are fetched concurrently with an 8s ceiling, unlike the scheduled poll (§5.1), because a person is waiting on it. Reports `{sourcesFetched, sourcesFailed, newSignals, degradedReason}` — a feed outage shows as "3 of 5 answered", never as a silently shorter list | session |
+| `POST /console/briefs` | the chat route's one write (`docs/CHAT_PIPELINE.md`): `multipart/form-data`, the operator's prompt plus up to 5 files / 20 MB, bytes straight into R2 under `briefs/<id>/<n>` through the Worker's own binding. Mints the trace, then starts `render.yml` with `brief_id` set and `plan_id` empty — a brief-scoped run queues its own plan on the runner, because deciding which signal to build needs a model. **Makes no model call**, so the topic, the title and whether the prompt was specific enough are all decided by DIGEST (§5.0) and written back onto the row | session + shares `/console/dispatch`'s 10/hour budget |
+| `GET /console/briefs` | every brief, newest first, with its attachment filenames — the chat surface's History list | session |
+| `GET /console/briefs/:id` | one brief, polled while its run is in flight. This is where DIGEST's conclusion appears, minutes before `/runs/:traceId` has a video to report | session |
+| `GET`/`DELETE /internal/briefs/:id/:n` | the **pipeline** reading one attachment's bytes back for DIGEST. The mirror of `/internal/exports/:key` and for the same reason: the Actions runner has no Worker bindings and its Cloudflare token has no R2 permission. Key shape is pinned to the `briefs/` namespace | `PIPELINE_BATCH_TOKEN` bearer, constant-time, fail-closed. **Not** reachable with a console session |
 | `GET /console/run-plan` / `POST /console/run-plan` | list / queue the operator's picks (`run_picks`); RENDER claims them in order. Queueing never triggers a render | session + schema validation |
 | `DELETE /console/run-plan/:id` | cancel a still-queued pick (a claimed one is being rendered, and is not cancellable) | session |
 | `GET /console/runs` | recent runs, grouped by `runs.trace_id` | session |
@@ -1005,10 +1114,12 @@ Checks:
 - Similarity to the last 100 scripts < 0.85 (self-repetition / templating check — flagged, not blocked).
 - A reminder that the synthetic-media disclosure (`status.containsSyntheticMedia`, confirmed against Google's current Data API v3 docs) should be set when the operator uploads manually.
 - Caption/audio duration match within tolerance (flagged if a render's captions run past the narration audio).
-- **Which provider and model actually answered each reasoning stage**, and why it was not the preferred one — RESEARCH, SCRIPT and PLAN each record `provider`, `model` and `fallbackReason`. Since 2026-09-02 this genuinely varies between exports rather than repeating itself: RESEARCH tries Gemini first and falls back to Groq on any failure (§5.2.5), so two videos rendered an hour apart can carry briefs from different providers built from different amounts of source text. `fallbackReason` is what makes that legible rather than merely visible — a reviewer reading `groq` with no reason cannot tell a deliberate configuration from a quota failure. "Which model wrote this" is the first thing a reviewer asks about a script that reads oddly.
+- **Which provider and model actually answered each reasoning stage**, and why it was not the preferred one — RESEARCH, SCRIPT and PLAN each record `provider`, `model` and `fallbackReason`. Since 2026-09-02 this genuinely varies between exports rather than repeating itself: RESEARCH tries Gemini first and falls back to Groq on any failure (§5.2.5), so two videos rendered an hour apart can carry briefs from different providers built from different amounts of source text. `fallbackReason` is what makes that legible rather than merely visible — a reviewer reading `groq` with no reason cannot tell a deliberate configuration from a quota failure. "Which model wrote this" is the first thing a reviewer asks about a script that reads oddly. `gemini-grounded` is a third provider value rather than a flavour of `gemini`, and it names a different kind of evidence: the chat route's RESEARCH (§5.2.5b) cites pages a search returned, which a reviewer has to open, where a `gemini` brief cites rows in this database, which they can look up.
 - **What EDIT (§5.5.5) did to each clip** — which Kinocut tools ran, whether the clip changed, and why it was left alone if it was not. A clip trimmed to a different moment than the one SOURCE chose is a clip whose footage-provenance window is no longer the whole story, so the two are read together.
 - **Which of the host's actions played over each shot**, and every correction the character timeline had to make to PLAN's choices. Watching the video tells a reviewer the host shrugged over beat four; only this tells them whether PLAN chose that or whether an invented action id was substituted.
 - **The RESEARCH brief (§5.2.5) the script was written from** — its summary, the model that produced it, the tools it actually ran, and every citation with the source's title and URL. A render whose research failed carries `ungrounded: true` and a flag saying the script was written from the signal title alone. This is informational, like everything else here, but it is the piece that changes how much weight a reviewer should give the script's specifics: a grounded script's claims can be checked against the cited sources, and an ungrounded one's cannot.
+
+- **The operator's own prompt, verbatim**, for a chat-route video (`ExportPackageInput.operatorPrompt`, surfaced by `GET /console/exports/:id/metadata`). The script, the footage and the research all descend from one sentence on that route, and a reviewer who cannot see it cannot tell whether the video answers what was asked. Verbatim rather than summarized — a summary of the input would be a second thing to audit. `null` means the brainstorm route; an export written before the chat route existed has no key at all, and `incomplete` says so rather than letting a blank field merge the two facts.
 
 Every signal computed here is visible in the console's review queue (`CONSOLE_SPEC.md` §4) before the operator downloads or discards an export.
 

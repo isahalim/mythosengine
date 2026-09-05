@@ -513,6 +513,76 @@ describe("router", () => {
     });
   });
 
+  describe("the chat route's brief endpoints", () => {
+    /** A multipart submission, built the way a browser builds one — the boundary is FormData's, never hand-written. */
+    function briefRequest(cookie: string, prompt: string, files: { name: string; type: string; body: string }[] = []): Request {
+      const form = new FormData();
+      form.set("prompt", prompt);
+      for (const file of files) form.append("files", new File([file.body], file.name, { type: file.type }));
+      const headers = new Headers({ cookie, accept: "application/json" });
+      return new Request("https://example.workers.dev/console/briefs", { method: "POST", headers, body: form });
+    }
+
+    it("requires a session, like every other console route", async () => {
+      const response = await handleApiRequest(apiRequest("/console/briefs"), deps);
+      expect(response?.status).toBe(401);
+    });
+
+    it("records a brief and reports that nothing was triggered, with no dispatch credential", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      const response = await handleApiRequest(briefRequest(cookie, "Why streaming prices all moved at once"), deps);
+
+      expect(response?.status).toBe(200);
+      const body = (await response?.json()) as { brief: { id: string; prompt: string }; note: string };
+      expect(body.brief.prompt).toBe("Why streaming prices all moved at once");
+      expect(body.note).toContain("not actually triggered");
+    });
+
+    it("refuses a submission with no prompt", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      const response = await handleApiRequest(briefRequest(cookie, "   "), deps);
+      expect(response?.status).toBe(422);
+    });
+
+    it("refuses attachments when this Worker has no R2 binding, rather than losing them", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      const response = await handleApiRequest(briefRequest(cookie, "An idea", [{ name: "a.txt", type: "text/plain", body: "hi" }]), deps);
+      expect(response?.status).toBe(503);
+    });
+
+    it("lists briefs, and answers 404 for one that does not exist", async () => {
+      const cookie = await completeRegistrationAndLogin();
+      await handleApiRequest(briefRequest(cookie, "An idea about streaming prices"), deps);
+
+      const list = await handleApiRequest(apiRequest("/console/briefs", { cookie }), deps);
+      expect(((await list?.json()) as unknown[]).length).toBe(1);
+
+      const missing = await handleApiRequest(apiRequest("/console/briefs/nope", { cookie }), deps);
+      expect(missing?.status).toBe(404);
+    });
+
+    it("does not accept a console session on the pipeline's brief-attachment route", async () => {
+      // The mirror of the batch-token test above, and the same rule: a
+      // stolen console cookie must not become a bucket read.
+      const cookie = await completeRegistrationAndLogin();
+      const response = await handleApiRequest(
+        new Request("https://example.workers.dev/internal/briefs/00000000-0000-0000-0000-000000000000/0", { headers: { cookie } }),
+        deps,
+      );
+      expect(response?.status).toBe(401);
+    });
+
+    it("refuses a brief-attachment key that tries to leave the briefs namespace", async () => {
+      const response = await handleApiRequest(
+        new Request("https://example.workers.dev/internal/briefs/..%2F..%2Fexports/x.mp4", { headers: { authorization: `Bearer ${PIPELINE_BATCH_TOKEN}` } }),
+        deps,
+      );
+      // Either the path never matches the route (404) or the key pattern
+      // refuses it (400) — what must never happen is a read.
+      expect([400, 404]).toContain(response?.status);
+    });
+  });
+
   describe("the run plan's routes", () => {
     async function seedScoredSignal(id: string, title: string): Promise<void> {
       await ctx.db.insert(sources).values({ id: `src-${id}`, kind: "reddit", url: `http://x/${id}` }).run();

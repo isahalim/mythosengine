@@ -72,6 +72,8 @@ These are new requirements from the pivot and do not exist yet. Do not invent pl
 
 **Export blobs moved to R2 on 2026-08-31** (bucket `mythosengine-exports`, created via the `cloudflare-bindings` MCP). KV holds hot JSON, rate-limit counters and the key vault, and no longer holds video. The move was forced, not preferred: KV caps one value at 25 MiB, and a real 1080x1920 render is 42–60 MB, so EXPORT failed with `10024 content size ... exceeds maximum allowed size of 27MiB` after the entire video had already been made. Fitting a 180s Short into one KV value would have meant ~1.1 Mbps.
 
+**The same bucket also holds operator brief attachments** since 2026-09-04 (`docs/CHAT_PIPELINE.md`), under the `briefs/<brief-id>/<n>` key prefix — a namespace the export routes' key patterns cannot reach and vice versa. Nothing new was provisioned for it: the Worker already holds the binding, `POST /console/briefs` writes through it directly, and the pipeline reads the bytes back through `GET /internal/briefs/:id/:n` behind the `PIPELINE_BATCH_TOKEN` that already exists for `/internal/d1/batch`. Capped at 5 files and 20 MB per brief, so the footprint is negligible beside the exports.
+
 R2 usage sits well inside the free tier (10 GB-month, 1M class-A ops): ~60 MB per export, three a day, three-day window, so roughly 500 MB peak. **R2 has no per-object TTL**, unlike KV, and this account's token cannot set a bucket lifecycle rule — so `db/exports-reap.ts` sweeps expired rows and frees their blobs at the top of every RENDER. Enabling R2 itself was a one-time operator action in the dashboard (it requires a payment method even on the free tier); the API returns `10042 Please enable R2 through the Cloudflare Dashboard` until then.
 
 ## GitHub Actions secrets

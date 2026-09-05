@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 import { desc, eq, gte, inArray } from "drizzle-orm";
 import { execAtomic } from "../../db/client.ts";
@@ -18,7 +19,8 @@ import { beatWordRanges } from "../../src/lib/pipeline/discourse.ts";
 import { buildDirectedNarration } from "../../src/lib/pipeline/tts-direction.ts";
 import { selectTtsDrivers, synthesizeWithFallback } from "../../src/lib/pipeline/tts-select.ts";
 import { readGeminiTtsBudget, recordGeminiTtsAttempt, settleGeminiTtsAttempt } from "../../src/lib/pipeline/tts-budget.ts";
-import { CHARACTER_BOTTOM_MARGIN_RATIO, CHARACTER_HEIGHT_RATIO, HOST_GEMINI_VOICE, resolveCharacterPack } from "../../src/lib/pipeline/character.ts";
+import { CHARACTER_BOTTOM_MARGIN_RATIO, CHARACTER_HEIGHT_RATIO, resolveCharacterPack } from "../../src/lib/pipeline/character.ts";
+import { resolveNarrationVoices } from "../../src/lib/pipeline/narration-voice.ts";
 import { buildCharacterTimeline } from "../../src/lib/pipeline/character-timeline.ts";
 import { FfmpegCharacterOverlayDriver } from "../../src/lib/drivers/character-overlay-ffmpeg.ts";
 import { extractKeywords } from "../../src/lib/pipeline/keywords.ts";
@@ -29,7 +31,7 @@ import { SignalsBm25Retriever } from "../../src/lib/rag/retriever.ts";
 import { critiqueScript, markCritiquedWithoutVerdict } from "../../src/lib/pipeline/critic.ts";
 import { buildCaptionCues } from "../../src/lib/pipeline/captions.ts";
 import { pickTtsRate } from "../../src/lib/pipeline/tts-rate.ts";
-import { computeAuditSummary, type FootagePart, type FootageProvenance, type ResearchProvenance } from "../../src/lib/pipeline/audit.ts";
+import { computeAuditSummary, type FootagePart, type FootageProvenance, type ResearchProvenance, type StageProvenance } from "../../src/lib/pipeline/audit.ts";
 import { runExport } from "../../src/lib/pipeline/export.ts";
 import { sourceShots, type SourcedShot } from "../../src/lib/footage/source-agent.ts";
 import { sweepSourceCache } from "../../src/lib/footage/source-cache.ts";
@@ -157,7 +159,7 @@ async function main(): Promise<void> {
   const lifecycleRunId = await startRun(env.db, PIPELINE_STAGE, traceId);
   let outcome: InvocationOutcome;
   try {
-    outcome = await renderOneVideo(env, traceId);
+    outcome = await renderOneVideo(env, traceId, { planId: process.env.PIPELINE_PLAN_ID?.trim() || null, brief: null });
   } catch (error) {
     // Closed before the rethrow, never in a `finally` that would also run on
     // the success path: the row has to carry *why*, and the message is what
@@ -183,8 +185,52 @@ async function main(): Promise<void> {
  */
 type InvocationOutcome = { kind: "rendered" } | { kind: "skipped"; reason: string };
 
+/**
+ * What the chat route hands down, and the ONLY thing that makes this
+ * function behave differently (operator direction, 2026-09-04).
+ *
+ * It is deliberately small. The chat route's whole design is that it is a
+ * *prelude* — `scripts/pipeline/chat-render.ts` manufactures exactly the
+ * state this function already expects (a `signals` row in `scored`, a run
+ * plan naming it) and then calls it. So what arrives here is not a second
+ * pipeline: it is a brief that pre-empts one stage, RESEARCH, and three
+ * values TTS would otherwise pick for itself.
+ *
+ * `brief: null` is the brainstorm route, and every path below it is the one
+ * that has been running all week.
+ */
+export interface OperatorBrief {
+  /** The `briefs` row id, so this render's stages can be written back onto it. */
+  id: string;
+  /** Exactly what the operator typed. Reaches the audit package, and through it stage 6's Metadata sheet. */
+  prompt: string;
+  /**
+   * The brief already researched, or null when grounded research failed and
+   * the corpus path should run instead.
+   *
+   * Pre-empting RESEARCH rather than adding a stage is the whole trick: the
+   * stage's entire contract with everything downstream is one nullable
+   * `ResearchBrief`, so supplying it is indistinguishable from producing it.
+   */
+  research: ResearchBrief | null;
+  /** How the brief was researched, for the audit package's per-stage provenance. */
+  researchProvenance: { provider: StageProvenance["provider"]; model: string | null; fallbackReason: string | null } | null;
+  /** A narrator voice the operator named, or null for the default (Kore on Gemini, the diversity pick on Edge). */
+  voice: string | null;
+  /** A language the operator named, or null for English. */
+  language: string | null;
+}
+
+export interface RenderOptions {
+  /** The run plan this invocation may claim from, or null for the unscoped queue. */
+  planId: string | null;
+  /** Null on the brainstorm route — which is every path this function took before 2026-09-04. */
+  brief: OperatorBrief | null;
+}
+
 /** One signal, end to end: RESEARCH through EXPORT. Its caller owns the lifecycle row and the sweeps. */
-async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<InvocationOutcome> {
+export async function renderOneVideo(env: PipelineEnv, traceId: string, options: RenderOptions): Promise<InvocationOutcome> {
+  const { brief } = options;
   if (!(await isPipelineEnabled(env.hotKv))) {
     console.warn("Pipeline killswitch is off — skipping this RENDER run.");
     return { kind: "skipped", reason: "killswitch_off" };
@@ -235,7 +281,7 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
   // it to the plan the operator submitted seconds before the dispatch — and
   // an unset one is the scheduled or hand-triggered case, which reads the
   // queue and then falls back to the weighting, as it always has.
-  const planId = process.env.PIPELINE_PLAN_ID?.trim() || null;
+  const planId = options.planId;
   const claimedPick = await claimNextRunPick(env.db, traceId, new Date().toISOString(), planId);
 
   // A scoped run whose plan has nothing left to claim makes NOTHING
@@ -348,22 +394,56 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
   // the stage that gets a large-intake model of its own first, and hands it
   // the shared ladders so its fallback's Gemini rung is the same driver and
   // the same limiter SCRIPT, PLAN and reranking hold.
-  const researchProviders = selectResearchProviders(ladders, env.geminiApiKey);
-  if (researchProviders.unavailableReason !== null) console.warn(`RESEARCH: ${researchProviders.unavailableReason}`);
-  const researchOutcome = await researchWithFallback(researchProviders, retriever, chosenSignal);
-  const researchResult = researchOutcome.result;
   let research: ResearchBrief | null = null;
-  if (researchResult.ok) {
-    research = researchResult.value;
+  let researchStage: { provider: StageProvenance["provider"]; model: string | null; fallbackReason: string | null };
+
+  if (brief !== null && brief.research !== null) {
+    /**
+     * **The chat route pre-empts this stage rather than adding one.**
+     *
+     * `scripts/pipeline/chat-render.ts` has already researched the brief with
+     * LangChain over Gemini's own Google Search grounding, because a
+     * chat-route idea is not in the `signals` corpus and BM25 over that
+     * corpus would return something adjacent — a script grounded in something
+     * adjacent being strictly worse than an honest ungrounded one.
+     *
+     * Nothing else about this stage changes. The brief is saved against the
+     * synthetic signal exactly as a retrieved one is, the `runs` row is
+     * written exactly as it is, and everything below reads the same nullable
+     * `ResearchBrief`. That equivalence is the entire reason the chat route
+     * needed no second pipeline.
+     */
+    research = brief.research;
     await saveResearchBrief(env.db, chosenSignal.id, research);
     await finishRun(env.db, researchRunId, "succeeded");
-    console.warn(
-      `RESEARCH: ${research.citations.length} citation(s) from ${research.toolCallsMade.length} tool call(s) on ${researchOutcome.provider} (${research.model})` +
-        `${research.toolResultsDropped > 0 ? `, ${research.toolResultsDropped} tool result(s) dropped to fit the request ceiling` : ""}.`,
-    );
+    researchStage = brief.researchProvenance ?? { provider: "gemini", model: research.model, fallbackReason: null };
+    console.warn(`RESEARCH: ${research.citations.length} grounded citation(s) from the operator's brief, on ${research.model}.`);
   } else {
-    await finishRun(env.db, researchRunId, "degraded", `${researchResult.error.kind}: ${researchResult.error.message}`);
-    console.warn(`RESEARCH failed (${researchResult.error.kind}: ${researchResult.error.message}) — continuing ungrounded.`);
+    const researchProviders = selectResearchProviders(ladders, env.geminiApiKey);
+    if (researchProviders.unavailableReason !== null) console.warn(`RESEARCH: ${researchProviders.unavailableReason}`);
+    const researchOutcome = await researchWithFallback(researchProviders, retriever, chosenSignal);
+    const researchResult = researchOutcome.result;
+    if (researchResult.ok) {
+      research = researchResult.value;
+      await saveResearchBrief(env.db, chosenSignal.id, research);
+      await finishRun(env.db, researchRunId, "succeeded");
+      console.warn(
+        `RESEARCH: ${research.citations.length} citation(s) from ${research.toolCallsMade.length} tool call(s) on ${researchOutcome.provider} (${research.model})` +
+          `${research.toolResultsDropped > 0 ? `, ${research.toolResultsDropped} tool result(s) dropped to fit the request ceiling` : ""}.`,
+      );
+    } else {
+      await finishRun(env.db, researchRunId, "degraded", `${researchResult.error.kind}: ${researchResult.error.message}`);
+      console.warn(`RESEARCH failed (${researchResult.error.kind}: ${researchResult.error.message}) — continuing ungrounded.`);
+    }
+    researchStage = {
+      provider: researchOutcome.provider,
+      model: researchOutcome.model,
+      fallbackReason: researchOutcome.fallbackReason ?? (researchResult.ok ? null : `${researchResult.error.kind}: ${researchResult.error.message}`),
+    };
+    // A chat-route render whose grounded research failed lands here, on the
+    // corpus path, and the reason it fell through is the operator's to see —
+    // the fallback is a real degrade, not a quiet second attempt.
+    if (brief !== null) console.warn(`RESEARCH: the operator's brief was not grounded — this run fell back to the corpus path.`);
   }
 
   // ---- SCRIPT (v2 discourse format: beats with a `move`, plan v2 §4) ----
@@ -522,8 +602,26 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
     };
 
     // ---- TTS ----
+    //
+    // **Kore and English are the defaults and stay the defaults** (operator
+    // direction, 2026-09-04). A chat-route brief may name a different voice
+    // or a different language, and that override is per render — it never
+    // touches the directive, so tomorrow's brainstorm run is unaffected.
+    //
+    // The two knobs are not symmetrical, and the asymmetry is the provider's,
+    // not a choice made here. Gemini takes a voice as a real request field
+    // and has no language field at all, so a language reaches it only as
+    // prose in the style direction (src/lib/drivers/tts-gemini.ts). Edge
+    // encodes the locale *in* the voice name, so a language there means
+    // picking a different voice. `resolveNarrationVoices` holds both facts in
+    // one place and reports whatever it could not honour, rather than letting
+    // a request for Spanish arrive silently in English.
     const voicesUsedToday = todaysRenders.map((r) => r.ttsVoice);
-    const voice = pickVoicesForToday({ voicePool: directive.voicePool ?? null, preferredSourceIds: directive.preferredSourceIds, diversityMode: directive.diversityMode }, voicesUsedToday)[0];
+    const rotatedVoice = pickVoicesForToday({ voicePool: directive.voicePool ?? null, preferredSourceIds: directive.preferredSourceIds, diversityMode: directive.diversityMode }, voicesUsedToday)[0];
+    const narrationChoice = resolveNarrationVoices({ requestedVoice: brief?.voice ?? null, requestedLanguage: brief?.language ?? null, rotatedEdgeVoice: rotatedVoice });
+    const voice = narrationChoice.edgeVoice;
+    const geminiVoice = narrationChoice.geminiVoice;
+    if (narrationChoice.unmetRequest !== null) console.warn(`TTS: ${narrationChoice.unmetRequest}`);
     const rate = pickTtsRate(directive.ttsRateRange ?? null);
 
     // How many Gemini TTS *requests* this pipeline has already sent on the
@@ -544,12 +642,18 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
     // words with every tag stripped by `flattenBeats`. That is also the
     // string the captions are built from, so a tag cannot reach the screen
     // even if the writer puts one somewhere strange (delivery-tags.ts).
-    const directed = buildDirectedNarration(script.narration.hook, script.narration.beats, script.narration.openQuestion, directive.perBeatDelivery ?? false, script.performance);
+    const directedBase = buildDirectedNarration(script.narration.hook, script.narration.beats, script.narration.openQuestion, directive.perBeatDelivery ?? false, script.performance);
+    // Gemini has no language parameter, so a language request is expressed
+    // the only way that model accepts one: as direction, ahead of the words.
+    const directed =
+      narrationChoice.geminiLanguageDirection === null
+        ? directedBase
+        : { ...directedBase, styleDirection: `${narrationChoice.geminiLanguageDirection} ${directedBase.styleDirection}` };
 
     const ttsRunId = await startRun(env.db, "tts", traceId);
     const ttsResult = await synthesizeWithFallback(
       selection,
-      { text: directed.text, voice: HOST_GEMINI_VOICE, styleDirection: directed.styleDirection },
+      { text: directed.text, voice: geminiVoice, styleDirection: directed.styleDirection },
       { text: script.body, voice, rate },
       console.warn,
       {
@@ -804,7 +908,7 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
       },
       narration: {
         driver: tts.driver,
-        voice: tts.driver === "gemini-tts" ? HOST_GEMINI_VOICE : voice,
+        voice: tts.driver === "gemini-tts" ? geminiVoice : voice,
         rate: tts.driver === "gemini-tts" ? null : rate,
         styleDirection: tts.driver === "gemini-tts" ? directed.styleDirection : null,
         fallbackReason: tts.fallbackReason,
@@ -841,15 +945,20 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
         // no brief to ask, so the provider asked last is the honest answer.
         {
           stage: "RESEARCH",
-          provider: researchOutcome.provider,
-          // `researchOutcome.model` is the brief's own `modelUsed` when the
-          // first attempt landed and the fallback ladder's `lastUsed()` when
-          // it did not — in both cases the model that actually spoke. Since
-          // 2026-09-04 the fallback's top rung is a Gemini model, so this
-          // can no longer be inferred from `provider`, and a stage that fell
-          // through every rung has no model to name at all.
-          model: researchOutcome.model ?? GROQ_REASONING_MODEL,
-          fallbackReason: researchOutcome.fallbackReason,
+          // `researchStage` is assembled where the stage actually ran — from
+          // the ladder on the corpus path, and from the chat route's brief
+          // when that pre-empted it. Read there rather than inferred here,
+          // for the reason the whole of this block exists: since 2026-09-04
+          // no stage's model can be predicted from its name.
+          provider: researchStage.provider,
+          // The brief's own `modelUsed` when the first attempt landed, the
+          // fallback ladder's `lastUsed()` when it did not, and the grounded
+          // model on the chat route — in every case the model that actually
+          // spoke. A stage that fell through every rung has no model to name
+          // at all, and says so as `GROQ_REASONING_MODEL` only because that
+          // is the rung it asked last.
+          model: researchStage.model ?? GROQ_REASONING_MODEL,
+          fallbackReason: researchStage.fallbackReason,
         },
         stageRan("RERANK", rerankLadder),
         stageRan("SCRIPT", scriptLadder),
@@ -894,7 +1003,7 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
           script.id,
           primarySegmentId,
           tts.driver,
-          tts.driver === "gemini-tts" ? HOST_GEMINI_VOICE : voice,
+          tts.driver === "gemini-tts" ? geminiVoice : voice,
           renderResult.value.durationS,
           JSON.stringify(auditResult),
           nowIso,
@@ -937,12 +1046,17 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
         renderId,
         script: { hook: script.hook, body: script.body, debateQuestion: script.debateQuestion },
         critic: critic === null ? null : { originalityScore: critic.originalityScore, policyFlags: critic.policyFlags, verdict: critic.verdict, reason: critic.reason },
+        // The sentence this video descends from, on the chat route; null on
+        // the brainstorm route, where nobody typed one. Stage 6's Metadata
+        // sheet shows it, because the review surface may never hide a fact
+        // the audit package already carries (CLAUDE.md).
+        operatorPrompt: brief?.prompt ?? null,
         footage,
         // What actually spoke, not what was selected before the driver was
         // chosen — the same source `auditResult.narration` reads from.
         ttsSettings:
           tts.driver === "gemini-tts"
-            ? { voice: HOST_GEMINI_VOICE, rate: null, pitch: null, volume: null }
+            ? { voice: geminiVoice, rate: null, pitch: null, volume: null }
             : { voice, rate, pitch: "+0Hz", volume: "+0%" },
         auditResult,
         suggestedTitle: uploadMetadata.title,
@@ -965,7 +1079,23 @@ async function renderOneVideo(env: PipelineEnv, traceId: string): Promise<Invoca
   return { kind: "rendered" };
 }
 
-main().catch((error: unknown) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+/**
+ * Run only when this file IS the process, never when it is merely imported.
+ *
+ * `scripts/pipeline/chat-render.ts` imports `renderOneVideo` from here, and
+ * a bare `main()` at module scope meant importing it *started a brainstorm
+ * render* — a second, unrelated video, claiming a queued pick from an earlier
+ * session and spending the day's token budget, alongside the chat run the
+ * operator actually asked for. Caught locally on 2026-09-04, before it ever
+ * ran with credentials: both `main` functions appeared in the same stack.
+ *
+ * `process.argv[1]` is the script tsx was invoked with, resolved to a URL so
+ * the comparison survives a relative path, a symlink in the invocation, and
+ * Windows separators.
+ */
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  main().catch((error: unknown) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

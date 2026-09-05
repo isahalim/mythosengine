@@ -79,6 +79,17 @@ export interface PipelineEnv {
    */
   pexelsApiKey: string | undefined;
   discordWebhookUrl: string | undefined;
+  /**
+   * Where this run's Worker lives — the origin the chat route reads brief
+   * attachments back from (`src/lib/drivers/brief-blob-http.ts`).
+   *
+   * On the env rather than re-derived at the call site for the same reason
+   * `exportDriver` is: `DEFAULT_WORKER_URL` and the `WORKER_URL` override are
+   * resolved in one place, and a caller cannot accidentally point half the
+   * run at a staging deploy and the other half at production. Empty on a
+   * local run, which has no Worker at all.
+   */
+  workerUrl: string;
 }
 
 /** Every scripts/pipeline/*.ts entrypoint starts by building this — one place all the D1/KV-over-HTTP wiring lives. */
@@ -105,6 +116,7 @@ function buildLocalPipelineEnv(): PipelineEnv {
     geminiApiKey: optionalEnv("GEMINI_API_KEY"),
     pexelsApiKey: optionalEnv("PEXELS_API_KEY"),
     discordWebhookUrl: undefined, // a local run must never page the operator
+    workerUrl: "", // there is no Worker in local mode; the chat route says so rather than fetching nothing
   };
 }
 
@@ -146,5 +158,6 @@ export function buildPipelineEnv(): PipelineEnv {
     groqApiKey,
     pexelsApiKey: optionalEnv("PEXELS_API_KEY"),
     discordWebhookUrl: optionalEnv("DISCORD_WEBHOOK_URL"),
+    workerUrl,
   };
 }

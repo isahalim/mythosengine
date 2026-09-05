@@ -1,10 +1,20 @@
 /**
- * The six-stage surface (three design boards, 2026-08-31).
+ * The operator surface — **two routes** since 2026-09-04 (operator direction).
  *
- * One client-rendered page. The landing is stage 1; signing in moves the
- * glass out to the edges, where it stays mounted for the rest of the
- * session (board 1: "the same 3D interactive glass shards now in the
- * edges"), and stages 2-6 run inside that frame.
+ * One client-rendered page. The landing is the hero and the passkey gate;
+ * signing in moves the glass out to the edges, where it stays mounted for the
+ * rest of the session (board 1: "the same 3D interactive glass shards now in
+ * the edges"), and every stage after it runs inside that frame.
+ *
+ * Signing in now lands on a **fork**: two free-floating shards, "already have
+ * an idea" and "brainstorm first". The first opens the chat route
+ * (docs/CHAT_PIPELINE.md); the second opens the five stages this system has
+ * always had, unchanged. They rejoin at `review`.
+ *
+ * The one place the edge frame is NOT mounted is the chat route's building
+ * screen, where `OrbitField` renders those same fragments leaving their edges
+ * to orbit the orb. Two sets of border glass, one of them departing, would
+ * read as a copy of the other.
  *
  * The lava-lamp spheres are mounted once, above everything's z-index
  * floor and below every surface — they never remount, so they keep
@@ -17,6 +27,9 @@ import { Spheres } from "./bg/Spheres.tsx";
 import { EdgeFrame } from "./glass/EdgeFrame.tsx";
 import type { SetKey } from "./glass/geometry.ts";
 import { furthestStage, ideasComplete, initialState, reduce, topicsComplete, type Stage } from "./state.ts";
+import { StageBuilding } from "./chat/StageBuilding.tsx";
+import { StageCompose } from "./chat/StageCompose.tsx";
+import { StageFork } from "./stages/StageFork.tsx";
 import { Stage1Landing } from "./stages/Stage1Landing.tsx";
 import { Stage2Count } from "./stages/Stage2Count.tsx";
 import { Stage3Topics } from "./stages/Stage3Topics.tsx";
@@ -135,6 +148,30 @@ export default function App() {
 
   const stageView = ((stage: Stage) => {
     switch (stage) {
+      case "fork":
+        return <StageFork onChoose={(route) => dispatch({ type: "choose-route", route })} />;
+
+      case "compose":
+        return (
+          <StageCompose
+            onSubmitted={(brief, note, prompt) => dispatch({ type: "brief-submitted", briefId: brief.id, traceId: brief.traceId, prompt, note })}
+            onUnauthorized={onUnauthorized}
+          />
+        );
+
+      case "building":
+        return state.briefId === null ? null : (
+          <StageBuilding
+            briefId={state.briefId}
+            traceId={state.traceId}
+            prompt={state.prompt ?? ""}
+            dispatchNote={state.dispatchNote}
+            setKey={setKey}
+            onReview={() => dispatch({ type: "goto", stage: "review" })}
+            onUnauthorized={onUnauthorized}
+          />
+        );
+
       case "count":
         return (
           <Stage2Count
@@ -181,11 +218,22 @@ export default function App() {
     }
   })(state.stage);
 
+  // The building screen owns the edge glass for as long as it is up: those
+  // fragments are the ones it gathers into orbit.
+  const edgeFrameHidden = state.stage === "building";
+
   return (
     <>
       <Spheres />
-      <EdgeFrame setKey={setKey} />
-      <TopBar current={state.stage} furthest={furthest} onGoto={(s) => dispatch({ type: "goto", stage: s })} onSignOut={() => void onSignOut()} signingOut={signingOut} />
+      {!edgeFrameHidden && <EdgeFrame setKey={setKey} />}
+      <TopBar
+        current={state.stage}
+        furthest={furthest}
+        route={state.route}
+        onGoto={(s) => dispatch({ type: "goto", stage: s })}
+        onSignOut={() => void onSignOut()}
+        signingOut={signingOut}
+      />
       {/* Keyed on the stage so the resolve-in "image generation" fade
           (board 2) replays as each stage arrives. */}
       <div key={state.stage}>{stageView}</div>

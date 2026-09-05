@@ -4,6 +4,19 @@ How to drive a coding agent (Claude Code, Codex CLI, Cursor) through building th
 
 > Pivoted from the MythosEngine playbook on 2026-08-27. Part I (prompting principles) and Part V (prompt template) are unchanged — they're project-agnostic. Part II and Part III are rewritten for the video pipeline. Phase 0 is done; Phase 1 is partially done (LLM + cache drivers exist, TTS/download/render/upload drivers don't yet).
 
+> **2026-09-04 — the chat route.** A second way into the pipeline was added
+> (`docs/CHAT_PIPELINE.md`), and the way it was built is the thing worth
+> keeping from it: it is a **prelude**, not a second orchestrator.
+> `scripts/pipeline/chat-render.ts` manufactures the state `renderOneVideo`
+> already expects and then calls it, so SCRIPT through EXPORT are byte-for-byte
+> the code that was already working. The general principle, for the next
+> feature that looks like it needs a parallel pipeline: find the narrowest
+> value the existing chain actually depends on — here it was one nullable
+> `ResearchBrief` — and supply that, rather than rebuilding the chain around
+> it. The regression evidence is cheap and should be demanded: 1,015 existing
+> tests passed unchanged, and the app's own 110 KB size budget still passes
+> with the new route's UI in it.
+
 ---
 
 ## Part I — Prompting principles
