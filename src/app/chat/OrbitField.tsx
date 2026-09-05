@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { preloadAtlas, type SetKey } from "../glass/geometry.ts";
+import { preloadAtlas, shardSpriteStyle, type SetKey } from "../glass/geometry.ts";
 import { edgeLayout } from "../glass/layouts.ts";
 import { Shard } from "../glass/Shard.tsx";
 import { useShardField } from "../glass/useShardField.ts";
 import { OrbLazy } from "../orb/OrbLazy.tsx";
 import { useAtlasReady } from "../useAtlasReady.ts";
-import { debrisPose, debrisSeeds, dockedFor, GATHER_S, orbitPose, type OrbitCentre, type OrbitSeed } from "./orbit.ts";
+import { debrisPose, debrisSeeds, depthLayers, dockedFor, GATHER_S, orbitPose, type OrbitCentre, type OrbitSeed } from "./orbit.ts";
 
 /**
  * The orb, the shards it gathers, the ring they orbit on, and the dust that
@@ -51,6 +51,30 @@ import { debrisPose, debrisSeeds, dockedFor, GATHER_S, orbitPose, type OrbitCent
  *   3. Nothing else. In particular the wrapper does NOT carry `.float-group`,
  *      whose `float-drift` keyframe animates the same property this loop
  *      writes.
+ *
+ * **The fragments are slabs, not sheets** (operator direction, 2026-09-05:
+ * "make them have depth ... currently when they rotate, you can see them
+ * disappear for a bit as they are like paper thinness"). `.orbit-pose` holds
+ * the lit `.shard` and, behind it, `depthLayers()` copies of the same
+ * silhouette stepped backwards along Z — and it is `transform-style:
+ * preserve-3d`, which separates them in space instead of flattening them onto
+ * the face. That is allowed there and forbidden on the scene layer, because
+ * `preserve-3d` sorts children by 3D position and ignores the z-index that is
+ * the only thing putting a fragment in front of the orb. Inside one fragment
+ * there is nothing to sort but its face and its own body, and depth order is
+ * exactly what they should be sorted by. See `orbit.ts` for why a stack of
+ * planes reads as solid glass.
+ *
+ * **Which is why the pose and the fade are two elements.** `opacity` below 1
+ * is a *grouping* property: it forces the used value of `transform-style` to
+ * `flat` on the element that carries it. The far half of the ring is dimmed
+ * (`pose.opacity` is `1 + depth·0.34` there), so with one element the
+ * extrusion would have collapsed onto the face for half of every revolution
+ * and the eight copies would have painted *over* it in DOM order. So
+ * `.orbit-shard` carries the fade and the paint order, `.orbit-pose` inside
+ * it carries the transform and the 3D context, and the loop writes to both.
+ * This is the ordinary `scene → cube → faces` arrangement: the scene may be
+ * flat, the cube may not.
  *
  * `useShardField`'s targets are closure-private and are reset by its own
  * pointer handlers, so orbit positions could not be pushed through it even if
@@ -142,6 +166,8 @@ export function OrbitField({ setKey, progress, active, cracked, anchor }: OrbitF
   const ready = useAtlasReady(setKey, preloadAtlas);
   const placements = useMemo(() => edgeLayout(setKey), [setKey]);
   const debris = useMemo(() => debrisSeeds(DEBRIS_COUNT[setKey]), [setKey]);
+  /** The extrusion, once for the whole field: every fragment is the same thickness (see `SHARD_DEPTH_PX`). */
+  const body = useMemo(() => depthLayers(), []);
   const ring = RING[setKey];
 
   // The spring loop still owns each `.shard`. `hoverLift` is small for the
@@ -205,6 +231,10 @@ export function OrbitField({ setKey, progress, active, cracked, anchor }: OrbitF
     // picks the fragments up then, restarting the gather from the moment
     // there is something to gather.
     const wrappers = ready ? Array.from(root.querySelectorAll<HTMLElement>("[data-orbit-shard]")) : [];
+    // The 3D layer inside each wrapper: it takes the transform, the wrapper
+    // takes the fade. See the header — an opacity below 1 on the same element
+    // would flatten the extrusion into the face.
+    const poses = wrappers.map((wrapper) => wrapper.querySelector<HTMLElement>("[data-orbit-pose]"));
     const specks = Array.from(root.querySelectorAll<HTMLElement>("[data-orbit-debris]"));
 
     // Honour the same contract the rest of the glass does: with reduced
@@ -288,7 +318,8 @@ export function OrbitField({ setKey, progress, active, cracked, anchor }: OrbitF
 
       for (const [i, wrapper] of wrappers.entries()) {
         const seed = seeds[i];
-        if (seed === undefined) continue;
+        const pose3d = poses[i];
+        if (seed === undefined || pose3d === null || pose3d === undefined) continue;
         const target = dockedFor(i, wrappers.length, progressRef.current);
         // The first frame takes the target whole. A run resumed mid-flight —
         // a reload with four milestones already true — must open with those
@@ -298,7 +329,7 @@ export function OrbitField({ setKey, progress, active, cracked, anchor }: OrbitF
         // With reduced motion the gather is complete and the ring is
         // stationary: `GATHER_S` seconds in, at angle zero.
         const pose = orbitPose(seed, centre, reducedMotion ? GATHER_S : elapsed, settled[i]);
-        wrapper.style.transform =
+        pose3d.style.transform =
           `translate3d(${((pose.dx / 100) * width).toFixed(1)}px, ${((pose.dy / 100) * height).toFixed(1)}px, 0)` +
           ` perspective(900px) rotateX(${pose.rotX.toFixed(1)}deg) rotateY(${pose.rotY.toFixed(1)}deg) rotateZ(${pose.rotZ.toFixed(1)}deg)` +
           ` scale(${pose.scale.toFixed(3)})`;
@@ -388,19 +419,37 @@ export function OrbitField({ setKey, progress, active, cracked, anchor }: OrbitF
             className="orbit-shard absolute"
             style={{ left: `${p.x}%`, top: `${p.y}%`, width: `${p.w}%`, height: `${p.h}%`, zIndex: 1 }}
           >
-            {/* `shard--lit` + a violet wash rather than a new rule: at a
-                twentieth of their edge size these fragments are pale
-                wireframes on a white ground, and `--lit` is the vocabulary
-                this surface already has for "this piece is live". The colour
-                is the same `--violet` the card under them glows with. */}
-            <Shard
-              pieceId={p.pieceId}
-              setKey={p.setKey}
-              className="shard--edge shard--orbit shard--lit"
-              wash="var(--violet)"
-              halo="rgba(120, 100, 255, 0.42)"
-              style={{ left: "0%", top: "0%", width: "100%", height: "100%" }}
-            />
+            {/* The 3D layer: the loop's transform, the perspective, and the
+                one `preserve-3d` in this component. Separate from the wrapper
+                because the wrapper is faded on the far side of the ring, and
+                an opacity below 1 would flatten everything in here. */}
+            <div data-orbit-pose className="orbit-pose">
+              {/* `shard--lit` + a violet wash rather than a new rule: at a
+                  twentieth of their edge size these fragments are pale
+                  wireframes on a white ground, and `--lit` is the vocabulary
+                  this surface already has for "this piece is live". The colour
+                  is the same `--violet` the card under them glows with. */}
+              <Shard
+                pieceId={p.pieceId}
+                setKey={p.setKey}
+                className="shard--edge shard--orbit shard--lit"
+                wash="var(--violet)"
+                halo="rgba(120, 100, 255, 0.42)"
+                style={{ left: "0%", top: "0%", width: "100%", height: "100%" }}
+              />
+              {/* The fragment's body. Masked to the same silhouette off the
+                  same atlas, stepped back along Z, no handlers and no
+                  `data-shard` — the spring loop must not find these, and
+                  neither must the cursor. They are painted glass, and the only
+                  thing they carry is a transform that never changes. */}
+              {body.map((layer, k) => (
+                <i
+                  key={`body-${k}`}
+                  className="orbit-body"
+                  style={{ ...shardSpriteStyle(p.setKey, p.pieceId), transform: `translateZ(${layer.z.toFixed(2)}px)`, opacity: layer.alpha }}
+                />
+              ))}
+            </div>
           </div>
         ))}
     </div>

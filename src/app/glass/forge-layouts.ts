@@ -46,3 +46,20 @@ export function forgeLayout(variant: number): readonly string[] {
   if (!Number.isFinite(variant)) return FORGE_LAYOUTS[0];
   return FORGE_LAYOUTS[Math.abs(Math.trunc(variant)) % FORGE_LAYOUTS.length];
 }
+
+/**
+ * How many of a card's fragments have arrived, given how much of the run is
+ * done (operator direction, 2026-09-05: the chat route's card is built one
+ * piece at a time as the pipeline progresses, not pre-made).
+ *
+ * **Floored, never rounded.** A fragment appears only once the milestone that
+ * brings it is actually true, which is the same rule `dockedFor` applies to
+ * the shard travelling toward it — round here and the card would gain a piece
+ * while its shard was still halfway across the screen. `undefined` means the
+ * caller is not assembling anything and wants the whole card, which is stage
+ * 5's case and the default everywhere else.
+ */
+export function landedFragments(total: number, assembled: number | undefined): number {
+  if (assembled === undefined || !Number.isFinite(assembled)) return total;
+  return Math.floor(Math.min(1, Math.max(0, assembled)) * total);
+}

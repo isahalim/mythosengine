@@ -30,6 +30,16 @@
  * the thing it destroyed. The title, status and hook under each card do
  * that job in text, which is what they are for.
  *
+ * Operator direction (2026-09-05): on the chat route the card is not
+ * pre-made. It starts with no fragments at all and takes one as each
+ * milestone lands — `assembled` — so the pieces the orbit is docking have
+ * somewhere to arrive and the card is visibly built rather than visibly
+ * repaired. That is the landing demo's progression (`useScrollAssembly`
+ * lands one fragment per stage) driven by counted pipeline facts instead of
+ * by scroll. Stage 5 passes nothing and keeps the whole mosaic from the
+ * first frame: it shows up to six cards at once and a grid of part-built
+ * ones reads as a rendering fault rather than as progress.
+ *
  * The fracture is NOT an estimate. src/server/console/runs.ts is explicit
  * that the waiting screen "does not interpolate a percentage, estimate a
  * finish time, or report a stage the pipeline has not actually recorded",
@@ -39,7 +49,7 @@
  * those four things are true, not "about halfway".
  */
 import { useMemo, useRef, useState, type CSSProperties } from "react";
-import { forgeLayout } from "./forge-layouts.ts";
+import { forgeLayout, landedFragments } from "./forge-layouts.ts";
 import { CRACKS, MOBILE, preloadAtlas } from "./geometry.ts";
 import { Shard } from "./Shard.tsx";
 import { useShardField, type Placement } from "./useShardField.ts";
@@ -54,6 +64,18 @@ interface ForgePaneProps {
   /** Pulse the cracks while the pipeline is actually working on this one. */
   working: boolean;
   /**
+   * How much of the card has arrived, 0..1, from the caller's counted
+   * milestones — the same fraction the orbit docks its shards on.
+   *
+   * Undefined means "all of it", which is stage 5's case and the default:
+   * that screen's cards are not being assembled out of anything on screen.
+   * When it IS passed, the fragment count is floored rather than rounded, so
+   * a fragment only ever appears once the milestone that brings it is
+   * actually true — the same rule `dockedFor` uses, and the reason the two
+   * stay in step.
+   */
+  assembled?: number;
+  /**
    * Which cut this card is broken along. Pass the card's own index so a row
    * of them is a row of different panes; it wraps, so any number is valid.
    * It must be STABLE for a given card — a card that re-cuts itself on a
@@ -63,7 +85,7 @@ interface ForgePaneProps {
   variant?: number;
 }
 
-export function ForgePane({ fracture, glow, clips, working, variant = 0 }: ForgePaneProps) {
+export function ForgePane({ fracture, assembled, glow, clips, working, variant = 0 }: ForgePaneProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const ready = useAtlasReady("mobile", preloadAtlas);
 
@@ -82,6 +104,19 @@ export function ForgePane({ fracture, glow, clips, working, variant = 0 }: Forge
   const [kept, setKept] = useState<ReadonlySet<string>>(() => new Set());
 
   const pieces = forgeLayout(variant);
+
+  /**
+   * How many fragments are on the card right now.
+   *
+   * Every fragment is still MOUNTED whatever this says — the ones that have
+   * not arrived carry `.forge-shard--pending` and are transparent. That is
+   * not a detail: `useShardField` indexes `[data-shard]` in DOM order
+   * against `placements`, and `placements` is a dependency of the effect
+   * that installs its loop, so mounting fragments one at a time would tear
+   * the loop down and replay the entrance for the whole card six times over
+   * a render. A class costs nothing and changes nothing about the spring.
+   */
+  const landed = landedFragments(pieces.length, assembled);
 
   const placements = useMemo<Placement[]>(
     () =>
@@ -105,7 +140,14 @@ export function ForgePane({ fracture, glow, clips, working, variant = 0 }: Forge
     [pieces],
   );
 
-  useShardField(rootRef, placements, { ready, hoverLift: 46 });
+  /**
+   * The entrance is the whole card arriving in one beat, which is right for
+   * a pane that is simply there and wrong for one being assembled: it would
+   * play every fragment in, pending ones included, before the class that
+   * hides them took effect. `assembled === undefined` is a constant for the
+   * life of a pane, so this never re-runs the effect.
+   */
+  useShardField(rootRef, placements, { ready, hoverLift: 46, entrance: assembled === undefined });
 
   const cracks = CRACKS.mobile;
 
@@ -123,6 +165,7 @@ export function ForgePane({ fracture, glow, clips, working, variant = 0 }: Forge
                 key={p.key}
                 pieceId={p.pieceId}
                 setKey={p.setKey}
+                className={i < landed ? "" : "forge-shard--pending"}
                 style={{ left: `${p.x}%`, top: `${p.y}%`, width: `${p.w}%`, height: `${p.h}%`, zIndex: p.z }}
               >
                 {clip !== null && (

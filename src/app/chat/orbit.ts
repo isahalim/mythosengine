@@ -103,6 +103,77 @@ export const ORBIT_SPAN = 5.4;
  */
 export const DOCK_SPAN = 18;
 
+/**
+ * The glass fragments have **thickness** (operator direction, 2026-09-05:
+ * "for the orbiting shards that are large, make them have depth as currently
+ * when they rotate, you can see them disappear for a bit as they are like
+ * paper thinness").
+ *
+ * A `.shard` is one plane. A plane rotated to 90° is edge-on and therefore
+ * *zero pixels wide*, and the tumble here turns at 14-35°/s — so every
+ * fragment spent the better part of a second, twice a revolution, being
+ * literally nothing. Not a rendering bug: the shard genuinely had no depth.
+ *
+ * So each fragment is extruded into a slab: `SHARD_DEPTH_LAYERS` copies of
+ * its own silhouette, stacked backwards along Z inside the orbit wrapper,
+ * which is `transform-style: preserve-3d` so they are separated in space
+ * rather than flattened onto the face.
+ *
+ * *Why a stack of planes reads as a solid.* Rotated θ from face-on, each copy
+ * projects to `W·cos θ` wide and consecutive copies are offset by
+ * `(depth/layers)·sin θ`. The slab looks continuous while the faces still
+ * overlap — `tan θ < W·layers/depth` — which for the ~70px fragment this ring
+ * carries is 89.2°, so the copies only stop touching inside the last degree
+ * of edge-on, and even there the band is `depth·sin θ` of stacked edges wide.
+ * The fragment is never nothing again.
+ *
+ * *Why 8px and not more.* Thickness and continuity pull against each other:
+ * a deeper slab is more obviously solid when it is turned, and breaks up
+ * sooner as it turns further. Eight pixels is 11% of the orbiting fragment's
+ * own width — the proportion of a real shard of window glass — and holds the
+ * angle above.
+ *
+ * *Why the depth is in pixels and not a fraction of the fragment.* The
+ * wrapper's transform ends in `scale()`, which is a 2D scale — it multiplies
+ * X and Y and leaves Z alone. So one `translateZ` gives every fragment the
+ * same thickness on screen, whether the wrapper it hangs in is a 6% sliver or
+ * a 27% slab, and it does not change as a shard grows into the card. Glass
+ * from one sheet, cut into different pieces.
+ */
+export const SHARD_DEPTH_PX = 8;
+
+/**
+ * How many copies make the slab. Eight is what puts the break-up above 89°
+ * at this depth; more is ten shards × N masked elements for a difference no
+ * one can see, on a screen that already runs a rAF loop over ninety of them.
+ */
+export const SHARD_DEPTH_LAYERS = 8;
+
+/** One copy in the extrusion: how far back it sits, and how much it tints. */
+export interface DepthLayer {
+  /** Its offset along Z, in px. Negative — the extrusion goes backwards from the lit face. */
+  z: number;
+  /** Its own alpha. Deliberately small: eight of these stack up behind the face when it is turned toward the viewer, and a fragment that goes opaque face-on has traded one wrong look for another. */
+  alpha: number;
+}
+
+/**
+ * The extrusion, as data — so the arithmetic above is a test rather than a
+ * claim in a comment.
+ *
+ * The alpha ramps *down* with depth. Physically that is the far side of the
+ * glass seen through the near side; practically it is what stops the stack
+ * reading as a shadow under the fragment when it is face-on.
+ */
+export function depthLayers(layers = SHARD_DEPTH_LAYERS, depth = SHARD_DEPTH_PX): DepthLayer[] {
+  const out: DepthLayer[] = [];
+  for (let i = 1; i <= layers; i++) {
+    const t = i / layers;
+    out.push({ z: -depth * t, alpha: 0.13 * (1 - t * 0.55) });
+  }
+  return out;
+}
+
 /** How much nearer the near edge of the ring looks than the far edge. Perspective, applied as a plain multiplier — the ring is shallow enough not to need a projection. */
 const DEPTH_SCALE = 0.42;
 

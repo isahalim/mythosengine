@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { contentWords, digestBrief, guessTopic, heuristicDigest, isBareTopic, TOPIC_ONLY_MAX_CONTENT_WORDS } from "./digest.ts";
+import { contentWords, digestBrief, guessTopic, heuristicDigest } from "./digest.ts";
 import type { LlmDriver, LlmRequest, LlmResponse } from "../drivers/types.ts";
 import { err, ok, type Result } from "../result.ts";
 import type { DriverError } from "../drivers/types.ts";
@@ -29,7 +29,6 @@ function fakeLlm(answers: (string | DriverError)[]): { llm: LlmDriver; requests:
 }
 
 const SPECIFIC = JSON.stringify({
-  specificity: "specific",
   topic: "ai",
   title: "Why every AI safety debate collapses into the same two people",
   angle: "The argument is really about who gets to be in the room, not about risk.",
@@ -49,24 +48,6 @@ describe("contentWords", () => {
   });
 });
 
-describe("isBareTopic", () => {
-  it("is true for the operator's own example", () => {
-    expect(isBareTopic("make a video on AI")).toBe(true);
-  });
-
-  it("is false for a prompt that names an argument", () => {
-    expect(isBareTopic("Why every AI safety debate collapses into the same two people arguing about the same paper")).toBe(false);
-  });
-
-  it("draws the line exactly at TOPIC_ONLY_MAX_CONTENT_WORDS", () => {
-    const two = "make a video on quantum computing";
-    const three = "make a video on quantum computing funding";
-    expect(contentWords(two)).toHaveLength(TOPIC_ONLY_MAX_CONTENT_WORDS);
-    expect(isBareTopic(two)).toBe(true);
-    expect(isBareTopic(three)).toBe(false);
-  });
-});
-
 describe("guessTopic", () => {
   it("finds the topic a prompt is obviously about, with no model", () => {
     expect(guessTopic("make a video on AI")).toBe("ai");
@@ -80,37 +61,49 @@ describe("guessTopic", () => {
 });
 
 describe("heuristicDigest", () => {
-  it("is always topic_only — without a model there is no angle to build a signal around", () => {
-    expect(heuristicDigest("Why every AI safety debate collapses").specificity).toBe("topic_only");
+  it("keeps the operator's own words as the title rather than substituting a story", () => {
+    const digest = heuristicDigest("Why every AI safety debate collapses");
+    expect(digest.title).toBe("Why every AI safety debate collapses");
+    expect(digest.angle).toBe("");
+  });
+
+  it("guesses the topic from the prompt, since nothing else can", () => {
+    expect(heuristicDigest("make a video on AI").topic).toBe("ai");
   });
 });
 
 describe("digestBrief", () => {
-  it("takes the model's answer when the prompt is long enough to be specific", async () => {
+  it("takes the model's answer", async () => {
     const { llm } = fakeLlm([SPECIFIC]);
     const outcome = await digestBrief(llm, "Why every AI safety debate collapses into the same two people arguing about the same paper");
 
     expect(outcome.degradedReason).toBeNull();
-    expect(outcome.digest.specificity).toBe("specific");
     expect(outcome.digest.topic).toBe("ai");
+    expect(outcome.digest.title).toBe("Why every AI safety debate collapses into the same two people");
     expect(outcome.digest.mustInclude).toEqual(["the 2026 letter"]);
   });
 
-  it("overrides a model that calls a two-word prompt specific, and says why", async () => {
-    const { llm } = fakeLlm([SPECIFIC]);
-    const outcome = await digestBrief(llm, "make a video on AI");
+  /**
+   * The 2026-09-05 bug, as a test. A prompt naming one specific story came
+   * back with no angle, the empty angle was read as vagueness, and the run
+   * rendered the corpus's top politics story instead. There is no longer any
+   * value DIGEST can return that changes WHAT gets built.
+   */
+  it("keeps the operator's subject when the model finds no angle in it", async () => {
+    const { llm } = fakeLlm([JSON.stringify({ topic: "politics", title: "The Lindsay Clancy trial", angle: "   ", must_include: [], voice: null, language: null })]);
+    const outcome = await digestBrief(llm, "make a video on the lindsay clancy trial");
 
-    // The operator's direction: a vague prompt falls back deterministically.
-    // The model's opinion loses to the word count in exactly this direction.
-    expect(outcome.digest.specificity).toBe("topic_only");
-    expect(outcome.degradedReason).toContain("content word");
+    expect(outcome.digest.title).toBe("The Lindsay Clancy trial");
+    expect(outcome.digest.angle).toBe("");
+    expect(outcome.degradedReason).toBeNull();
   });
 
-  it("treats an empty angle as vagueness however the model labelled it", async () => {
-    const { llm } = fakeLlm([JSON.stringify({ specificity: "specific", topic: "tech", title: "Streaming prices", angle: "   ", must_include: [], voice: null, language: null })]);
-    const outcome = await digestBrief(llm, "the thing about streaming prices moving together last quarter");
+  it("keeps a bare subject as itself rather than reading it as a request for something else", async () => {
+    const { llm } = fakeLlm([JSON.stringify({ topic: "ai", title: "AI", angle: "", must_include: [], voice: null, language: null })]);
+    const outcome = await digestBrief(llm, "make a video on AI");
 
-    expect(outcome.digest.specificity).toBe("topic_only");
+    expect(outcome.digest.title).toBe("AI");
+    expect(outcome.digest.topic).toBe("ai");
   });
 
   it("never fails — a dead model degrades to the heuristic and reports it", async () => {
@@ -119,9 +112,18 @@ describe("digestBrief", () => {
     const outcome = await digestBrief(llm, "Why every AI safety debate collapses into the same two people");
 
     expect(outcome.model).toBeNull();
-    expect(outcome.digest.specificity).toBe("topic_only");
+    // The operator's own words, not a substitute: a degrade may cost quality,
+    // it may not change the subject.
+    expect(outcome.digest.title).toBe("Why every AI safety debate collapses into the same two people");
     expect(outcome.digest.topic).toBe("ai");
     expect(outcome.degradedReason).toContain("rate_limited");
+  });
+
+  it("falls back to the prompt when the model's title is only whitespace", async () => {
+    const { llm } = fakeLlm([JSON.stringify({ topic: "tech", title: " ", angle: "", must_include: [], voice: null, language: null })]);
+    const outcome = await digestBrief(llm, "the thing about streaming prices moving together last quarter");
+
+    expect(outcome.digest.title).toBe("the thing about streaming prices moving together last quarter");
   });
 
   it("carries a named voice and language through, and leaves them null otherwise", async () => {

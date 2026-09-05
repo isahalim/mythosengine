@@ -37,8 +37,10 @@ import { dockedFraction } from "./orbit.ts";
  *   3. The orb gathers the page's edge glass and sets it orbiting, small,
  *      tumbling on three axes, trailing dust, half of it behind the orb and
  *      half in front (`OrbitField`).
- *   4. **As each pipeline stage lands**, shards leave the orbit and dock into
- *      the video card, whose fracture heals from 1 to 0.
+ *   4. **As each pipeline stage lands**, a shard leaves the orbit and docks
+ *      into the video card, which gains that fragment as the shard fades out
+ *      at the centre — the card is built out of them, not revealed. Its
+ *      fracture heals from 1 to 0 over the same six facts.
  *   5. Healed, the card becomes a `ShardPlayer` — the same sealed → cracked →
  *      open → autoplay progression the landing demo and stage 6 use. The orb
  *      is still visible behind the sealed slab, and disappears on the first
@@ -93,11 +95,7 @@ function statusLine(brief: BriefView | null, progress: RunProgress | null, done:
   if (progress?.status === "not_triggered") return "Recorded, but no run was started.";
   if (done === 0) return "Waiting for the runner to pick this up…";
   const digest = parseDigest(brief ?? ({} as BriefView));
-  if (done <= 2 && digest !== null) {
-    return digest.specificity === "topic_only"
-      ? `Read as a bare topic — building the strongest ${digest.topic} story instead.`
-      : `Researching “${digest.title}”…`;
-  }
+  if (done <= 2 && digest !== null) return `Researching “${digest.title}”…`;
   if (done <= 3) return "Writing the script…";
   if (done <= 4) return "Sourcing footage, narrating, cutting…";
   if (done <= 5) return "Rendering…";
@@ -214,7 +212,24 @@ export function StageBuilding({ briefId, traceId, prompt, dispatchNote, setKey, 
           {dispatchNote !== null && <p className="z-10 mt-3 text-center font-mono text-[0.65rem] text-sodium">{dispatchNote}</p>}
           {error !== null && <p className="z-10 mt-3 text-center text-xs text-rose">{error}</p>}
 
-          <div className="relative z-10 mt-8 flex min-h-0 w-full flex-1 flex-col items-center">
+          {/*
+            Scrolls (operator direction, 2026-09-05: "allow scrolling in the
+            2nd step of the chat route so that once the video is done, the
+            user can actually scroll to view the metadata"). The frame around
+            it is `h-dvh` and the body is `overflow: hidden` — the stage
+            machine owns the viewport and each stage scrolls internally,
+            which stage 6 already does with this exact pair of classes. The
+            finished state is a 9:16 player, four buttons and a metadata
+            sheet, and on anything shorter than a desktop that is taller than
+            what is left of the viewport: the sheet was on screen but
+            unreachable.
+
+            `overflow-x` follows `overflow-y` to `auto` whether it is asked
+            to or not, so a fragment lifting toward the cursor is clipped at
+            this box's edge. That is the cost of a scrollport and it is paid
+            where the alternative is content nobody can reach.
+          */}
+          <div className="relative z-10 mt-8 flex min-h-0 w-full flex-1 flex-col items-center overflow-y-auto pb-8">
             {/* Before the export exists the card is cracked glass healing as
                 the run advances; after it, it is the finished video in the
                 same pane. `fracture` is `1 - done/6` — counted facts, not a
@@ -225,7 +240,21 @@ export function StageBuilding({ briefId, traceId, prompt, dispatchNote, setKey, 
                  brief id so the selector cannot match a stale node left by a
                  previous screen. */
               <div className="w-1/2 max-w-[16rem]" data-orbit-anchor={briefId}>
-                <ForgePane fracture={1 - fraction} glow="var(--violet)" clips={[]} working={running} />
+                {/*
+                  `assembled` is what makes the card BUILD rather than sit
+                  there healing (operator direction, 2026-09-05: "don't
+                  pre-make the shards ... they should slowly get placed one by
+                  one as the pipeline progresses just like how it is in the
+                  demo's video card progression"). The pane used to render all
+                  eight fragments from the first frame and only fade its crack
+                  lines, so the card was already whole while ten shards
+                  orbited toward it with nowhere to land. It now starts empty
+                  and takes a fragment as each milestone lands — the same
+                  counted fraction the orbit docks on, so a shard fading out
+                  at the centre and a fragment appearing in the card are the
+                  same event.
+                */}
+                <ForgePane fracture={1 - fraction} assembled={fraction} glow="var(--violet)" clips={[]} working={running} />
               </div>
             ) : (
               <>
@@ -250,7 +279,11 @@ export function StageBuilding({ briefId, traceId, prompt, dispatchNote, setKey, 
                   />
                 </div>
                 {metadataOpen && (
-                  <div className="mt-4 w-full overflow-y-auto">
+                  /* No scrollport of its own: the column above is the one
+                     that scrolls, and a panel that scrolled inside it would
+                     put the operator in a two-pixel gutter to read a sheet
+                     the page could simply be longer for. */
+                  <div className="mt-4 w-full">
                     <MetadataPanel exportId={exportId} onClose={() => setMetadataOpen(false)} onUnauthorized={onUnauthorized} />
                   </div>
                 )}

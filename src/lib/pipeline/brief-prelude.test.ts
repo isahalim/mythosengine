@@ -17,7 +17,13 @@ import { prepareBrief, type BriefPreludeDeps } from "./brief-prelude.ts";
  * ran at module scope — so a chat run would have started a second, unrelated
  * brainstorm render beside it, claiming a queued pick from an earlier session
  * and spending the day's token budget. It was caught by hand, which is not a
- * process. The branch logic moved here so it could be caught by a test.
+ * process. The prelude's logic moved here so it could be caught by a test.
+ *
+ * The other thing it now pins down is the absence of a branch. Until
+ * 2026-09-05 a brief DIGEST called vague was replaced by `rankIdeas`' top
+ * story for its topic, and a prompt naming a specific trial came back as an
+ * unrelated politics video. Every test below asserts the same thing from a
+ * different angle: what the operator typed is what gets built.
  */
 
 const GROUNDED: ResearchBrief = {
@@ -39,7 +45,6 @@ function fakeLlm(answer: string | DriverError): LlmDriver {
 }
 
 const SPECIFIC = JSON.stringify({
-  specificity: "specific",
   topic: "ai",
   title: "Why every AI safety debate collapses into the same two people",
   angle: "It is about who is in the room, not about risk.",
@@ -58,7 +63,7 @@ describe("prepareBrief", () => {
     return { db: ctx.db, rawClient: ctx.client, digestLlm: fakeLlm(SPECIFIC), research, log: () => undefined, ...overrides };
   }
 
-  /** A `scored` signal in the corpus, so the bare-topic branch has something to rank. */
+  /** A `scored` signal in the corpus — here to prove the prelude does NOT reach for one. */
   async function seedScored(id: string, title: string): Promise<void> {
     await ctx.db.insert(sources).values({ id: `src-${id}`, kind: "rss", url: `https://feed.test/${id}` }).run();
     await ctx.db
@@ -73,13 +78,10 @@ describe("prepareBrief", () => {
     research = vi.fn(() => Promise.resolve({ brief: GROUNDED, provenance: { provider: "gemini-grounded" as const, model: GROUNDED.model, fallbackReason: null } }));
   });
 
-  describe("a specific brief", () => {
+  describe("every brief", () => {
     it("mints its own signal, grounds it, and queues a plan naming it", async () => {
       const prepared = await prepareBrief("b1", LONG_PROMPT, deps());
 
-      expect(prepared).not.toBeNull();
-      if (prepared === null) return;
-      expect(prepared.digest.specificity).toBe("specific");
       expect(prepared.research).toEqual(GROUNDED);
       expect(prepared.researchProvenance?.provider).toBe("gemini-grounded");
 
@@ -91,7 +93,6 @@ describe("prepareBrief", () => {
 
     it("queues exactly one pick, on DIGEST's topic, and a render can claim it", async () => {
       const prepared = await prepareBrief("b1", LONG_PROMPT, deps());
-      if (prepared === null) throw new Error("expected a prepared brief");
 
       const queued = await listQueuedPicks(ctx.db);
       expect(queued).toHaveLength(1);
@@ -105,67 +106,67 @@ describe("prepareBrief", () => {
 
     it("carries a named voice and language out for the render to apply", async () => {
       const prepared = await prepareBrief("b1", LONG_PROMPT, deps());
-      expect(prepared?.digest.voice).toBe("Puck");
-      expect(prepared?.digest.language).toBe("Spanish");
+      expect(prepared.digest.voice).toBe("Puck");
+      expect(prepared.digest.language).toBe("Spanish");
     });
 
     it("continues with no research when grounding fails — the render then tries the corpus path", async () => {
       const prepared = await prepareBrief("b1", LONG_PROMPT, deps({ research: () => Promise.resolve(null) }));
 
-      expect(prepared?.research).toBeNull();
-      expect(prepared?.researchProvenance).toBeNull();
+      expect(prepared.research).toBeNull();
+      expect(prepared.researchProvenance).toBeNull();
       // The signal and the plan still exist: the corpus path has something to
       // work against, and the video is still made.
       expect(await listQueuedPicks(ctx.db)).toHaveLength(1);
     });
   });
 
-  describe("a bare topic", () => {
-    it("takes the rank-1 idea for the topic and never mints a signal", async () => {
-      await seedScored("sig-ai-1", "OpenAI ships a new model and the argument restarts");
-      await seedScored("sig-ai-2", "A quieter story about an ai chatbot");
+  describe("a vague brief", () => {
+    /**
+     * The 2026-09-05 bug, end to end. This exact prompt, against a corpus
+     * holding a better-scoring politics story, used to come back as that
+     * story. The corpus is seeded here precisely so the test would fail if
+     * the ranked-idea branch ever came back.
+     */
+    it("builds the operator's own subject even when the corpus has a story it likes better", async () => {
+      await seedScored("sig-pol-1", "A million-pound donor row consumes the government");
+      const digest = JSON.stringify({ topic: "politics", title: "The Lindsay Clancy trial", angle: "", must_include: [], voice: null, language: null });
 
+      const prepared = await prepareBrief("b1", "make a video on the lindsay clancy trial", deps({ digestLlm: fakeLlm(digest) }));
+
+      expect(prepared.signalId).not.toBe("sig-pol-1");
+      const row = (await ctx.db.select().from(signals).where(eq(signals.id, prepared.signalId)).all())[0];
+      expect(row.title).toBe("The Lindsay Clancy trial");
+      expect(row.sourceId).toBe("operator");
+    });
+
+    it("still grounds a bare subject rather than skipping research for it", async () => {
+      const digest = JSON.stringify({ topic: "ai", title: "AI", angle: "", must_include: [], voice: null, language: null });
+      await prepareBrief("b1", "make a video on AI", deps({ digestLlm: fakeLlm(digest) }));
+
+      expect(research).toHaveBeenCalledWith({ title: "AI", angle: "", mustInclude: [] });
+    });
+
+    it("builds something with an empty corpus, where the old branch built nothing at all", async () => {
       const prepared = await prepareBrief("b1", "make a video on AI", deps());
 
-      expect(prepared?.digest.specificity).toBe("topic_only");
-      expect(prepared?.signalId).toMatch(/^sig-ai-/);
-      // Nothing synthetic was written: the corpus supplied the story.
-      expect((await ctx.db.select().from(sources).where(eq(sources.id, "operator")).all())).toHaveLength(0);
+      expect(prepared.signalId).not.toBe("");
+      expect(await listQueuedPicks(ctx.db)).toHaveLength(1);
     });
 
-    it("never calls the grounded researcher — that branch is the corpus's", async () => {
-      await seedScored("sig-ai-1", "OpenAI ships a new model and the argument restarts");
-      await prepareBrief("b1", "make a video on AI", deps());
-      expect(research).not.toHaveBeenCalled();
-    });
-
-    it("is deterministic: the same corpus and topic give the same story every time", async () => {
-      await seedScored("sig-ai-1", "OpenAI ships a new model and the argument restarts");
-      await seedScored("sig-ai-2", "Another ai model story, less matched");
-
-      const first = await prepareBrief("b1", "make a video on AI", deps());
-      const second = await prepareBrief("b2", "make a video on AI", deps());
-
-      expect(second?.signalId).toBe(first?.signalId);
-    });
-
-    it("returns null rather than building nothing-in-particular when the corpus is empty", async () => {
-      expect(await prepareBrief("b1", "make a video on AI", deps())).toBeNull();
-      // And nothing was queued, so no render is dispatched against a plan that
-      // names no story.
-      expect(await listQueuedPicks(ctx.db)).toHaveLength(0);
-    });
-
-    it("takes the same branch when DIGEST itself failed", async () => {
+    it("keeps the operator's words when DIGEST itself failed", async () => {
       await seedScored("sig-ai-1", "OpenAI ships a new ai model and the argument restarts");
       const failure: DriverError = { kind: "rate_limited", message: "HTTP 429", retryable: true };
 
       const prepared = await prepareBrief("b1", LONG_PROMPT, deps({ digestLlm: fakeLlm(failure) }));
 
-      expect(prepared?.digest.specificity).toBe("topic_only");
-      expect(prepared?.digestDegradedReason).toContain("rate_limited");
-      expect(prepared?.signalId).toBe("sig-ai-1");
-      expect(research).not.toHaveBeenCalled();
+      expect(prepared.digestDegradedReason).toContain("rate_limited");
+      expect(prepared.signalId).not.toBe("sig-ai-1");
+      const row = (await ctx.db.select().from(signals).where(eq(signals.id, prepared.signalId)).all())[0];
+      expect(row.title).toBe(LONG_PROMPT);
+      // A degrade costs the brief its classification, not its subject — so
+      // research still runs, on the operator's own sentence.
+      expect(research).toHaveBeenCalled();
     });
   });
 });

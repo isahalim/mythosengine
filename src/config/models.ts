@@ -160,6 +160,36 @@ export const GEMINI_RESEARCH_MODEL = "gemini-3.8-flash";
 export const GEMINI_RESEARCH_MAX_ITERATIONS = 4;
 
 /**
+ * Turns the chat route's grounded RESEARCH may spend on
+ * `GEMINI_REASONING_MODEL` after `GEMINI_RESEARCH_MODEL` has spent all four
+ * of its own without closing the brief (operator direction, 2026-09-05: "use
+ * gemini-3.8-flash max call 4 times and if necessary fallback on
+ * gemini-3.5-flash-lite by continuing from the leftover work").
+ *
+ * *Why two and not four.* The fallback is not researching from nothing. It
+ * is handed the pages the first model's searches actually returned and
+ * whatever it managed to write, and asked to close a brief out of them — a
+ * model that cannot do that in two turns is not going to do it in four, and
+ * every extra turn is 180 seconds of a render's wall clock against a
+ * `GEMINI_RESEARCH_TIMEOUT_MS` that exists because a real turn can genuinely
+ * take that long.
+ *
+ * *Why continuing across models is safe here, when it is forbidden in
+ * `src/lib/rag/research-provider.ts`.* That rule is about splicing a second
+ * Gemini model into a live **tool conversation**, where it would inherit the
+ * first model's signed `thought` steps — untested, and a failure that only
+ * appears in production. This path has no client-side tool loop at all:
+ * search is the provider's own, server-side, and what crosses to the
+ * fallback is plain text — a list of URLs and titles the first model
+ * grounded on, plus its own last draft. Nothing signed, nothing replayed.
+ *
+ * Only used by the chat route. `GEMINI_RESEARCH_MAX_ITERATIONS` still bounds
+ * the brainstorm route's Gemini attempt, whose fallback is the general
+ * ladder from an empty transcript.
+ */
+export const GEMINI_RESEARCH_FALLBACK_ITERATIONS = 2;
+
+/**
  * The **bottom rung** of the general ladder, and the only model CRITIC and
  * EXPORT's listing ever use (operator direction, 2026-09-03 for those two,
  * 2026-09-04 for the rung).

@@ -225,9 +225,9 @@ export interface ExportPreviews {
  * Mirrors `BriefView` in src/server/console/briefs.ts. Note how much of it is
  * nullable: the Worker makes no model call, so at the moment this row is
  * created the only things known about it are the prompt and the attachments.
- * `topic`, `title` and `specificity` arrive later, written back by DIGEST on
- * the runner, and the chat surface shows them the moment they land rather
- * than guessing them in the meantime.
+ * `topic` and `title` arrive later, written back by DIGEST on the runner, and
+ * the chat surface shows them the moment they land rather than guessing them
+ * in the meantime.
  */
 export interface BriefView {
   id: string;
@@ -248,7 +248,6 @@ export interface BriefView {
 
 /** What DIGEST concluded, once it has. Mirrors `BriefDigest` in src/lib/pipeline/digest.ts. */
 export interface BriefDigestView {
-  specificity: "specific" | "topic_only";
   topic: Topic;
   title: string;
   angle: string;

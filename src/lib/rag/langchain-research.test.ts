@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { groundedResearch, groundingSources, WEB_SOURCE_KIND, type GroundedModel } from "./langchain-research.ts";
+import { GEMINI_REASONING_MODEL, GEMINI_RESEARCH_MODEL } from "../../config/models.ts";
 
 /**
  * These drive `buildModel`, the injected seam, rather than a mock server.
@@ -8,8 +9,13 @@ import { groundedResearch, groundingSources, WEB_SOURCE_KIND, type GroundedModel
  * because they *are* HTTP — the contract under test is a request shape. Here
  * the request is LangChain's to make, and what this module is actually
  * responsible for is everything either side of it: reading the grounding
- * metadata, refusing a citation that is not in it, and converting a thrown
- * framework error into a typed `DriverError`. Those are the tests.
+ * metadata, refusing a citation that is not in it, spending its turns, and
+ * converting a thrown framework error into a typed `DriverError`. Those are
+ * the tests.
+ *
+ * `buildModel` is called once per model, so a double that counts its own
+ * invocations is also counting turns — which is how the four-then-two budget
+ * is pinned down here rather than asserted in a comment.
  */
 
 const GROUNDED_METADATA = {
@@ -28,6 +34,26 @@ function reply(content: string, metadata: unknown = GROUNDED_METADATA): Grounded
     },
   };
 }
+
+/**
+ * A pair of doubles that record which model was built and what each one was
+ * asked, so a test can assert the handover as well as the answer.
+ */
+function twoModels(behaviour: (model: string, turn: number) => { content: unknown; response_metadata?: unknown } | Error) {
+  const turns: { model: string; messages: string[] }[] = [];
+  const build = ({ model }: { apiKey: string; model: string }): GroundedModel => ({
+    async invoke(messages) {
+      const mine = turns.filter((t) => t.model === model).length + 1;
+      turns.push({ model, messages: messages.map((m) => String(m.content)) });
+      const out = behaviour(model, mine);
+      if (out instanceof Error) throw out;
+      return out;
+    },
+  });
+  return { build, turns };
+}
+
+const UNCITED = JSON.stringify({ summary: "s", key_points: ["k"], claims: [{ claim: "c", source_title: "t", source_url: "https://elsewhere.test/1" }] });
 
 const GOOD_BRIEF = JSON.stringify({
   summary: "Two sides, one paper.",
@@ -66,12 +92,17 @@ describe("groundedResearch", () => {
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.citations).toHaveLength(2);
-    expect(result.value.citations[0].signalId).toBeNull();
-    expect(result.value.citations[0].sourceKind).toBe(WEB_SOURCE_KIND);
-    expect(result.value.citations[0].url).toBe("https://example.com/a");
+    const { brief } = result.value;
+    expect(brief.citations).toHaveLength(2);
+    expect(brief.citations[0].signalId).toBeNull();
+    expect(brief.citations[0].sourceKind).toBe(WEB_SOURCE_KIND);
+    expect(brief.citations[0].url).toBe("https://example.com/a");
     // Nothing is trimmed on this path — the provider holds the pages.
-    expect(result.value.toolResultsDropped).toBe(0);
+    expect(brief.toolResultsDropped).toBe(0);
+    // One turn, on the model the operator named, and no fallback.
+    expect(brief.model).toBe(GEMINI_RESEARCH_MODEL);
+    expect(result.value.fallbackReason).toBeNull();
+    expect(result.value.turnsSpent).toBe(1);
   });
 
   it("drops a claim whose URL the search never returned", async () => {
@@ -89,13 +120,11 @@ describe("groundedResearch", () => {
     if (!result.ok) return;
     // The trust boundary: a model may only cite what search actually
     // returned, exactly as the corpus path may only cite what retrieval did.
-    expect(result.value.citations.map((c) => c.url)).toEqual(["https://example.com/a"]);
+    expect(result.value.brief.citations.map((c) => c.url)).toEqual(["https://example.com/a"]);
   });
 
   it("fails rather than returning an uncited brief when nothing is traceable", async () => {
-    const allInvented = JSON.stringify({ summary: "s", key_points: ["k"], claims: [{ claim: "c", source_title: "t", source_url: "https://elsewhere.test/1" }] });
-
-    const result = await groundedResearch("key", INPUT, { buildModel: () => reply(allInvented) });
+    const result = await groundedResearch("key", INPUT, { buildModel: () => reply(UNCITED) });
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.kind).toBe("invalid_response");
@@ -162,5 +191,96 @@ describe("groundedResearch", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.message).toContain("no JSON object");
+  });
+});
+
+/**
+ * Operator direction, 2026-09-05: "use gemini-3.8-flash max call 4 times and
+ * if necessary fallback on gemini-3.5-flash-lite by continuing from the
+ * leftover work".
+ */
+describe("the turn budget", () => {
+  const log = (): void => undefined;
+
+  it("takes another turn on the same model when a reply cannot be used, and keeps what it found", async () => {
+    const { build, turns } = twoModels((_model, turn) =>
+      turn === 1 ? { content: "thinking out loud, no json", response_metadata: GROUNDED_METADATA } : { content: GOOD_BRIEF, response_metadata: {} },
+    );
+
+    const result = await groundedResearch("key", INPUT, { buildModel: build, log });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The second turn's own metadata was empty; the citations still resolve,
+    // because the pages the FIRST turn grounded on are still on the workpad.
+    expect(result.value.brief.citations).toHaveLength(2);
+    expect(result.value.brief.model).toBe(GEMINI_RESEARCH_MODEL);
+    expect(result.value.turnsSpent).toBe(2);
+    // And it was told why, rather than being asked the same question twice.
+    expect(turns[1].messages.at(-1)).toContain("could not be used");
+  });
+
+  it("spends at most four turns on the first model before handing over", async () => {
+    const { build, turns } = twoModels((model) => (model === GEMINI_RESEARCH_MODEL ? { content: UNCITED, response_metadata: GROUNDED_METADATA } : { content: GOOD_BRIEF, response_metadata: {} }));
+
+    const result = await groundedResearch("key", INPUT, { buildModel: build, log });
+
+    expect(turns.filter((t) => t.model === GEMINI_RESEARCH_MODEL)).toHaveLength(4);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.brief.model).toBe(GEMINI_REASONING_MODEL);
+    expect(result.value.turnsSpent).toBe(5);
+  });
+
+  it("hands the fallback the leftover work — the pages found and the last draft", async () => {
+    const { build, turns } = twoModels((model) =>
+      model === GEMINI_RESEARCH_MODEL ? { content: "I found two articles but ran out of room", response_metadata: GROUNDED_METADATA } : { content: GOOD_BRIEF, response_metadata: {} },
+    );
+
+    await groundedResearch("key", INPUT, { buildModel: build, log });
+
+    const handover = turns.find((t) => t.model === GEMINI_REASONING_MODEL)?.messages.at(-1) ?? "";
+    expect(handover).toContain("https://example.com/a");
+    expect(handover).toContain("https://example.com/b");
+    expect(handover).toContain("I found two articles but ran out of room");
+    // And the brief it is finishing is still the operator's.
+    expect(handover).toContain(INPUT.title);
+  });
+
+  it("hands over immediately when the first model throws, rather than spending its remaining turns", async () => {
+    const { build, turns } = twoModels((model) => (model === GEMINI_RESEARCH_MODEL ? new Error("429 Too Many Requests") : { content: GOOD_BRIEF, response_metadata: GROUNDED_METADATA }));
+
+    const result = await groundedResearch("key", INPUT, { buildModel: build, log });
+
+    expect(turns.filter((t) => t.model === GEMINI_RESEARCH_MODEL)).toHaveLength(1);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.fallbackReason).toContain("rate_limited");
+  });
+
+  it("stops after the fallback's own turns rather than looping", async () => {
+    const { build, turns } = twoModels(() => ({ content: UNCITED, response_metadata: GROUNDED_METADATA }));
+
+    const result = await groundedResearch("key", INPUT, { buildModel: build, log });
+
+    expect(turns).toHaveLength(6);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.message).toContain("none traceable");
+  });
+
+  it("gives every turn its own AbortSignal, so one slow turn cannot eat the stage's whole deadline", async () => {
+    const signals: AbortSignal[] = [];
+    const build = (): GroundedModel => ({
+      async invoke(_messages, config) {
+        signals.push(config.signal);
+        return { content: UNCITED, response_metadata: GROUNDED_METADATA };
+      },
+    });
+
+    await groundedResearch("key", INPUT, { buildModel: build, timeoutMs: 1_000, log });
+
+    expect(signals).toHaveLength(6);
+    expect(new Set(signals).size).toBe(6);
   });
 });

@@ -464,6 +464,44 @@
   opacity: 0.82;
 }
 
+/*
+   A fragment that has not arrived yet (operator direction, 2026-09-05: "the
+   shards shouldn't be already puzzled in together from the beginning ... they
+   should slowly get placed one by one as the pipeline progresses").
+
+   Hidden, not unmounted. `useShardField` walks `[data-shard]` in DOM order
+   and pairs each element with the placement at the same index, and its
+   `placements` argument is a dependency of the effect that installs the
+   spring loop — so adding fragments to the DOM as the run advances would tear
+   that loop down and rebuild it six times a render. The class is free.
+
+   The fade is slower than `.shard`'s own 0.3s and it is the one place a
+   fragment's opacity is worth a full second: this is a piece of glass
+   arriving from the orbit, at the moment the orbiting one fades out at the
+   centre, and the two have to read as one handover rather than as a swap.
+   `filter: none` because the resting drop-shadow would otherwise still be
+   cast by a fragment that is not there.
+*/
+.forge-shard--pending {
+  opacity: 0;
+  filter: none;
+  pointer-events: none;
+}
+
+.forge-shards .shard {
+  transition:
+    filter 0.09s linear,
+    opacity 1s var(--ease-out);
+}
+
+/* Restated after the rule above, which is more specific than `.shard--hot`
+   and would otherwise take the cursor's own filter transition with it. */
+.forge-shards .shard--hot {
+  transition:
+    filter 0.22s var(--ease-out),
+    opacity 0.3s var(--ease-out);
+}
+
 .forge-crack path {
   fill: none;
   vector-effect: non-scaling-stroke;
@@ -736,31 +774,78 @@
 /*
    The wrapper each orbiting shard hangs in.
 
+   It carries the fade and the paint order against the orb, and NOTHING that
+   would flatten what is inside it. `opacity` is transitioned rather than
+   written raw so a shard that docks between two frames still fades rather
+   than blinking.
+*/
+.orbit-shard {
+  will-change: opacity;
+  transition: opacity 0.6s var(--ease-out);
+}
+
+/*
+   The fragment itself, in three dimensions.
+
    It carries a transform written every frame by OrbitField's rAF loop, and
    NOTHING else may animate `transform` on this element — `.float-group`'s
    drift keyframe in particular would fight it. `will-change` because this is
    one of ten elements moving continuously for the length of a render.
 
-   `opacity` is transitioned rather than written raw so a shard that docks
-   between two frames still fades rather than blinking.
-*/
-.orbit-shard {
-  will-change: transform, opacity;
-  transition: opacity 0.6s var(--ease-out);
-  /*
-     Depth for the fragment INSIDE this wrapper. `useShardField` writes
-     rotateX/rotateY/translateZ to `.shard`, and without a perspective on an
-     ancestor those flatten into a shear — which is what happened the moment
-     the scene layer stopped being `preserve-3d`. It had to stop: a
-     `preserve-3d` parent sorts its children by 3D position and ignores
-     z-index, and z-index is the only thing that puts a shard in front of the
-     orb (see OrbitField). So the perspective moves down here, onto each
-     wrapper, where it depends on no ancestor at all.
+   **Why this is not the wrapper.** `opacity` below 1 is a grouping property:
+   it forces the used value of `transform-style` to `flat` on whatever carries
+   it. The far half of the ring is dimmed, so a single element carrying both
+   the fade and the extrusion would have collapsed the slab onto its own face
+   for half of every revolution — and the eight body copies, being later in
+   the DOM, would then have painted over it. Two elements, one property each.
 
-     The wrapper's OWN tumble gets its depth from the `perspective()` function
-     inside the transform the loop writes — same reason, one level up.
-  */
+   `preserve-3d` is what separates the body layers from the face rather than
+   flattening them onto it (operator direction, 2026-09-05). It is legal here
+   and forbidden on the scene layer for one reason: `preserve-3d` sorts
+   children by 3D position and ignores z-index, and up there z-index is the
+   entire mechanism that puts a fragment in front of the orb. In here the only
+   children are one face and its own body, and depth order is precisely what
+   they should be sorted by.
+
+   `perspective` gives depth to BOTH the body layers and the `.shard` inside —
+   `useShardField` writes rotateX/rotateY/translateZ there, and without a
+   perspective on an ancestor those flatten into a shear. It lives here rather
+   than on the scene, where it would have had to be `preserve-3d` to reach
+   this far down. The tumble this element writes for ITSELF gets its depth
+   from the `perspective()` function inside that transform — same reason, one
+   level up.
+*/
+.orbit-pose {
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+  transform-style: preserve-3d;
   perspective: 1000px;
+}
+
+/*
+   One layer of a fragment's thickness.
+
+   The same silhouette as the shard it hangs behind — the mask comes off the
+   same atlas sprite, written inline by OrbitField — filled with a flat pane
+   of glass rather than the sprite's own facets: this is the *inside* of the
+   material, and printing the fracture detail eight more times behind the face
+   would read as a smeared duplicate rather than as depth. The tint is the two
+   tokens the fragments and the dust already share, so the body belongs to the
+   same glass.
+
+   No handler, no `data-shard`, `pointer-events: none`. `will-change` is
+   deliberately absent: unlike the wrapper and the dust, nothing ever
+   re-writes this transform — it is set once and inherited into the wrapper's
+   motion, and promoting eighty static layers to their own compositor tiles
+   would cost far more than it saves.
+*/
+.orbit-body {
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+  background: linear-gradient(128deg, color-mix(in srgb, var(--violet) 42%, var(--mercury)), color-mix(in srgb, var(--mercury) 62%, transparent));
 }
 
 /*

@@ -57,7 +57,7 @@ function historyLine(brief: BriefView): string {
   const digest = parseDigest(brief);
   if (brief.status === "failed") return brief.failureReason ?? "failed";
   if (digest === null) return brief.status;
-  return digest.specificity === "topic_only" ? `${brief.status} · ${digest.topic}, from the ranked list` : `${brief.status} · ${digest.topic}`;
+  return `${brief.status} · ${digest.topic}`;
 }
 
 export function StageCompose({ onSubmitted, onUnauthorized }: StageComposeProps) {
@@ -150,7 +150,7 @@ export function StageCompose({ onSubmitted, onUnauthorized }: StageComposeProps)
     <StageFrame
       eyebrow="Step 1 of 3"
       title="Tell it what to make"
-      blurb="One idea, in your own words. Attach anything that helps. Name a subject and nothing more, and it will take the strongest story it is already watching in that subject instead."
+      blurb="One idea, in your own words. Attach anything that helps. Whatever you type is what gets built — a bare subject just sends the research stage looking for the most contested thing in it."
     >
       <div className="pointer-events-auto mx-auto flex h-full w-full max-w-2xl flex-col">
         <div className="relative shrink-0">

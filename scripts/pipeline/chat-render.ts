@@ -30,22 +30,21 @@ import { renderOneVideo } from "./render.ts";
  * nullable value (`OperatorBrief`) and one stage (RESEARCH), because RESEARCH
  * was already the only stage whose output crosses into the rest of the run.
  *
- * **The two branches.**
- *
- * - *Specific.* The operator named a video. A synthetic `signals` row is
- *   minted from DIGEST's headline and the pipeline builds that.
- * - *Bare topic.* The operator named a subject ("make a video on AI"). The
- *   run falls back to the brainstorm ranking and takes **idea #1** for that
- *   topic — `rankIdeas`, the exact function stage 4 calls, with no model in
- *   the selection. The operator never leaves the chat surface; only the
- *   source of the idea changes.
+ * **There is one branch, and it is not about the operator.** Every brief
+ * becomes a synthetic `signals` row minted from DIGEST's headline, and the
+ * pipeline builds that. The vagueness branch — where a prompt DIGEST judged
+ * thin was replaced by `rankIdeas`' top story for its topic — was deleted on
+ * 2026-09-05 by operator direction, after a brief naming a specific trial
+ * came back as an unrelated politics story because the model had returned no
+ * angle for it. A prompt with nothing in it now simply gives grounded
+ * RESEARCH a subject and no angle, which is a search it can still run.
  *
  * **What can fail, and what it costs.** DIGEST failing costs the run its
- * classification and takes the bare-topic branch. Grounded research failing
- * costs the brief its grounding and hands the corpus path a real signal to
- * work with. Both are degrades that reach the audit package. The only thing
- * that ends the run here is having no idea at all to build — a bare topic
- * whose corpus has nothing scored — and that is `skipped`, not a failure.
+ * reading of the prompt and continues on the operator's own words, with the
+ * topic guessed from them. Grounded research failing costs the brief its
+ * grounding and hands the corpus path a real signal to work with. Both are
+ * degrades that reach the audit package, and neither changes what is being
+ * built.
  */
 
 async function main(): Promise<void> {
@@ -74,13 +73,6 @@ async function main(): Promise<void> {
 
   try {
     const prepared = await runPrelude(env, brief.id, brief.prompt, traceId);
-    if (prepared === null) {
-      await finishRun(env.db, lifecycleRunId, "skipped", "no_idea_available");
-      await updateBrief(env.db, brief.id, { status: "failed", failureReason: "no story was available to build — the corpus had nothing scored for this topic" });
-      console.error("This brief resolved to a bare topic, and no scored signal exists for it. Nothing was rendered.");
-      process.exitCode = 1;
-      return;
-    }
 
     await updateBrief(env.db, brief.id, { status: "running", planId: prepared.planId, signalId: prepared.signalId, digestJson: JSON.stringify(prepared.digest) });
 
@@ -110,10 +102,10 @@ async function main(): Promise<void> {
 
 /**
  * The process-level half of the prelude: build the drivers, open and close the
- * stage row, and hand the rest to `prepareBrief`, which is where the branch
+ * stage row, and hand the rest to `prepareBrief`, which is where the prelude's
  * logic lives and where it is tested.
  */
-async function runPrelude(env: PipelineEnv, briefId: string, prompt: string, traceId: string): Promise<PreparedBrief | null> {
+async function runPrelude(env: PipelineEnv, briefId: string, prompt: string, traceId: string): Promise<PreparedBrief> {
   const llm = createGroqDriverFromEnv(env.groqApiKey, createGroqLimiter());
   const ladders = createReasoningLadders(llm, env.geminiApiKey);
   if (ladders.geminiUnavailableReason !== null) console.warn(`REASONING: ${ladders.geminiUnavailableReason}`);
@@ -142,12 +134,19 @@ async function runPrelude(env: PipelineEnv, briefId: string, prompt: string, tra
      */
     research: async (input) => {
       const grounded = await groundedResearch(env.geminiApiKey, input);
-      if (grounded.ok) return { brief: grounded.value, provenance: { provider: "gemini-grounded", model: grounded.value.model, fallbackReason: null } };
+      if (grounded.ok) {
+        // `brief.model` is whichever model actually closed it, and
+        // `fallbackReason` says why that is not the first one — both go
+        // straight into the audit package, because an export may never be
+        // vague about which provider answered a reasoning stage.
+        const { brief, fallbackReason } = grounded.value;
+        return { brief, provenance: { provider: "gemini-grounded", model: brief.model, fallbackReason } };
+      }
       console.warn(`RESEARCH: grounded research failed (${grounded.error.kind}: ${grounded.error.message}).`);
       return null;
     },
   });
-  await finishRun(env.db, digestRunId, prepared?.digestDegradedReason == null ? "succeeded" : "degraded", prepared?.digestDegradedReason ?? undefined);
+  await finishRun(env.db, digestRunId, prepared.digestDegradedReason === null ? "succeeded" : "degraded", prepared.digestDegradedReason ?? undefined);
   return prepared;
 }
 

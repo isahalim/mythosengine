@@ -10,7 +10,7 @@
  * down at render time and nothing upstream would have caught it.
  */
 import { describe, expect, it } from "vitest";
-import { FORGE_LAYOUTS, forgeLayout } from "./forge-layouts.ts";
+import { FORGE_LAYOUTS, forgeLayout, landedFragments } from "./forge-layouts.ts";
 import { MOBILE } from "./geometry.ts";
 
 const known = new Set(MOBILE.map((p) => p.id));
@@ -57,5 +57,33 @@ describe("FORGE_LAYOUTS", () => {
     // A card that re-cuts itself on a re-render shatters again while the
     // operator is reading it, and takes their uncovered fragments with it.
     expect(forgeLayout(3)).toEqual(forgeLayout(3));
+  });
+});
+
+describe("landedFragments", () => {
+  it("gives the whole card when nothing is being assembled", () => {
+    expect(landedFragments(8, undefined)).toBe(8);
+  });
+
+  it("starts empty and ends whole", () => {
+    expect(landedFragments(8, 0)).toBe(0);
+    expect(landedFragments(8, 1)).toBe(8);
+  });
+
+  /**
+   * The chat route's six counted facts against an eight-fragment cut. The
+   * point is not the exact sequence but that it is monotonic, starts at
+   * nothing and is only ever behind the run — never ahead of it.
+   */
+  it("never shows a fragment the run has not paid for", () => {
+    const counts = [0, 1, 2, 3, 4, 5, 6].map((done) => landedFragments(8, done / 6));
+    expect(counts).toEqual([0, 1, 2, 4, 5, 6, 8]);
+    for (const [i, count] of counts.entries()) expect(count).toBeLessThanOrEqual(Math.ceil((i / 6) * 8));
+  });
+
+  it("clamps rather than trusting its caller's arithmetic", () => {
+    expect(landedFragments(8, -1)).toBe(0);
+    expect(landedFragments(8, 4)).toBe(8);
+    expect(landedFragments(8, Number.NaN)).toBe(8);
   });
 });

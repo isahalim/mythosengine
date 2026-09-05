@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   debrisPose,
   debrisSeeds,
+  depthLayers,
   dockedFor,
   dockedFraction,
   DOCK_SPAN,
@@ -10,6 +11,8 @@ import {
   ORBIT_PERIOD_S,
   ORBIT_SPAN,
   orbitPose,
+  SHARD_DEPTH_LAYERS,
+  SHARD_DEPTH_PX,
   spread,
   type OrbitCentre,
   type OrbitSeed,
@@ -285,5 +288,49 @@ describe("debris", () => {
         expect(Math.abs(p.y - CENTRE.y)).toBeLessThan(CENTRE.ry * 1.5 + 2);
       }
     }
+  });
+});
+
+/**
+ * The fragments have a body (operator direction, 2026-09-05: "make them have
+ * depth as currently when they rotate, you can see them disappear for a bit
+ * as they are like paper thinness").
+ */
+describe("depthLayers", () => {
+  it("extrudes backwards from the lit face, never in front of it", () => {
+    const layers = depthLayers();
+    expect(layers).toHaveLength(SHARD_DEPTH_LAYERS);
+    for (const layer of layers) expect(layer.z).toBeLessThan(0);
+    expect(Math.min(...layers.map((l) => l.z))).toBeCloseTo(-SHARD_DEPTH_PX, 6);
+  });
+
+  it("steps evenly, which is what makes the edge read as one slab", () => {
+    const zs = depthLayers().map((l) => l.z);
+    const steps = zs.slice(1).map((z, i) => z - zs[i]);
+    for (const step of steps) expect(step).toBeCloseTo(steps[0], 6);
+  });
+
+  /**
+   * The reason the count and the depth are a pair. A stack of planes stops
+   * looking solid once consecutive faces no longer overlap, which happens at
+   * `tan θ = W·layers/depth`. For the ~70px fragment this ring carries that
+   * has to be inside the last degree of edge-on, or the fragment is briefly
+   * paper again — the bug this exists to fix.
+   */
+  it("keeps the slab continuous to within a degree of edge-on, at the ring's own fragment size", () => {
+    const fragmentPx = 70;
+    const breakUp = (Math.atan((fragmentPx * SHARD_DEPTH_LAYERS) / SHARD_DEPTH_PX) * 180) / Math.PI;
+    expect(breakUp).toBeGreaterThan(89);
+  });
+
+  it("keeps every copy faint — eight of them stack up behind a face-on fragment", () => {
+    const total = depthLayers().reduce((sum, l) => sum + l.alpha, 0);
+    for (const layer of depthLayers()) expect(layer.alpha).toBeLessThan(0.15);
+    expect(total).toBeLessThan(1);
+  });
+
+  it("fades with depth, so the far side of the glass is the dimmest part of it", () => {
+    const layers = depthLayers();
+    for (const [i, layer] of layers.entries()) if (i > 0) expect(layer.alpha).toBeLessThan(layers[i - 1].alpha);
   });
 });

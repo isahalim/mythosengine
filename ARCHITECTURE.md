@@ -454,9 +454,9 @@ Nothing in §5.3 through §5.9 knows which route it is on.
 
 ### 0. DIGEST (the general ladder — chat route only)
 
-The operator's typed brief in, two facts out that nothing else can infer:
-**which topic it belongs to**, and **whether it names an actual video or
-merely a subject area** (`src/lib/pipeline/digest.ts`).
+The operator's typed brief in, and the facts nothing else can infer out:
+**which topic it belongs to**, what to call it, what argument was asked for,
+and any voice or language they named (`src/lib/pipeline/digest.ts`).
 
 Runs in GitHub Actions, never in the Worker — §7's rule that the Worker holds
 no model credential is not bent for chat latency. On the general ladder rather
@@ -464,15 +464,18 @@ than on LangChain, because the ladder buys the sticky descent, the render's
 one shared rate limiter, and `lastUsed()` provenance for §9; a stage that
 cannot say which model answered it does not ship here.
 
-**Never fails.** A dead DIGEST returns `heuristicDigest` with a reason and the
-run takes the bare-topic branch.
+**It does not decide whether to build the brief, only how to describe it**
+(operator direction, 2026-09-05). Until then a brief DIGEST judged vague was
+replaced by `rankIdeas(topic, 1)[0]` — and because an empty `angle` counted as
+vague, a prompt naming one specific trial was rendered as an unrelated
+politics story from the ranked list. `isBareTopic`, `specificity` and that
+branch are gone. Every brief mints its own signal and goes to grounded
+RESEARCH; a prompt with no angle is simply a search with a subject and no
+angle, which `langchain-research.ts` is already told what to do with.
 
-**The bare-topic branch is deterministic and has no model in it.**
-`isBareTopic` is plain code — two content words or fewer after stopwords, or
-an empty angle — and it overrides the model's own `specificity` in one
-direction only. The story then comes from `rankIdeas(topic, 1)[0]`, the same
-function stage 4 of the console calls, so the operator can open that screen
-and see why it won.
+**Never fails.** A dead DIGEST returns `heuristicDigest` — the operator's own
+sentence as the title, the topic guessed from its words — with a reason. A
+degrade may cost a brief its quality; it may not change its subject.
 
 ### 0. FOOTAGE REFRESH (weekly cron — the only stage that touches third-party video)
 
@@ -858,14 +861,39 @@ Grounding was chosen over a scraped SERP driver and over adding Tavily or
 Brave (operator direction 2026-09-04): no new credential, no fourth metered
 provider, no page markup to be broken by.
 
-The bounds are §2.5's own, and for the same reasons: four turns against the
-5-requests-per-minute meter, `maxRetries: 0`, and `GEMINI_RESEARCH_TIMEOUT_MS`
-carried as an `AbortSignal` rather than a framework default.
+**Four turns, then two on a second model** (operator direction, 2026-09-05:
+"use gemini-3.8-flash max call 4 times and if necessary fallback on
+gemini-3.5-flash-lite by continuing from the leftover work"). This was a
+single `invoke` until then, and the four turns it advertised lived only in the
+prompt's text: one unusable reply ended the stage and the video went out
+`ungrounded`. It now keeps a **workpad** — every page any turn grounded on,
+plus the last unusable draft — and spends up to
+`GEMINI_RESEARCH_MAX_ITERATIONS` invocations of `GEMINI_RESEARCH_MODEL`,
+telling each failed turn what was wrong, then hands the workpad to
+`GEMINI_REASONING_MODEL` for up to `GEMINI_RESEARCH_FALLBACK_ITERATIONS` more.
+A *throw* ends a model's turns immediately rather than burning the rest of
+them against a meter that has not moved.
+
+Four and two are the 5-requests-per-minute meter's arithmetic: it is metered
+**per model**, so two model ids never share a bucket. `maxRetries: 0` on both,
+and `GEMINI_RESEARCH_TIMEOUT_MS` as an `AbortSignal` **per invocation** rather
+than a framework default or a stage-wide deadline that would abort a turn
+about to answer.
+
+**Why two Gemini models may continue each other here, when §2.5 forbids it.**
+That rule is about splicing a second model into a live *tool conversation*,
+where it inherits the first's signed `thought` steps. There is no client-side
+tool loop on this path — the search is the provider's own, server-side — and
+what crosses to the fallback is plain text: URLs, titles, and the first
+model's own draft. Nothing signed, nothing replayed. §9 records which model
+closed the brief and, when it was not the first, why.
 
 **The trust boundary is the same shape as `finalizeBrief`'s.** There, a model
 may cite only what retrieval returned; here, only what the provider's own
-grounding metadata says it consulted. A claim whose URL is not in that list is
-dropped, and a brief left with no citation is an error rather than a brief.
+grounding metadata says it consulted — in **any** turn of the stage, since
+every one of those pages was genuinely fetched for this brief. A claim whose
+URL is not in that list is dropped, and a brief left with no citation is an
+error rather than a brief.
 Those citations carry `signalId: null` and `sourceKind: "web"`, and §9 records
 the stage as `gemini-grounded` — a corpus citation can be looked up in this
 database, a web one has to be opened.

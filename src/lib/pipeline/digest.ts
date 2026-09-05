@@ -7,9 +7,11 @@ import { GROQ_REASONING_MODEL } from "../../config/models.ts";
 /**
  * DIGEST — stage 0 of the chat route (operator direction, 2026-09-04).
  *
- * The operator types a sentence; this turns it into the two facts the rest
- * of the pipeline needs and cannot infer: **which topic it belongs to**, and
- * **whether it names an actual video or merely a subject area**.
+ * The operator types a sentence; this turns it into the facts the rest of the
+ * pipeline needs and cannot infer: **which topic it belongs to**, what to
+ * call it, what argument was asked for, and any voice or language the
+ * operator named. It does not decide *whether* to build it — that is not a
+ * judgement this stage is allowed to make any more (see below).
  *
  * *Why this runs in GitHub Actions and not in the Worker.* CLAUDE.md: the
  * Worker makes no model call anywhere and holds no model credential. That
@@ -32,28 +34,28 @@ import { GROQ_REASONING_MODEL } from "../../config/models.ts";
  * continues on it — the same contract RESEARCH, EDIT, CRITIC and the host
  * overlay all hold. A brief must never lose its video to the stage that
  * merely classified it.
- */
-
-/**
- * How specific the prompt was, and therefore which of the two routes through
- * the rest of the run it takes.
  *
- * - `specific` — the operator named a video. A synthetic `signals` row is
- *   minted from it and the pipeline builds *that*.
- * - `topic_only` — the operator named a subject ("make a video on AI"). The
- *   run falls back to the brainstorm ranking and takes **idea #1** for the
- *   topic, deterministically. The operator stays in the chat surface; only
- *   the source of the idea changes.
+ * *There is no vagueness branch any more* (operator direction, 2026-09-05:
+ * "get rid of the default fallback for prompt requests that are very vague
+ * to just follow the other route of picking the topic most similar and
+ * choosing the ranked 1st idea"). DIGEST used to also decide *whether* the
+ * operator had named a real video, and a prompt it called `topic_only` was
+ * handed to `rankIdeas` and became whatever story the corpus liked best for
+ * that topic. That is how "make a video on the lindsay clancy trial" came
+ * back as a politics story from the ranked list: the prompt names a subject
+ * the model had no angle for, the empty angle forced the bare-topic branch,
+ * and the operator's actual request was discarded by a classification they
+ * never saw. Every brief is now built as itself — a vague one simply gives
+ * grounded RESEARCH less to go on, which is the honest outcome and the one
+ * the operator asked for.
  */
-type BriefSpecificity = "specific" | "topic_only";
 
 export interface BriefDigest {
-  specificity: BriefSpecificity;
   /** Which of the seven topics this belongs to. Always set — it drives PLAN, SOURCE's download cap and EXPORT's hashtags. */
   topic: Topic;
-  /** A headline for the synthetic signal. Ignored on the `topic_only` branch, where the ranked idea supplies its own. */
+  /** A headline for the synthetic signal this brief becomes. Always used: there is no branch where another source of ideas supplies one. */
   title: string;
-  /** The specific argument the operator wants made. Empty means they did not give one — which is itself the vagueness signal. */
+  /** The specific argument the operator wants made. Empty when they did not give one — steering for RESEARCH, never a reason to build something else. */
   angle: string;
   /** Anything the operator insisted on. Passed to RESEARCH as steering, never as a fact. */
   mustInclude: string[];
@@ -72,7 +74,6 @@ export interface DigestOutcome {
 }
 
 const DigestResponseSchema = z.object({
-  specificity: z.enum(["specific", "topic_only"]),
   topic: z.enum(TOPICS),
   title: z.string().min(1).max(160),
   angle: z.string().max(600),
@@ -83,12 +84,12 @@ const DigestResponseSchema = z.object({
 
 /**
  * Words that carry no subject on their own, so that "make a video on AI"
- * counts as one content word rather than six.
+ * reduces to "ai".
  *
- * Deliberately short and hand-written. This is not a linguistics exercise —
- * it exists so that the *shape* the operator described ("just the topic") is
- * detectable without a model, and it only ever has to separate a bare topic
- * from a sentence with an argument in it.
+ * Deliberately short and hand-written. Its one remaining job is `guessTopic`:
+ * when no model answered, the topic has to be guessed from the prompt's own
+ * words, and the filler would otherwise outnumber them. It no longer decides
+ * anything about how a brief is routed — nothing does.
  */
 const FILLER = new Set([
   "a", "an", "the", "make", "makes", "making", "create", "do", "video", "videos", "short", "shorts", "clip",
@@ -96,36 +97,12 @@ const FILLER = new Set([
   "something", "one", "and", "or", "with", "regarding", "concerning", "topic", "idea", "new",
 ]);
 
-/**
- * The floor under the model's own classification.
- *
- * At or below this many content words the prompt is treated as a bare topic
- * **whatever the model said**. "make a video on AI" is three content words
- * ("video" and "make" are filler, "ai" is not); a prompt that actually names
- * an argument does not fit in two.
- */
-export const TOPIC_ONLY_MAX_CONTENT_WORDS = 2;
-
 /** The content words of a prompt — lowercased, punctuation-stripped, filler removed. */
 export function contentWords(prompt: string): string[] {
   return prompt
     .toLowerCase()
     .split(/[^a-z0-9']+/)
     .filter((word) => word.length > 1 && !FILLER.has(word));
-}
-
-/**
- * Whether this prompt is a bare topic, decided **without a model**.
- *
- * The operator's direction was that a vague prompt falls back
- * "deterministically". The model's own `specificity` is an opinion and this
- * is the fact that overrides it in one direction: a prompt this short cannot
- * be specific, however confidently a model labels it. The reverse is not
- * enforced — a long prompt the model calls vague is believed, because length
- * is not the same as an argument.
- */
-export function isBareTopic(prompt: string): boolean {
-  return contentWords(prompt).length <= TOPIC_ONLY_MAX_CONTENT_WORDS;
 }
 
 /**
@@ -165,16 +142,17 @@ export function guessTopic(prompt: string): Topic {
 /**
  * What DIGEST concludes when no model answered.
  *
- * Note that it is always `topic_only`. Without a model there is no angle to
- * build a synthetic signal around, and inventing one from the raw prompt
- * would put an unexamined sentence into the `signals` table and then into a
- * script. Falling back to the ranked corpus is the honest degrade: the
- * operator gets the best real story for their topic, and the audit package
- * says the classification never ran.
+ * The operator's own words, taken literally: their prompt is the title, the
+ * topic is guessed from its content words, and there is no angle because
+ * nothing read one. That is a thinner brief than a classified one and
+ * RESEARCH has less to search with — but it is *their* brief. Until
+ * 2026-09-05 this returned `topic_only` and the run went and built the
+ * corpus's best story for the guessed topic instead, which meant a dead
+ * classifier silently replaced the operator's request with someone else's.
+ * A degrade may cost quality; it may not change the subject.
  */
 export function heuristicDigest(prompt: string): BriefDigest {
   return {
-    specificity: "topic_only",
     topic: guessTopic(prompt),
     title: prompt.trim().slice(0, 160),
     angle: "",
@@ -187,21 +165,22 @@ export function heuristicDigest(prompt: string): BriefDigest {
 function buildPrompt(prompt: string, attachmentText: string): string {
   return [
     "You are the intake stage of a short-form video pipeline. The operator has typed a request.",
-    "Classify it. Reply with JSON and nothing else.",
+    "Read it and describe it. Reply with JSON and nothing else.",
     "",
     "Fields:",
-    '- "specificity": "specific" if the request names an actual video — a claim, a story, an angle, a specific thing to argue.',
-    '  "topic_only" if it names nothing more than a subject area (for example "make a video on AI").',
-    `- "topic": exactly one of ${TOPICS.join(", ")}. Always required, including for "topic_only".`,
-    '- "title": a single headline-shaped sentence naming the video. For "topic_only", restate the subject.',
+    `- "topic": exactly one of ${TOPICS.join(", ")}. Always required — pick the closest.`,
+    '- "title": a single headline-shaped sentence naming the video this request asks for.',
+    '  If they named only a subject, restate the subject as a headline. Do not substitute a different story.',
     '- "angle": the specific argument the operator wants made, in one or two sentences. Empty string if they gave none.',
     '- "must_include": anything they explicitly insisted on. Empty array if nothing.',
     '- "voice": a narrator voice they named, or null. Do not invent one.',
     '- "language": a language they asked for, or null. Do not invent one; null means English.',
     "",
     "Judge only what is in front of you. Do not research, do not embellish, and do not",
-    "turn a subject into an angle the operator did not give you — an invented angle is",
-    "worse than an honest \"topic_only\", because the pipeline can recover from the second.",
+    "turn a subject into an angle the operator did not give you — an empty angle is honest",
+    "and the research stage that runs after you is the thing that goes and finds one.",
+    "This request WILL be built exactly as you describe it, so a title about something",
+    "else is not a safer answer than a vague one; it is the only wrong answer here.",
     "",
     "--- OPERATOR REQUEST ---",
     prompt,
@@ -216,15 +195,16 @@ export interface DigestOptions {
 }
 
 /**
- * Classifies one brief. **Never fails**, and the return type says so: there
- * is no `Result` here, because a failure is not an outcome the caller has to
+ * Reads one brief. **Never fails**, and the return type says so: there is no
+ * `Result` here, because a failure is not an outcome the caller has to
  * handle — it is a degraded `DigestOutcome` carrying `heuristicDigest` and
  * the reason, and the run continues on it.
  *
- * The `isBareTopic` guard is applied to the model's answer as well as to the
- * fallback, which is the whole of "deterministically" in the operator's
- * direction: whatever the model decides, a prompt of two content words or
- * fewer takes the ranked-idea branch.
+ * Note what is *not* here any more: no branch, no override, no floor under
+ * the model's own judgement of how specific the prompt was. Every answer
+ * this returns describes the brief the operator typed, and the pipeline
+ * builds that brief. A degraded answer is a thinner description of the same
+ * request, never a different request.
  */
 export async function digestBrief(llm: LlmDriver, prompt: string, options: DigestOptions = {}): Promise<DigestOutcome> {
   const { attachmentText = "", model = GROQ_REASONING_MODEL } = options;
@@ -235,33 +215,26 @@ export async function digestBrief(llm: LlmDriver, prompt: string, options: Diges
     return {
       digest: heuristicDigest(prompt),
       model: null,
-      degradedReason: `DIGEST could not classify this brief (${error.kind}: ${error.message}) — it was treated as a bare topic and the run took the ranked-idea branch`,
+      degradedReason: `DIGEST could not read this brief (${error.kind}: ${error.message}) — the run continued on the operator's own words, with the topic guessed from them`,
     };
   }
 
   const raw = response.value;
-  // The model's opinion, overridden in exactly one direction. See `isBareTopic`.
-  const bare = isBareTopic(prompt);
-  const specificity: BriefSpecificity = bare ? "topic_only" : raw.specificity;
-  // An empty angle is the same statement as a short prompt: nothing was
-  // named to argue. Believing "specific" here would mint a signal whose
-  // whole content is a subject line.
-  const withoutAngle = raw.angle.trim().length === 0;
+  // A title the model left empty of everything but whitespace would mint a
+  // nameless signal, so the prompt itself stands in. The schema already
+  // refuses an empty string; this covers " ".
+  const title = raw.title.trim();
 
   return {
     digest: {
-      specificity: withoutAngle ? "topic_only" : specificity,
       topic: raw.topic,
-      title: raw.title.trim(),
+      title: title.length > 0 ? title : prompt.trim().slice(0, 160),
       angle: raw.angle.trim(),
       mustInclude: raw.must_include.map((item) => item.trim()).filter((item) => item.length > 0),
       voice: raw.voice?.trim() || null,
       language: raw.language?.trim() || null,
     },
     model,
-    degradedReason:
-      bare && raw.specificity === "specific"
-        ? `the model called this brief specific, but it is ${contentWords(prompt).length} content word(s) long — it was treated as a bare topic and the run took the ranked-idea branch`
-        : null,
+    degradedReason: null,
   };
 }
