@@ -2,7 +2,7 @@
 
 Read before running any provisioning command. Everything here was created by the operator by hand, or by an earlier agent session under the operator's approval. **Do not recreate, rename, or regenerate any of it.**
 
-Last updated: `2026-08-29`
+Last updated: `2026-09-04`
 
 > This infrastructure was originally provisioned for "MythosEngine" and carries over unchanged into the Mythos Engine pivot (same Worker, same secrets, same Turnstile widget) — only the product built on top of it changed. Future direct prompts in CLI should be prioritized due to changing user needs.
 
@@ -11,7 +11,7 @@ Last updated: `2026-08-29`
 | Thing | Value | Notes |
 |---|---|---|
 | Worker name | `mythosengine` | pinned in `wrangler.toml`. Renaming orphans every secret below. Kept as the technical/internal name; the product is branded Mythos Engine in the console UI only |
-| Live URL | `https://mythosengine.5ryfrrjgmg.workers.dev` | serving the Mythos Engine status page |
+| Live URL | `https://mythosengine.isahalim.workers.dev` | serving the Mythos Engine status page. **The account subdomain was renamed from `5ryfrrjgmg` to `isahalim` on 2026-09-04**; the old host stopped answering the moment it was. Treat that as one-way — assume a released subdomain cannot be reclaimed. Two things had to follow it by hand and are done: the operator's passkey was re-enrolled (WebAuthn credentials are bound to the rpID, which `src/server/router.ts` derives from the request host, so the old credential could not be offered on the new one) and the stale `credentials` row was deleted, returning the enrollment count to 1 of `MAX_REGISTERED_CREDENTIALS` = 2. The only code that had to change is `DEFAULT_WORKER_URL` in `scripts/pipeline/env.ts` — see the note there for what a stale value costs |
 | Hosting model | Worker with static assets (`[assets] directory = "./dist"`) | **not** Cloudflare Pages |
 | Custom domain | not registered | operator will handle |
 | Entry point | `src/index.ts` | `/healthz`, `/readyz` (probes the real D1 + KV bindings as of 2026-08-28), `/auth/*` and `/console/*` routed by `src/server/router.ts` (Phase 8), falls through to `env.ASSETS` for everything else |
@@ -24,7 +24,7 @@ Last updated: `2026-08-29`
 
 | Resource | Status |
 |---|---|
-| Turnstile widget `mythosengine` | **created**, mode `managed`, hostnames: the workers.dev host + `localhost`. Site key `0x4AAAAAAEee0w7vUlvWpXFF` is wired into `wrangler.toml [vars]` |
+| Turnstile widget `mythosengine` | **created**, mode `managed`, hostnames: `mythosengine.isahalim.workers.dev` only, repointed by the operator 2026-09-04 with the subdomain rename (`localhost` was dropped in the same edit — wire it back before any local work that needs the widget). Site key `0x4AAAAAAEee0w7vUlvWpXFF` is wired into `wrangler.toml [vars]`, and **nothing reads it yet**: no code verifies a Turnstile token, so the hostname list breaks nothing today and would break sign-in silently on the day it is wired |
 | D1 database `mythosengine` | **created** 2026-08-28, `database_id = 77a0969e-2fb8-460e-9e52-f2606b2fa2fa`, region `WNAM`. Migrations `0000`–`0007` applied (17 tables live). `0008_footage_source_enabled` and `0009_research_briefs` applied 2026-08-31 by the `deploy` job — verified against the live database: `footage_sources` reads `hollowpoiint-gta` enabled, the other two disabled, and `research_briefs` exists (ARCHITECTURE.md §4). Bound in `wrangler.toml` as `DB`. Renaming/deleting this database orphans everything Phase 8 built. **Migrations are no longer applied by hand** — see the row below |
 | KV namespace `HOT` | **created** 2026-08-28, `id = e1a2adff832742ae8953cab9905a7aa6`. Rate-limit counters, the killswitch flag, and export blobs (3-day TTL) all live here — no separate namespace, per the original Task 8.2 plan. Bound as `HOT` |
 | KV namespace `VAULT` | **created** 2026-08-28, `id = 84b02470f3ca4e65807ba09c53cbe426`. Encrypted provider-key vault (`src/lib/vault.ts`) only. Bound as `VAULT` |

@@ -17,7 +17,7 @@
  * requires.
  */
 export interface WorkerBatchClientOptions {
-  /** Base origin of the deployed Worker, e.g. `https://mythosengine.5ryfrrjgmg.workers.dev`. */
+  /** Base origin of the deployed Worker, e.g. `https://mythosengine.isahalim.workers.dev`. */
   workerUrl: string;
   /** Shared secret; must match the Worker's own `PIPELINE_BATCH_TOKEN`. Arrives from the environment and is never logged. */
   token: string;

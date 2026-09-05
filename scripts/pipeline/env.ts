@@ -12,8 +12,21 @@ import type { ExportDriver } from "../../src/lib/drivers/types.ts";
 // secret of its own).
 const D1_DATABASE_ID = "77a0969e-2fb8-460e-9e52-f2606b2fa2fa";
 export const HOT_KV_NAMESPACE_ID = "e1a2adff832742ae8953cab9905a7aa6";
-/** PROVISIONED.md's "Live URL". Non-secret and already public in that file; overridable for a staging deploy. */
-const DEFAULT_WORKER_URL = "https://mythosengine.5ryfrrjgmg.workers.dev";
+/**
+ * PROVISIONED.md's "Live URL". Non-secret and already public in that file;
+ * overridable via `WORKER_URL` for a staging deploy.
+ *
+ * This is the only place the pipeline learns where the Worker lives, and no
+ * workflow sets `WORKER_URL`, so this constant *is* the production origin. It
+ * changed on 2026-09-04 when the operator renamed the account subdomain from
+ * `5ryfrrjgmg` to `isahalim` — worth stating what a stale value costs, because
+ * it is not a startup failure. Reads go straight at the D1 and KV REST APIs and
+ * would keep working; only `execAtomic` and the export blob PUT come through
+ * here. A render would poll signals, spend the whole RESEARCH/SCRIPT/EDIT
+ * budget, encode the video, and only then fail writing it. Anything that moves
+ * the Worker moves this line with it.
+ */
+const DEFAULT_WORKER_URL = "https://mythosengine.isahalim.workers.dev";
 
 /** CLAUDE.md: "never ask for a secret value... name the exact variable and stop" — this is that check, centralized. */
 export function requireEnv(name: string): string {
